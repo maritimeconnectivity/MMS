@@ -110,4 +110,5 @@ require (
 	golang.org/x/tools v0.3.0 // indirect
 	google.golang.org/protobuf v1.28.1 // indirect
 	lukechampine.com/blake3 v1.1.7 // indirect
+	nhooyr.io/websocket v1.8.7 // indirect
 )

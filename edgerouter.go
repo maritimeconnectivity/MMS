@@ -18,68 +18,68 @@ package main
 
 import (
 	"context"
-	"crypto/ecdsa"
-	"crypto/x509"
-	"encoding/pem"
 	"fmt"
 	"github.com/libp2p/go-libp2p"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
-	"github.com/libp2p/go-libp2p/core/crypto"
-	peerstore "github.com/libp2p/go-libp2p/core/peer"
+	pubsub "github.com/libp2p/go-libp2p-pubsub"
+	"github.com/libp2p/go-libp2p/core/peer"
 	drouting "github.com/libp2p/go-libp2p/p2p/discovery/routing"
 	dutil "github.com/libp2p/go-libp2p/p2p/discovery/util"
 	"os"
 	"os/signal"
+	"time"
 )
 
 func main() {
-	pemData, err := os.ReadFile("priv.pem")
-	if err != nil {
-		panic(err)
-	}
-
-	keyData, _ := pem.Decode(pemData)
-	priv, err := x509.ParsePKCS8PrivateKey(keyData.Bytes)
-	if err != nil {
-		panic(err)
-	}
-
-	ecPriv := priv.(*ecdsa.PrivateKey)
-	privEc, _, err := crypto.ECDSAKeyPairFromKey(ecPriv)
-	if err != nil {
-		panic(err)
-	}
-
-	node, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/0.0.0.0/tcp/27000", "/ip4/0.0.0.0/udp/27000/quic-v1", "/ip6/::/tcp/27000", "/ip6/::/udp/27000/quic-v1"), libp2p.Identity(privEc))
+	h, err := libp2p.New()
 	if err != nil {
 		panic(err)
 	}
 
 	ctx := context.Background()
 
-	// print the node's listening addresses
-	fmt.Println("Listen addresses:", node.Addrs())
-
-	// print the node's PeerInfo in multiaddr format
-	peerInfo := peerstore.AddrInfo{
-		ID:    node.ID(),
-		Addrs: node.Addrs(),
-	}
-	addrs, err := peerstore.AddrInfoToP2pAddrs(&peerInfo)
-	fmt.Println("libp2p node addresses:", addrs)
-
-	kademlia, err := dht.New(ctx, node, dht.Mode(dht.ModeAutoServer))
+	psub, err := pubsub.NewGossipSub(ctx, h)
 	if err != nil {
 		panic(err)
 	}
 
-	if err = kademlia.Bootstrap(ctx); err != nil {
+	topic, err := psub.Join("horse")
+	if err != nil {
 		panic(err)
 	}
+
+	kademlia, err := dht.New(ctx, h)
+	if err != nil {
+		panic(err)
+	}
+
+	//if err = kademlia.Bootstrap(ctx); err != nil {
+	//	panic(err)
+	//}
 
 	rd := drouting.NewRoutingDiscovery(kademlia)
 
 	dutil.Advertise(ctx, rd, "over here")
+
+	p, err := peer.AddrInfoFromString("/ip4/127.0.0.1/udp/34194/quic-v1/p2p/12D3KooWKnHVkYLSD5iFPGXStsbQJbU9ySSVXPsz1xHthSi7SwR1")
+	if err != nil {
+		panic(err)
+	}
+
+	if err = h.Connect(ctx, *p); err != nil {
+		panic(err)
+	}
+
+	_, err = topic.Subscribe()
+	if err != nil {
+		panic(err)
+	}
+
+	time.Sleep(10 * time.Second)
+
+	if err = topic.Publish(ctx, []byte("Hello, here I am!")); err != nil {
+		panic(err)
+	}
 
 	// wait for a SIGINT or SIGTERM signal
 	ch := make(chan os.Signal, 1)
@@ -88,7 +88,7 @@ func main() {
 	fmt.Println("Received signal, shutting down...")
 
 	// shut the node down
-	if err := node.Close(); err != nil {
+	if err := h.Close(); err != nil {
 		panic(err)
 	}
 }
