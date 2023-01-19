@@ -98,7 +98,7 @@ func main() {
 
 	dutil.Advertise(ctx, rd, "over here")
 
-	p, err := peer.AddrInfoFromString("/ip4/127.0.0.1/udp/27000/quic-v1/p2p/QmYG8SEsDWFR4T8c1yUr7CCnQ1M38tQDNGMwbBPSTZfzoD")
+	p, err := peer.AddrInfoFromString("/ip4/127.0.0.1/udp/27000/quic-v1/p2p/QmcUKyMuepvXqZhpMSBP59KKBymRNstk41qGMPj38QStfx")
 	if err != nil {
 		panic(err)
 	}

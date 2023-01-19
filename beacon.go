@@ -18,7 +18,6 @@ package main
 
 import (
 	"context"
-	"crypto/ecdsa"
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
@@ -39,12 +38,11 @@ func main() {
 	}
 
 	keyData, _ := pem.Decode(pemData)
-	priv, err := x509.ParsePKCS8PrivateKey(keyData.Bytes)
+	ecPriv, err := x509.ParseECPrivateKey(keyData.Bytes)
 	if err != nil {
 		panic(err)
 	}
 
-	ecPriv := priv.(*ecdsa.PrivateKey)
 	privEc, _, err := crypto.ECDSAKeyPairFromKey(ecPriv)
 	if err != nil {
 		panic(err)
