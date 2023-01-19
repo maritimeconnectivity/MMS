@@ -30,7 +30,6 @@ import (
 	dutil "github.com/libp2p/go-libp2p/p2p/discovery/util"
 	"os"
 	"os/signal"
-	"syscall"
 	"time"
 )
 
@@ -136,7 +135,7 @@ func main() {
 
 	// wait for a SIGINT or SIGTERM signal
 	ch := make(chan os.Signal, 1)
-	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(ch, os.Interrupt)
 	<-ch
 	fmt.Println("Received signal, shutting down...")
 
@@ -151,7 +150,7 @@ func sendFromConsole(ctx context.Context, topic *pubsub.Topic) {
 	for {
 		s, err := reader.ReadString('\n')
 		if err != nil {
-			panic(err)
+			fmt.Println(err)
 		}
 		if err := topic.Publish(ctx, []byte(s)); err != nil {
 			fmt.Println("Publish error: ", err)
@@ -163,7 +162,7 @@ func readFromSubscription(ctx context.Context, sub *pubsub.Subscription, host *h
 	for {
 		m, err := sub.Next(ctx)
 		if err != nil {
-			panic(err)
+			fmt.Println(err)
 		}
 		if m.ReceivedFrom != (*host).ID() { // we don't want to show messages from ourselves
 			fmt.Println(m.ReceivedFrom, ": ", string(m.Message.Data))
