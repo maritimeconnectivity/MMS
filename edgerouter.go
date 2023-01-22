@@ -26,11 +26,13 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	drouting "github.com/libp2p/go-libp2p/p2p/discovery/routing"
 	dutil "github.com/libp2p/go-libp2p/p2p/discovery/util"
+	"github.com/mitchellh/mapstructure"
 	"net/http"
 	"nhooyr.io/websocket"
 	"nhooyr.io/websocket/wsjson"
 	"os"
 	"os/signal"
+	"sync"
 	"time"
 )
 
@@ -48,6 +50,13 @@ type subscription struct {
 	subscriber *agent // the agent that is the subscriber
 }
 
+// Register type representing the register protocol message
+type Register struct {
+	Mrn       string   // the MRN of the agent
+	Interests []string // the interests that the agent wants to subscribe to
+	Dm        bool     // whether the agent wants to be able to receive direct messages
+}
+
 func newSubscription(interest string, subscriber *agent) *subscription {
 	return &subscription{
 		interest,
@@ -58,13 +67,16 @@ func newSubscription(interest string, subscriber *agent) *subscription {
 // type representing an MMS edge router
 type edgeRouter struct {
 	subscriptions map[string][]*subscription // a mapping from interest names to subscription slices
+	subMu         sync.Mutex                 // a Mutex for locking the subscriptions map
 	httpServer    *http.Server               // the http server that is used to bootstrap websocket connections
 	p2pHost       *host.Host                 // the libp2p host that is used to connect to the MMS router network
 }
 
 func (er *edgeRouter) subscribeAgentToInterest(a *agent, interest string) {
 	sub := newSubscription(interest, a)
+	er.subMu.Lock()
 	er.subscriptions[interest] = append(er.subscriptions[interest], sub)
+	er.subMu.Unlock()
 }
 
 func main() {
@@ -143,7 +155,19 @@ func main() {
 				fmt.Println(err)
 				return
 			}
-			fmt.Println(v)
+			m, b := v.(map[string]interface{})
+			if !b {
+				fmt.Println("Could not convert buffer to map")
+				return
+			}
+
+			var r Register
+			err = mapstructure.WeakDecode(&m, &r)
+			if err != nil {
+				fmt.Println("The received message could not be decoded as a register protocol message", err)
+				return
+			}
+			fmt.Println(r)
 		}),
 		//TLSConfig: &tls.Config{
 		//	ClientAuth: tls.RequireAndVerifyClientCert,
