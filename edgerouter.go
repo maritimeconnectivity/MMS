@@ -36,47 +36,47 @@ import (
 	"time"
 )
 
-// type representing an MMS agent
-type agent struct {
-	mrn       string          // the MRN of the agent
-	interests []string        // the interests that the agent wants to subscribe to
-	dm        bool            // whether the agent wants to be able to receive direct messages
-	ws        *websocket.Conn // the websocket connection to this agent
+// Agent type representing an MMS agent
+type Agent struct {
+	Mrn       string          // the MRN of the Agent
+	Interests []string        // the Interests that the Agent wants to subscribe to
+	Dm        bool            // whether the Agent wants to be able to receive direct messages
+	Ws        *websocket.Conn // the websocket connection to this Agent
 }
 
-// type representing a subscription
-type subscription struct {
-	interest   string // the interest that the subscription is based on
-	subscriber *agent // the agent that is the subscriber
+// Subscription type representing a subscription
+type Subscription struct {
+	Interest   string // the Interest that the Subscription is based on
+	Subscriber *Agent // the Agent that is the Subscriber
 }
 
 // Register type representing the register protocol message
 type Register struct {
-	Mrn       string   // the MRN of the agent
-	Interests []string // the interests that the agent wants to subscribe to
-	Dm        bool     // whether the agent wants to be able to receive direct messages
+	Mrn       string   // the MRN of the Agent
+	Interests []string // the Interests that the Agent wants to subscribe to
+	Dm        bool     // whether the Agent wants to be able to receive direct messages
 }
 
-func newSubscription(interest string, subscriber *agent) *subscription {
-	return &subscription{
+func NewSubscription(interest string, subscriber *Agent) *Subscription {
+	return &Subscription{
 		interest,
 		subscriber,
 	}
 }
 
-// type representing an MMS edge router
-type edgeRouter struct {
-	subscriptions map[string][]*subscription // a mapping from interest names to subscription slices
-	subMu         sync.Mutex                 // a Mutex for locking the subscriptions map
-	httpServer    *http.Server               // the http server that is used to bootstrap websocket connections
-	p2pHost       *host.Host                 // the libp2p host that is used to connect to the MMS router network
+// EdgeRouter type representing an MMS edge router
+type EdgeRouter struct {
+	Subscriptions map[string][]*Subscription // a mapping from Interest names to Subscription slices
+	SubMu         sync.Mutex                 // a Mutex for locking the Subscriptions map
+	HttpServer    *http.Server               // the http server that is used to bootstrap websocket connections
+	P2pHost       *host.Host                 // the libp2p host that is used to connect to the MMS router network
 }
 
-func (er *edgeRouter) subscribeAgentToInterest(a *agent, interest string) {
-	sub := newSubscription(interest, a)
-	er.subMu.Lock()
-	er.subscriptions[interest] = append(er.subscriptions[interest], sub)
-	er.subMu.Unlock()
+func (er *EdgeRouter) SubscribeAgentToInterest(a *Agent, interest string) {
+	sub := NewSubscription(interest, a)
+	er.SubMu.Lock()
+	er.Subscriptions[interest] = append(er.Subscriptions[interest], sub)
+	er.SubMu.Unlock()
 }
 
 func main() {
