@@ -33,7 +33,6 @@ import (
 	"os"
 	"os/signal"
 	"sync"
-	"time"
 )
 
 // Agent type representing an MMS agent
@@ -59,83 +58,24 @@ type Register struct {
 
 func NewSubscription(interest string, subscriber *Agent) *Subscription {
 	return &Subscription{
-		interest,
-		subscriber,
+		Interest:   interest,
+		Subscriber: subscriber,
 	}
 }
 
 // EdgeRouter type representing an MMS edge router
 type EdgeRouter struct {
-	Subscriptions map[string][]*Subscription // a mapping from Interest names to Subscription slices
-	SubMu         sync.Mutex                 // a Mutex for locking the Subscriptions map
-	HttpServer    *http.Server               // the http server that is used to bootstrap websocket connections
-	P2pHost       *host.Host                 // the libp2p host that is used to connect to the MMS router network
+	subscriptions map[string][]*Subscription // a mapping from Interest names to Subscription slices
+	subMu         *sync.RWMutex              // a Mutex for locking the subscriptions map
+	httpServer    *http.Server               // the http server that is used to bootstrap websocket connections
+	p2pHost       *host.Host                 // the libp2p host that is used to connect to the MMS router network
 }
 
-func (er *EdgeRouter) SubscribeAgentToInterest(a *Agent, interest string) {
-	sub := NewSubscription(interest, a)
-	er.SubMu.Lock()
-	er.Subscriptions[interest] = append(er.Subscriptions[interest], sub)
-	er.SubMu.Unlock()
-}
-
-func main() {
-	h, err := libp2p.New()
-	if err != nil {
-		panic(err)
-	}
-
-	ctx := context.Background()
-
-	psub, err := pubsub.NewGossipSub(ctx, h)
-	if err != nil {
-		panic(err)
-	}
-
-	topic, err := psub.Join("horse")
-	if err != nil {
-		panic(err)
-	}
-
-	kademlia, err := dht.New(ctx, h)
-	if err != nil {
-		panic(err)
-	}
-
-	//if err = kademlia.Bootstrap(ctx); err != nil {
-	//	panic(err)
-	//}
-
-	rd := drouting.NewRoutingDiscovery(kademlia)
-
-	dutil.Advertise(ctx, rd, "over here")
-
-	p, err := peer.AddrInfoFromString("/ip4/127.0.0.1/udp/27000/quic-v1/p2p/QmcUKyMuepvXqZhpMSBP59KKBymRNstk41qGMPj38QStfx")
-	if err != nil {
-		panic(err)
-	}
-
-	if err = h.Connect(ctx, *p); err != nil {
-		panic(err)
-	}
-
-	_, err = topic.Subscribe()
-	if err != nil {
-		panic(err)
-	}
-
-	time.Sleep(10 * time.Second)
-
-	if err = topic.Publish(ctx, []byte("Hello, here I am!")); err != nil {
-		panic(err)
-	}
-
-	// wait for a SIGINT or SIGTERM signal
-	ch := make(chan os.Signal, 1)
-	signal.Notify(ch, os.Interrupt)
-
+func NewEdgeRouter(p2p *host.Host, listeningAddr string) *EdgeRouter {
+	subs := make(map[string][]*Subscription)
+	mu := &sync.RWMutex{}
 	httpServer := http.Server{
-		Addr: "localhost:8080",
+		Addr: listeningAddr,
 		Handler: http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 			c, err := websocket.Accept(writer, request, nil)
 			if err != nil {
@@ -155,19 +95,54 @@ func main() {
 				fmt.Println(err)
 				return
 			}
-			m, b := v.(map[string]interface{})
-			if !b {
+
+			m, ok := v.(map[string]interface{})
+			if !ok {
 				fmt.Println("Could not convert buffer to map")
 				return
 			}
 
+			tmp, ok := m["register"]
+			if !ok {
+				if err = c.Close(websocket.StatusUnsupportedData, "First message needs to contain a 'register' object"); err != nil {
+					fmt.Println(err)
+				}
+				return
+			}
+
+			reg, ok := tmp.(map[string]interface{})
+			if !ok {
+				if err = c.Close(websocket.StatusUnsupportedData, "The 'register' object could not be parsed"); err != nil {
+					fmt.Println(err)
+				}
+				return
+			}
+			// if dm has not been explicitly set, it implicitly means that it is true
+			_, ok = reg["dm"]
+			if !ok {
+				reg["dm"] = true
+			}
+
 			var r Register
-			err = mapstructure.WeakDecode(&m, &r)
+			err = mapstructure.Decode(&reg, &r)
 			if err != nil {
 				fmt.Println("The received message could not be decoded as a register protocol message", err)
 				return
 			}
 			fmt.Println(r)
+			a := &Agent{
+				Mrn:       r.Mrn,
+				Interests: r.Interests,
+				Dm:        r.Dm,
+				Ws:        c,
+			}
+			if len(r.Interests) > 0 {
+				mu.Lock()
+				for _, value := range r.Interests {
+					subs[value] = append(subs[value], NewSubscription(value, a))
+				}
+				mu.Unlock()
+			}
 		}),
 		//TLSConfig: &tls.Config{
 		//	ClientAuth: tls.RequireAndVerifyClientCert,
@@ -175,23 +150,73 @@ func main() {
 		//},
 	}
 
+	return &EdgeRouter{
+		subscriptions: subs,
+		subMu:         mu,
+		httpServer:    &httpServer,
+		p2pHost:       p2p,
+	}
+}
+
+func (er *EdgeRouter) StartEdgeRouter(ctx context.Context) {
 	go func() {
-		err = httpServer.ListenAndServe()
-		if err != nil {
+		fmt.Println("Starting edge router")
+		if err := er.httpServer.ListenAndServe(); err != nil {
 			fmt.Println(err)
 		}
 	}()
+	<-ctx.Done()
+	fmt.Println("Shutting down edge router")
+	fmt.Println("subscriptions:", er.subscriptions)
+	if err := er.httpServer.Shutdown(ctx); err != nil {
+		panic(err)
+	}
+}
 
-	<-ch
-	fmt.Println("Received signal, shutting down...")
-
-	// shut the node down
-	if err := h.Close(); err != nil {
+func main() {
+	h, err := libp2p.New()
+	if err != nil {
 		panic(err)
 	}
 
-	// shut the http server down
-	if err := httpServer.Shutdown(ctx); err != nil {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	_, err = pubsub.NewGossipSub(ctx, h)
+	if err != nil {
+		panic(err)
+	}
+
+	kademlia, err := dht.New(ctx, h)
+	if err != nil {
+		panic(err)
+	}
+
+	rd := drouting.NewRoutingDiscovery(kademlia)
+
+	dutil.Advertise(ctx, rd, "over here")
+
+	p, err := peer.AddrInfoFromString("/ip4/127.0.0.1/udp/27000/quic-v1/p2p/QmcUKyMuepvXqZhpMSBP59KKBymRNstk41qGMPj38QStfx")
+	if err != nil {
+		panic(err)
+	}
+
+	if err = h.Connect(ctx, *p); err != nil {
+		panic(err)
+	}
+
+	// wait for a SIGINT or SIGTERM signal
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, os.Interrupt)
+
+	er := NewEdgeRouter(&h, "localhost:8080")
+	go er.StartEdgeRouter(ctx)
+
+	<-ch
+	fmt.Println("Received signal, shutting down...")
+	cancel()
+
+	// shut the node down
+	if err := h.Close(); err != nil {
 		panic(err)
 	}
 }
