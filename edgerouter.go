@@ -18,6 +18,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"github.com/libp2p/go-libp2p"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
@@ -112,7 +114,7 @@ func NewEdgeRouter(p2p *host.Host, listeningAddr string) *EdgeRouter {
 
 			reg, ok := tmp.(map[string]interface{})
 			if !ok {
-				if err = c.Close(websocket.StatusUnsupportedData, "The 'register' object could not be parsed"); err != nil {
+				if err = c.Close(websocket.StatusUnsupportedData, "The received 'register' object could not be parsed"); err != nil {
 					fmt.Println(err)
 				}
 				return
@@ -135,6 +137,24 @@ func NewEdgeRouter(p2p *host.Host, listeningAddr string) *EdgeRouter {
 				Interests: r.Interests,
 				Dm:        r.Dm,
 				Ws:        c,
+			}
+			if r.Dm {
+				b := make([]byte, 16)
+				_, err = rand.Read(b)
+				if err != nil {
+					fmt.Println("Could not get random nonce", err)
+					return
+				}
+				nonce := base64.StdEncoding.EncodeToString(b)
+
+				auth := make(map[string]map[string]string)
+				auth["authenticate"] = make(map[string]string)
+				auth["authenticate"]["nonce"] = nonce
+				err = wsjson.Write(request.Context(), c, &auth)
+				if err != nil {
+					fmt.Println("Could not send auth message", err)
+					return
+				}
 			}
 			if len(r.Interests) > 0 {
 				mu.Lock()
