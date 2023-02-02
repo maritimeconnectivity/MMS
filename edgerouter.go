@@ -71,11 +71,13 @@ type EdgeRouter struct {
 	subMu         *sync.RWMutex              // a Mutex for locking the subscriptions map
 	httpServer    *http.Server               // the http server that is used to bootstrap websocket connections
 	p2pHost       *host.Host                 // the libp2p host that is used to connect to the MMS router network
+	agents        map[string]*Agent          // a mapping that keeps track of agents connected to this EdgeRouter
 }
 
 func NewEdgeRouter(p2p *host.Host, listeningAddr string) *EdgeRouter {
 	subs := make(map[string][]*Subscription)
 	mu := &sync.RWMutex{}
+	agents := make(map[string]*Agent)
 	httpServer := http.Server{
 		Addr: listeningAddr,
 		Handler: http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -138,6 +140,7 @@ func NewEdgeRouter(p2p *host.Host, listeningAddr string) *EdgeRouter {
 				Dm:        r.Dm,
 				Ws:        c,
 			}
+			agents[a.Mrn] = a
 			if r.Dm {
 				b := make([]byte, 16)
 				_, err = rand.Read(b)
@@ -175,6 +178,7 @@ func NewEdgeRouter(p2p *host.Host, listeningAddr string) *EdgeRouter {
 		subMu:         mu,
 		httpServer:    &httpServer,
 		p2pHost:       p2p,
+		agents:        agents,
 	}
 }
 
