@@ -21,6 +21,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
+	"github.com/hashicorp/mdns"
 	"github.com/libp2p/go-libp2p"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
@@ -34,6 +35,7 @@ import (
 	"nhooyr.io/websocket/wsjson"
 	"os"
 	"os/signal"
+	"strconv"
 	"sync"
 )
 
@@ -142,17 +144,18 @@ func NewEdgeRouter(p2p *host.Host, listeningAddr string) *EdgeRouter {
 			}
 			agents[a.Mrn] = a
 			if r.Dm {
-				b := make([]byte, 16)
+				b := make([]byte, 8)
 				_, err = rand.Read(b)
 				if err != nil {
-					fmt.Println("Could not get random nonce", err)
+					fmt.Println("Could not generate random nonce", err)
 					return
 				}
-				nonce := base64.StdEncoding.EncodeToString(b)
+				nonce := binary.BigEndian.Uint64(b)
 
 				auth := make(map[string]map[string]string)
 				auth["authenticate"] = make(map[string]string)
-				auth["authenticate"]["nonce"] = nonce
+				auth["authenticate"]["nonce"] = strconv.FormatUint(nonce, 10)
+				// send authenticate message
 				err = wsjson.Write(request.Context(), c, &auth)
 				if err != nil {
 					fmt.Println("Could not send auth message", err)
@@ -234,6 +237,24 @@ func main() {
 
 	er := NewEdgeRouter(&h, "localhost:8080")
 	go er.StartEdgeRouter(ctx)
+
+	hst, err := os.Hostname()
+	if err != nil {
+		fmt.Println("Could not get hostname, shutting down", err)
+		ch <- os.Interrupt
+	}
+	info := []string{"MMS Edge Router"}
+	mdnsService, err := mdns.NewMDNSService(hst, "_mms-edgerouter_tcp", "", "", 8080, nil, info)
+	if err != nil {
+		fmt.Println("Could not create mDNS service, shutting down", err)
+		ch <- os.Interrupt
+	}
+	mdnsServer, err := mdns.NewServer(&mdns.Config{Zone: mdnsService})
+	if err != nil {
+		fmt.Println("Could not create mDNS server, shutting down", err)
+		ch <- os.Interrupt
+	}
+	defer mdnsServer.Shutdown()
 
 	<-ch
 	fmt.Println("Received signal, shutting down...")
