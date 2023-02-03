@@ -19,8 +19,9 @@ package main
 import (
 	"context"
 	"crypto/rand"
-	"encoding/base64"
+	"encoding/binary"
 	"fmt"
+	"github.com/golang-jwt/jwt/v4"
 	"github.com/hashicorp/mdns"
 	"github.com/libp2p/go-libp2p"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
@@ -58,6 +59,13 @@ type Register struct {
 	Mrn       string   // the MRN of the Agent
 	Interests []string // the Interests that the Agent wants to subscribe to
 	Dm        bool     // whether the Agent wants to be able to receive direct messages
+}
+
+type Registration struct {
+	Nonce  string `json:"nonce"`
+	X5u    string `json:"x5u"`
+	X5t256 string `json:"x5t#256,omitempty"`
+	jwt.RegisteredClaims
 }
 
 func NewSubscription(interest string, subscriber *Agent) *Subscription {
