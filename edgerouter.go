@@ -19,7 +19,9 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/x509"
 	"encoding/binary"
+	"encoding/pem"
 	"fmt"
 	"github.com/golang-jwt/jwt/v4"
 	"github.com/hashicorp/mdns"
@@ -31,6 +33,7 @@ import (
 	drouting "github.com/libp2p/go-libp2p/p2p/discovery/routing"
 	dutil "github.com/libp2p/go-libp2p/p2p/discovery/util"
 	"github.com/mitchellh/mapstructure"
+	"io"
 	"net/http"
 	"nhooyr.io/websocket"
 	"nhooyr.io/websocket/wsjson"
@@ -103,14 +106,14 @@ func NewEdgeRouter(p2p *host.Host, listeningAddr string) *EdgeRouter {
 				}
 			}(c, websocket.StatusInternalError, "PANIC!!!")
 
-			var v interface{}
-			err = wsjson.Read(request.Context(), c, &v)
+			var buf interface{}
+			err = wsjson.Read(request.Context(), c, &buf)
 			if err != nil {
 				fmt.Println(err)
 				return
 			}
 
-			m, ok := v.(map[string]interface{})
+			m, ok := buf.(map[string]interface{})
 			if !ok {
 				fmt.Println("Could not convert buffer to map")
 				return
@@ -169,6 +172,78 @@ func NewEdgeRouter(p2p *host.Host, listeningAddr string) *EdgeRouter {
 					fmt.Println("Could not send auth message", err)
 					return
 				}
+
+				// Receive authentication message
+				err = wsjson.Read(request.Context(), c, &buf)
+				if err != nil {
+					fmt.Println("Could not receive authentication message", err)
+					return
+				}
+				m, ok := buf.(map[string]string)
+				if !ok {
+					if err = c.Close(websocket.StatusUnsupportedData, "The received message could not be parsed"); err != nil {
+						fmt.Println(err)
+					}
+					return
+				}
+				authn, ok := m["authentication"]
+				if !ok {
+					if err = c.Close(websocket.StatusUnsupportedData, "The received message does not contain an authentication attribute"); err != nil {
+						fmt.Println(err)
+					}
+					return
+				}
+				// parse jwt token
+				token, err := jwt.ParseWithClaims(authn, &Registration{}, func(token *jwt.Token) (interface{}, error) {
+					alg := token.Method.Alg()
+					if (alg != "ES256") && (alg != "ES384") {
+						return nil, fmt.Errorf("token was not signed using an acceptable key")
+					}
+					return "", nil
+				})
+				if err != nil {
+					if err = c.Close(websocket.StatusUnsupportedData, "The received JWT token could not be parsed"); err != nil {
+						fmt.Println(err)
+					}
+					return
+				}
+				claims, ok := token.Claims.(Registration)
+				if !ok {
+					fmt.Println("Could not parse token claims")
+					return
+				}
+				// extract x5u url and GET cert chain from it
+				x5u := claims.X5u
+				httpClient := http.DefaultClient
+				resp, err := httpClient.Get(x5u)
+				if err != nil {
+					fmt.Println("Could not GET certificate chain", err)
+					return
+				}
+				body, err := io.ReadAll(resp.Body)
+				if err != nil {
+					fmt.Println("Did not receive a certificate chain", err)
+					return
+				}
+				certs := make([]*x509.Certificate, 3) // let's assume for now that we don't get a chain longer than 3
+				rest := body
+				for {
+					var block *pem.Block
+					block, rest = pem.Decode(rest)
+					if block == nil {
+						break
+					}
+					cert, err := x509.ParseCertificate(block.Bytes)
+					if err != nil {
+						fmt.Println("Could not parse certificate", err)
+						return
+					}
+					certs = append(certs, cert)
+				}
+				// check revocation status of certs
+				//for i, cert := range certs {
+				//
+				//}
 			}
 			if len(r.Interests) > 0 {
 				mu.Lock()
@@ -262,7 +337,12 @@ func main() {
 		fmt.Println("Could not create mDNS server, shutting down", err)
 		ch <- os.Interrupt
 	}
-	defer mdnsServer.Shutdown()
+	defer func(mdnsServer *mdns.Server) {
+		err := mdnsServer.Shutdown()
+		if err != nil {
+			fmt.Println("Shutting down mDNS server failed", err)
+		}
+	}(mdnsServer)
 
 	<-ch
 	fmt.Println("Received signal, shutting down...")
