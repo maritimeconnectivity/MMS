@@ -331,9 +331,9 @@ func NewEdgeRouter(p2p *host.Host, listeningAddr string) *EdgeRouter {
 							valid = false
 							break
 						}
-						now := time.Now()
+						now := time.Now().UTC()
 						for _, rev := range crl.RevokedCertificates {
-							if (rev.SerialNumber.Cmp(cert.SerialNumber) == 0) && (rev.RevocationTime.Before(now)) {
+							if (rev.SerialNumber.Cmp(cert.SerialNumber) == 0) && (rev.RevocationTime.UTC().Before(now)) {
 								valid = false
 								break
 							}
