@@ -17,6 +17,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/x509"
@@ -33,6 +34,7 @@ import (
 	drouting "github.com/libp2p/go-libp2p/p2p/discovery/routing"
 	dutil "github.com/libp2p/go-libp2p/p2p/discovery/util"
 	"github.com/mitchellh/mapstructure"
+	"golang.org/x/crypto/ocsp"
 	"io"
 	"net/http"
 	"nhooyr.io/websocket"
@@ -41,6 +43,7 @@ import (
 	"os/signal"
 	"strconv"
 	"sync"
+	"time"
 )
 
 // Agent type representing an MMS agent
@@ -197,7 +200,7 @@ func NewEdgeRouter(p2p *host.Host, listeningAddr string) *EdgeRouter {
 				token, err := jwt.ParseWithClaims(authn, &Registration{}, func(token *jwt.Token) (interface{}, error) {
 					alg := token.Method.Alg()
 					if (alg != "ES256") && (alg != "ES384") {
-						return nil, fmt.Errorf("token was not signed using an acceptable key")
+						return nil, fmt.Errorf("token was not signed using an acceptable algorithm, the algorithm used was %s", alg)
 					}
 					return "", nil
 				})
@@ -225,7 +228,12 @@ func NewEdgeRouter(p2p *host.Host, listeningAddr string) *EdgeRouter {
 					fmt.Println("Did not receive a certificate chain", err)
 					return
 				}
-				certs := make([]*x509.Certificate, 3) // let's assume for now that we don't get a chain longer than 3
+				if err = resp.Body.Close(); err != nil {
+					fmt.Println("Could not close response body", err)
+					return
+				}
+
+				var certs []*x509.Certificate
 				rest := body
 				for {
 					var block *pem.Block
@@ -241,9 +249,103 @@ func NewEdgeRouter(p2p *host.Host, listeningAddr string) *EdgeRouter {
 					certs = append(certs, cert)
 				}
 				// check revocation status of certs
-				//for i, cert := range certs {
-				//
-				//}
+				valid := true
+				for i, cert := range certs {
+					var issuer *x509.Certificate
+					if i < len(certs)-1 {
+						issuer = certs[i+1]
+						// certificate is either self-signed or we haven't received the whole chain
+					} else {
+						issuer = cert
+					}
+					if err = cert.CheckSignatureFrom(issuer); err != nil {
+						fmt.Println("Signature on certificate is not valid", err)
+						valid = false
+						break
+					}
+					// OCSP
+					if len(cert.OCSPServer) > 0 {
+						ocspUrl := cert.OCSPServer[0]
+						ocspReq, err := ocsp.CreateRequest(cert, issuer, nil)
+						if err != nil {
+							fmt.Println("Could not create OCSP request", err)
+							return
+						}
+						resp, err := httpClient.Post(ocspUrl, "application/ocsp-request", bytes.NewBuffer(ocspReq))
+						if err != nil {
+							fmt.Println("Could not send OCSP request", err)
+							return
+						}
+						respBytes, err := io.ReadAll(resp.Body)
+						if err != nil {
+							fmt.Println("Getting OCSP response failed")
+							return
+						}
+						if err = resp.Body.Close(); err != nil {
+							fmt.Println("Could not close response body", err)
+							return
+						}
+						ocspResp, err := ocsp.ParseResponseForCert(respBytes, cert, issuer)
+						if err != nil {
+							fmt.Println("Parsing OCSP response failed", err)
+							return
+						}
+						if err = ocspResp.CheckSignatureFrom(issuer); err != nil {
+							fmt.Println("The signature on the OCSP response is not valid", err)
+							valid = false
+							break
+						}
+						if ocspResp.Status != ocsp.Good {
+							fmt.Println("Found certificate that was not valid")
+							valid = false
+						}
+						// CRL
+					} else {
+						// we can neither do OCSP nor CRL so we fail
+						if len(cert.CRLDistributionPoints) < 1 {
+							valid = false
+							break
+						}
+						crlURL := cert.CRLDistributionPoints[0]
+						resp, err := httpClient.Get(crlURL)
+						if err != nil {
+							fmt.Println("Could not send CRL request")
+							return
+						}
+						respBody, err := io.ReadAll(resp.Body)
+						if err != nil {
+							fmt.Println("Getting CRL response body failed", err)
+							return
+						}
+						if err = resp.Body.Close(); err != nil {
+							fmt.Println("Failed to close CRL response body", err)
+							return
+						}
+						crl, err := x509.ParseRevocationList(respBody)
+						if err != nil {
+							fmt.Println("Could not parse received CRL", err)
+							return
+						}
+						if err = crl.CheckSignatureFrom(issuer); err != nil {
+							fmt.Println("Signature on CRL is not valid", err)
+							valid = false
+							break
+						}
+						now := time.Now()
+						for _, rev := range crl.RevokedCertificates {
+							if (rev.SerialNumber.Cmp(cert.SerialNumber) == 0) && (rev.RevocationTime.After(now)) {
+								valid = false
+								break
+							}
+						}
+						if !valid {
+							if err = c.Close(websocket.StatusPolicyViolation, "Authentication failed"); err != nil {
+								fmt.Println(err)
+							}
+							return
+						}
+					}
+				}
 			}
 			if len(r.Interests) > 0 {
 				mu.Lock()
