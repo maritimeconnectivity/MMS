@@ -169,7 +169,8 @@ func NewEdgeRouter(p2p *host.Host, listeningAddr string) *EdgeRouter {
 
 				auth := make(map[string]map[string]string)
 				auth["authenticate"] = make(map[string]string)
-				auth["authenticate"]["nonce"] = strconv.FormatUint(nonce, 10)
+				nonceStr := strconv.FormatUint(nonce, 10)
+				auth["authenticate"]["nonce"] = nonceStr
 				// send authenticate message
 				err = wsjson.Write(request.Context(), c, &auth)
 				if err != nil {
@@ -331,6 +332,14 @@ func NewEdgeRouter(p2p *host.Host, listeningAddr string) *EdgeRouter {
 							}
 							return nil, fmt.Errorf("certificate chain could not be verified")
 						}
+					}
+
+					if claims.Nonce != nonceStr {
+						return nil, fmt.Errorf("the nonce in the token does not match the one we generated")
+					}
+
+					if (claims.Subject != "") && (claims.Subject != a.Mrn) {
+						return nil, fmt.Errorf("the value of the 'sub' claim does not match the MRN of from the register message: was %s, expected %s", a.Mrn, claims.Subject)
 					}
 
 					return certs[0].PublicKey.(*ecdsa.PublicKey), nil
