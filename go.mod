@@ -1,6 +1,6 @@
 module maritimeconnectivity.net/mms-router
 
-go 1.19
+go 1.20
 
 require (
 	github.com/golang-jwt/jwt/v4 v4.4.3
@@ -9,6 +9,7 @@ require (
 	github.com/libp2p/go-libp2p-kad-dht v0.20.0
 	github.com/libp2p/go-libp2p-pubsub v0.8.2
 	github.com/mitchellh/mapstructure v1.5.0
+	golang.org/x/crypto v0.3.0
 	nhooyr.io/websocket v1.8.7
 )
 
@@ -105,7 +106,6 @@ require (
 	go.uber.org/fx v1.18.2 // indirect
 	go.uber.org/multierr v1.8.0 // indirect
 	go.uber.org/zap v1.24.0 // indirect
-	golang.org/x/crypto v0.3.0 // indirect
 	golang.org/x/exp v0.0.0-20221205204356-47842c84f3db // indirect
 	golang.org/x/mod v0.7.0 // indirect
 	golang.org/x/net v0.3.0 // indirect
