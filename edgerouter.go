@@ -440,7 +440,7 @@ func main() {
 		ch <- os.Interrupt
 	}
 	info := []string{"MMS Edge Router"}
-	mdnsService, err := mdns.NewMDNSService(hst, "_mms-edgerouter_tcp", "", "", 8080, nil, info)
+	mdnsService, err := mdns.NewMDNSService(hst, "_mms-edgerouter._tcp", "", "", 8080, nil, info)
 	if err != nil {
 		fmt.Println("Could not create mDNS service, shutting down", err)
 		ch <- os.Interrupt
