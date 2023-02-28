@@ -53,7 +53,7 @@ func main() {
 		panic(err)
 	}
 
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
 
 	// print the node's listening addresses
 	fmt.Println("Listen addresses:", node.Addrs())
@@ -84,6 +84,7 @@ func main() {
 	signal.Notify(ch, os.Interrupt)
 	<-ch
 	fmt.Println("Received signal, shutting down...")
+	cancel()
 
 	// shut the node down
 	if err := node.Close(); err != nil {
