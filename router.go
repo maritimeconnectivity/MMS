@@ -17,13 +17,10 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"github.com/libp2p/go-libp2p"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
-	"github.com/libp2p/go-libp2p-pubsub"
-	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
 	peerstore "github.com/libp2p/go-libp2p/core/peer"
 	drouting "github.com/libp2p/go-libp2p/p2p/discovery/routing"
@@ -45,16 +42,6 @@ func main() {
 
 	// print the node's listening addresses
 	fmt.Println("Listen addresses:", node.Addrs())
-
-	ps, err := pubsub.NewGossipSub(ctx, node)
-	if err != nil {
-		panic(err)
-	}
-
-	topic, err := ps.Join("horse")
-	if err != nil {
-		panic(err)
-	}
 
 	relay, err := peer.AddrInfoFromString("/ip4/127.0.0.1/udp/27000/quic-v1/p2p/QmcUKyMuepvXqZhpMSBP59KKBymRNstk41qGMPj38QStfx")
 	if err != nil {
@@ -125,14 +112,6 @@ func main() {
 	}
 	fmt.Println("Peer discovery complete")
 
-	go sendFromConsole(ctx, topic)
-
-	sub, err := topic.Subscribe()
-	if err != nil {
-		panic(err)
-	}
-	go readFromSubscription(ctx, sub, &node)
-
 	// wait for a SIGINT or SIGTERM signal
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, os.Interrupt)
@@ -142,30 +121,5 @@ func main() {
 	// shut the node down
 	if err := node.Close(); err != nil {
 		panic(err)
-	}
-}
-
-func sendFromConsole(ctx context.Context, topic *pubsub.Topic) {
-	reader := bufio.NewReader(os.Stdin)
-	for {
-		s, err := reader.ReadString('\n')
-		if err != nil {
-			fmt.Println(err)
-		}
-		if err := topic.Publish(ctx, []byte(s)); err != nil {
-			fmt.Println("Publish error: ", err)
-		}
-	}
-}
-
-func readFromSubscription(ctx context.Context, sub *pubsub.Subscription, host *host.Host) {
-	for {
-		m, err := sub.Next(ctx)
-		if err != nil {
-			fmt.Println(err)
-		}
-		if m.ReceivedFrom != (*host).ID() { // we don't want to show messages from ourselves
-			fmt.Println(m.ReceivedFrom, ": ", string(m.Message.Data))
-		}
 	}
 }
