@@ -23,6 +23,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/binary"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"github.com/golang-jwt/jwt/v4"
@@ -55,12 +56,6 @@ type Agent struct {
 	Ws        *websocket.Conn // the websocket connection to this Agent
 }
 
-// Subscription type representing a subscription
-type Subscription struct {
-	Interest   string // the Interest that the Subscription is based on
-	Subscriber *Agent // the Agent that is the Subscriber
-}
-
 // Register type representing the register protocol message
 type Register struct {
 	Mrn       string   // the MRN of the Agent
@@ -75,24 +70,46 @@ type Authentication struct {
 	jwt.RegisteredClaims
 }
 
-func NewSubscription(interest string, subscriber *Agent) *Subscription {
+type ApplicationMessage struct {
+	Id         string   `json:"id,omitempty"`
+	Subject    string   `json:"subject"`
+	Recipients []string `json:"recipients"`
+	Expires    int64    `json:"expires,omitempty"`
+	Sender     string   `json:"sender,omitempty"`
+	Body       string   `json:"body,omitempty"`
+}
+
+type ProtocolMessage struct {
+	Send ApplicationMessage `json:"send,omitempty"`
+}
+
+// Subscription type representing a subscription
+type Subscription struct {
+	Interest    string        // the Interest that the Subscription is based on
+	Subscribers []*Agent      // the Agents that subscribe
+	Topic       *pubsub.Topic // The Topic for the subscription
+}
+
+func NewSubscription(interest string) *Subscription {
 	return &Subscription{
-		Interest:   interest,
-		Subscriber: subscriber,
+		Interest:    interest,
+		Subscribers: make([]*Agent, 1),
 	}
 }
 
 // EdgeRouter type representing an MMS edge router
 type EdgeRouter struct {
-	subscriptions map[string][]*Subscription // a mapping from Interest names to Subscription slices
-	subMu         *sync.RWMutex              // a Mutex for locking the subscriptions map
-	httpServer    *http.Server               // the http server that is used to bootstrap websocket connections
-	p2pHost       *host.Host                 // the libp2p host that is used to connect to the MMS router network
-	agents        map[string]*Agent          // a mapping that keeps track of agents connected to this EdgeRouter
+	subscriptions map[string]*Subscription // a mapping from Interest names to Subscription slices
+	subMu         *sync.RWMutex            // a Mutex for locking the subscriptions map
+	httpServer    *http.Server             // the http server that is used to bootstrap websocket connections
+	p2pHost       *host.Host               // the libp2p host that is used to connect to the MMS router network
+	pubSub        *pubsub.PubSub           // a PubSub instance for the EdgeRouter
+	agents        map[string]*Agent        // a mapping that keeps track of agents connected to this EdgeRouter
+	ctx           context.Context          // the main Context of the EdgeRouter
 }
 
-func NewEdgeRouter(p2p *host.Host, listeningAddr string) *EdgeRouter {
-	subs := make(map[string][]*Subscription)
+func NewEdgeRouter(p2p *host.Host, pubSub *pubsub.PubSub, listeningAddr string, ctx context.Context) *EdgeRouter {
+	subs := make(map[string]*Subscription)
 	mu := &sync.RWMutex{}
 	agents := make(map[string]*Agent)
 	httpServer := http.Server{
@@ -201,7 +218,7 @@ func NewEdgeRouter(p2p *host.Host, listeningAddr string) *EdgeRouter {
 				// parse jwt token
 				token, err := jwt.ParseWithClaims(authn.(string), &Authentication{}, func(token *jwt.Token) (interface{}, error) {
 					alg := token.Method.Alg()
-					if (alg != "ES256") && (alg != "ES384") {
+					if !(alg == "ES256" || alg == "ES384") {
 						return nil, fmt.Errorf("token was not signed using an acceptable algorithm, the algorithm used was %s", alg)
 					}
 
@@ -276,7 +293,7 @@ func NewEdgeRouter(p2p *host.Host, listeningAddr string) *EdgeRouter {
 								return nil, fmt.Errorf("parsing OCSP response failed: %w", err)
 							}
 							if ocspResp.SerialNumber.Cmp(cert.SerialNumber) != 0 {
-								fmt.Println("The serial number in the OCSP response does not correspond to the certificate being checked")
+								fmt.Println("The serial number in the OCSP response does not correspond to the one of the certificate being checked")
 								valid = false
 								break
 							}
@@ -286,7 +303,7 @@ func NewEdgeRouter(p2p *host.Host, listeningAddr string) *EdgeRouter {
 								break
 							}
 							if ocspResp.Status != ocsp.Good {
-								fmt.Println("Found certificate that was not valid")
+								fmt.Println("Found a certificate that was not valid")
 								valid = false
 								break
 							}
@@ -360,10 +377,35 @@ func NewEdgeRouter(p2p *host.Host, listeningAddr string) *EdgeRouter {
 			}
 			if len(r.Interests) > 0 {
 				mu.Lock()
-				for _, value := range r.Interests {
-					subs[value] = append(subs[value], NewSubscription(value, a))
+				for _, interest := range r.Interests {
+					s, exists := subs[interest]
+					if !exists {
+						sub := NewSubscription(interest)
+						topic, err := pubSub.Join(interest)
+						if err != nil {
+							panic(err)
+						}
+						sub.Subscribers = append(sub.Subscribers, a)
+						sub.Topic = topic
+						subscription, err := topic.Subscribe()
+						if err != nil {
+							panic(err)
+						}
+						go handleSubscription(ctx, subscription, p2p)
+						subs[interest] = sub
+					} else {
+						s.Subscribers = append(s.Subscribers, a)
+					}
 				}
 				mu.Unlock()
+			}
+
+			for {
+				err = wsjson.Read(request.Context(), c, &buf)
+				if err != nil {
+					fmt.Println("Could not read message from agent:", err)
+					continue
+				}
 			}
 		}),
 		//TLSConfig: &tls.Config{
@@ -377,7 +419,9 @@ func NewEdgeRouter(p2p *host.Host, listeningAddr string) *EdgeRouter {
 		subMu:         mu,
 		httpServer:    &httpServer,
 		p2pHost:       p2p,
+		pubSub:        pubSub,
 		agents:        agents,
+		ctx:           ctx,
 	}
 }
 
@@ -401,10 +445,16 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+	defer func() {
+		// shut the node down
+		if err := h.Close(); err != nil {
+			fmt.Println("Could not close p2p host")
+		}
+	}()
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	_, err = pubsub.NewGossipSub(ctx, h)
+	pubSub, err := pubsub.NewGossipSub(ctx, h)
 	if err != nil {
 		panic(err)
 	}
@@ -430,8 +480,13 @@ func main() {
 	// wait for a SIGINT or SIGTERM signal
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, os.Interrupt)
+	go func() {
+		<-ch
+		fmt.Println("Received signal, shutting down...")
+		cancel()
+	}()
 
-	er := NewEdgeRouter(&h, "0.0.0.0:8080")
+	er := NewEdgeRouter(&h, pubSub, "0.0.0.0:8080", ctx)
 	go er.StartEdgeRouter(ctx)
 
 	hst, err := os.Hostname()
@@ -456,13 +511,32 @@ func main() {
 			fmt.Println("Shutting down mDNS server failed", err)
 		}
 	}(mdnsServer)
+}
 
-	<-ch
-	fmt.Println("Received signal, shutting down...")
-	cancel()
-
-	// shut the node down
-	if err := h.Close(); err != nil {
-		panic(err)
+func handleSubscription(ctx context.Context, sub *pubsub.Subscription, host *host.Host) {
+	for {
+		select {
+		case <-ctx.Done():
+			sub.Cancel()
+			return
+		default:
+			m, err := sub.Next(ctx)
+			if err != nil {
+				fmt.Println("Could not get message from subscription:", err)
+				continue
+			}
+			if m.GetFrom() != (*host).ID() {
+				var protoMessage ProtocolMessage
+				if err = json.Unmarshal(m.Data, &protoMessage); err != nil {
+					fmt.Println("Could not unmarshal received message as an protocol message:", err)
+					continue
+				}
+				sendMessage := &protoMessage.Send
+				if sendMessage == nil {
+					fmt.Println("Received protocol message did not contain a send application message")
+					continue
+				}
+			}
+		}
 	}
 }
