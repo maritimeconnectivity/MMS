@@ -3,6 +3,7 @@ module maritimeconnectivity.net/mms-router
 go 1.19
 
 require (
+	github.com/edwingeng/deque/v2 v2.1.1
 	github.com/golang-jwt/jwt/v4 v4.5.0
 	github.com/hashicorp/mdns v1.0.5
 	github.com/libp2p/go-libp2p v0.26.0

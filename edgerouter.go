@@ -26,7 +26,9 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"github.com/edwingeng/deque/v2"
 	"github.com/golang-jwt/jwt/v4"
+	"github.com/google/uuid"
 	"github.com/hashicorp/mdns"
 	"github.com/libp2p/go-libp2p"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
@@ -50,10 +52,14 @@ import (
 
 // Agent type representing an MMS agent
 type Agent struct {
-	Mrn       string          // the MRN of the Agent
-	Interests []string        // the Interests that the Agent wants to subscribe to
-	Dm        bool            // whether the Agent wants to be able to receive direct messages
-	Ws        *websocket.Conn // the websocket connection to this Agent
+	Mrn         string                                   // the MRN of the Agent
+	Interests   []string                                 // the Interests that the Agent wants to subscribe to
+	Dm          bool                                     // whether the Agent wants to be able to receive direct messages
+	Ws          *websocket.Conn                          // the websocket connection to this Agent
+	dms         *deque.Deque[ProtocolMessage]            // a Deque for holding dms for the Agent
+	dmMu        *sync.Mutex                              // Mutex for locking dms Deque while reading and writing
+	subMessages map[string]*deque.Deque[ProtocolMessage] // a mapping from interest name to a Deque of incoming messages
+	subMu       *sync.Mutex                              // Mutex for locking subMessages
 }
 
 // Register type representing the register protocol message
@@ -74,13 +80,13 @@ type ApplicationMessage struct {
 	Id         string   `json:"id,omitempty"`
 	Subject    string   `json:"subject"`
 	Recipients []string `json:"recipients"`
-	Expires    int64    `json:"expires,omitempty"`
+	Expires    uint64   `json:"expires,omitempty"`
 	Sender     string   `json:"sender,omitempty"`
 	Body       string   `json:"body,omitempty"`
 }
 
 type ProtocolMessage struct {
-	Send ApplicationMessage `json:"send,omitempty"`
+	Send *ApplicationMessage `json:"send,omitempty"`
 }
 
 // Subscription type representing a subscription
@@ -168,13 +174,17 @@ func NewEdgeRouter(p2p *host.Host, pubSub *pubsub.PubSub, listeningAddr string, 
 				return
 			}
 			fmt.Println(r)
+
 			a := &Agent{
 				Mrn:       r.Mrn,
 				Interests: r.Interests,
 				Dm:        r.Dm,
 				Ws:        c,
+				dms:       deque.NewDeque[ProtocolMessage](),
+				dmMu:      &sync.Mutex{},
 			}
 			agents[a.Mrn] = a
+
 			if r.Dm {
 				b := make([]byte, 8)
 				_, err = rand.Read(b)
@@ -391,7 +401,7 @@ func NewEdgeRouter(p2p *host.Host, pubSub *pubsub.PubSub, listeningAddr string, 
 						if err != nil {
 							panic(err)
 						}
-						go handleSubscription(ctx, subscription, p2p)
+						go handleSubscription(ctx, interest, subscription, p2p, sub.Subscribers)
 						subs[interest] = sub
 					} else {
 						s.Subscribers = append(s.Subscribers, a)
@@ -513,7 +523,7 @@ func main() {
 	}(mdnsServer)
 }
 
-func handleSubscription(ctx context.Context, sub *pubsub.Subscription, host *host.Host) {
+func handleSubscription(ctx context.Context, subName string, sub *pubsub.Subscription, host *host.Host, subscribers []*Agent) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -531,10 +541,33 @@ func handleSubscription(ctx context.Context, sub *pubsub.Subscription, host *hos
 					fmt.Println("Could not unmarshal received message as an protocol message:", err)
 					continue
 				}
-				sendMessage := &protoMessage.Send
+				sendMessage := protoMessage.Send
 				if sendMessage == nil {
-					fmt.Println("Received protocol message did not contain a send application message")
+					fmt.Println("The received protocol message did not contain a send application message")
 					continue
+				}
+				uid, err := uuid.Parse(sendMessage.Id)
+				if err != nil {
+					fmt.Println("The ID of the message is not a valid UUID:", err)
+					continue
+				}
+				if uid.Version() != 4 {
+					fmt.Println("The ID of the message is not a valid version 4 UUID")
+					continue
+				}
+				if sendMessage.Subject != subName {
+					fmt.Println("The subject of the message does not match the name of the subscription")
+					continue
+				}
+				for _, subscriber := range subscribers {
+					subscriber.subMu.Lock()
+					subDeque, exists := subscriber.subMessages[subName]
+					if !exists {
+						subscriber.subMessages[subName] = deque.NewDeque[ProtocolMessage]()
+						subDeque = subscriber.subMessages[subName]
+					}
+					subDeque.Enqueue(ProtocolMessage{Send: sendMessage})
+					subscriber.subMu.Unlock()
 				}
 			}
 		}
