@@ -91,16 +91,30 @@ type ProtocolMessage struct {
 
 // Subscription type representing a subscription
 type Subscription struct {
-	Interest    string        // the Interest that the Subscription is based on
-	Subscribers []*Agent      // the Agents that subscribe
-	Topic       *pubsub.Topic // The Topic for the subscription
+	Interest    string            // the Interest that the Subscription is based on
+	Subscribers map[string]*Agent // the Agents that subscribe
+	Topic       *pubsub.Topic     // The Topic for the subscription
+	subsMu      *sync.RWMutex     // RWMutex for locking the Subscribers map
 }
 
 func NewSubscription(interest string) *Subscription {
 	return &Subscription{
 		Interest:    interest,
-		Subscribers: make([]*Agent, 1),
+		Subscribers: make(map[string]*Agent),
+		subsMu:      &sync.RWMutex{},
 	}
+}
+
+func (sub *Subscription) AddSubscriber(agent *Agent) {
+	sub.subsMu.Lock()
+	sub.Subscribers[agent.Mrn] = agent
+	sub.subsMu.Unlock()
+}
+
+func (sub *Subscription) DeleteSubscriber(agent *Agent) {
+	sub.subsMu.Lock()
+	delete(sub.Subscribers, agent.Mrn)
+	sub.subsMu.Unlock()
 }
 
 // EdgeRouter type representing an MMS edge router
@@ -110,14 +124,12 @@ type EdgeRouter struct {
 	httpServer    *http.Server             // the http server that is used to bootstrap websocket connections
 	p2pHost       *host.Host               // the libp2p host that is used to connect to the MMS router network
 	pubSub        *pubsub.PubSub           // a PubSub instance for the EdgeRouter
-	agents        map[string]*Agent        // a mapping that keeps track of agents connected to this EdgeRouter
 	ctx           context.Context          // the main Context of the EdgeRouter
 }
 
 func NewEdgeRouter(p2p *host.Host, pubSub *pubsub.PubSub, listeningAddr string, ctx context.Context) *EdgeRouter {
 	subs := make(map[string]*Subscription)
 	mu := &sync.RWMutex{}
-	agents := make(map[string]*Agent)
 	httpServer := http.Server{
 		Addr: listeningAddr,
 		Handler: http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -183,7 +195,6 @@ func NewEdgeRouter(p2p *host.Host, pubSub *pubsub.PubSub, listeningAddr string, 
 				dms:       deque.NewDeque[ProtocolMessage](),
 				dmMu:      &sync.Mutex{},
 			}
-			agents[a.Mrn] = a
 
 			if r.Dm {
 				b := make([]byte, 8)
@@ -353,12 +364,13 @@ func NewEdgeRouter(p2p *host.Host, pubSub *pubsub.PubSub, listeningAddr string, 
 								}
 							}
 						}
-						if !valid {
-							if err = c.Close(websocket.StatusPolicyViolation, "Authentication failed"); err != nil {
-								fmt.Println(err)
-							}
-							return nil, fmt.Errorf("certificate chain could not be verified")
+					}
+
+					if !valid {
+						if err = c.Close(websocket.StatusPolicyViolation, "Authentication failed"); err != nil {
+							fmt.Println(err)
 						}
+						return nil, fmt.Errorf("certificate chain could not be verified")
 					}
 
 					if claims.Nonce != nonceStr {
@@ -378,6 +390,7 @@ func NewEdgeRouter(p2p *host.Host, pubSub *pubsub.PubSub, listeningAddr string, 
 					}
 					return
 				}
+
 				if !token.Valid {
 					if err = c.Close(websocket.StatusUnsupportedData, "The received JWT token is not valid"); err != nil {
 						fmt.Println(err)
@@ -385,6 +398,7 @@ func NewEdgeRouter(p2p *host.Host, pubSub *pubsub.PubSub, listeningAddr string, 
 					return
 				}
 			}
+
 			if len(r.Interests) > 0 {
 				mu.Lock()
 				for _, interest := range r.Interests {
@@ -395,26 +409,32 @@ func NewEdgeRouter(p2p *host.Host, pubSub *pubsub.PubSub, listeningAddr string, 
 						if err != nil {
 							panic(err)
 						}
-						sub.Subscribers = append(sub.Subscribers, a)
+						sub.AddSubscriber(a)
 						sub.Topic = topic
 						subscription, err := topic.Subscribe()
 						if err != nil {
 							panic(err)
 						}
-						go handleSubscription(ctx, interest, subscription, p2p, sub.Subscribers)
+						go handleSubscription(ctx, subscription, p2p, sub)
 						subs[interest] = sub
 					} else {
-						s.Subscribers = append(s.Subscribers, a)
+						s.AddSubscriber(a)
 					}
 				}
 				mu.Unlock()
+				// Make sure to delete agent after it disconnects
+				defer func() {
+					for _, interest := range a.Interests {
+						subs[interest].DeleteSubscriber(a)
+					}
+				}()
 			}
 
 			for {
 				err = wsjson.Read(request.Context(), c, &buf)
 				if err != nil {
 					fmt.Println("Could not read message from agent:", err)
-					continue
+					break
 				}
 			}
 		}),
@@ -430,7 +450,6 @@ func NewEdgeRouter(p2p *host.Host, pubSub *pubsub.PubSub, listeningAddr string, 
 		httpServer:    &httpServer,
 		p2pHost:       p2p,
 		pubSub:        pubSub,
-		agents:        agents,
 		ctx:           ctx,
 	}
 }
@@ -447,6 +466,60 @@ func (er *EdgeRouter) StartEdgeRouter(ctx context.Context) {
 	fmt.Println("subscriptions:", er.subscriptions)
 	if err := er.httpServer.Shutdown(ctx); err != nil {
 		panic(err)
+	}
+}
+
+func handleSubscription(ctx context.Context, sub *pubsub.Subscription, host *host.Host, subscription *Subscription) {
+	for {
+		select {
+		case <-ctx.Done():
+			sub.Cancel()
+			return
+		default:
+			m, err := sub.Next(ctx)
+			if err != nil {
+				fmt.Println("Could not get message from subscription:", err)
+				continue
+			}
+			if m.GetFrom() != (*host).ID() {
+				var protoMessage ProtocolMessage
+				if err = json.Unmarshal(m.Data, &protoMessage); err != nil {
+					fmt.Println("Could not unmarshal received message as an protocol message:", err)
+					continue
+				}
+				sendMessage := protoMessage.Send
+				if sendMessage == nil {
+					fmt.Println("The received protocol message did not contain a send application message")
+					continue
+				}
+				uid, err := uuid.Parse(sendMessage.Id)
+				if err != nil {
+					fmt.Println("The ID of the message is not a valid UUID:", err)
+					continue
+				}
+				if uid.Version() != 4 {
+					fmt.Println("The ID of the message is not a valid version 4 UUID")
+					continue
+				}
+				subName := subscription.Interest
+				if sendMessage.Subject != subName {
+					fmt.Println("The subject of the message does not match the name of the subscription")
+					continue
+				}
+				subscription.subsMu.RLock()
+				for _, subscriber := range subscription.Subscribers {
+					subscriber.subMu.Lock()
+					subDeque, exists := subscriber.subMessages[subName]
+					if !exists {
+						subscriber.subMessages[subName] = deque.NewDeque[ProtocolMessage]()
+						subDeque = subscriber.subMessages[subName]
+					}
+					subDeque.Enqueue(ProtocolMessage{Send: sendMessage})
+					subscriber.subMu.Unlock()
+				}
+				subscription.subsMu.RUnlock()
+			}
+		}
 	}
 }
 
@@ -490,11 +563,6 @@ func main() {
 	// wait for a SIGINT or SIGTERM signal
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, os.Interrupt)
-	go func() {
-		<-ch
-		fmt.Println("Received signal, shutting down...")
-		cancel()
-	}()
 
 	er := NewEdgeRouter(&h, pubSub, "0.0.0.0:8080", ctx)
 	go er.StartEdgeRouter(ctx)
@@ -521,55 +589,8 @@ func main() {
 			fmt.Println("Shutting down mDNS server failed", err)
 		}
 	}(mdnsServer)
-}
 
-func handleSubscription(ctx context.Context, subName string, sub *pubsub.Subscription, host *host.Host, subscribers []*Agent) {
-	for {
-		select {
-		case <-ctx.Done():
-			sub.Cancel()
-			return
-		default:
-			m, err := sub.Next(ctx)
-			if err != nil {
-				fmt.Println("Could not get message from subscription:", err)
-				continue
-			}
-			if m.GetFrom() != (*host).ID() {
-				var protoMessage ProtocolMessage
-				if err = json.Unmarshal(m.Data, &protoMessage); err != nil {
-					fmt.Println("Could not unmarshal received message as an protocol message:", err)
-					continue
-				}
-				sendMessage := protoMessage.Send
-				if sendMessage == nil {
-					fmt.Println("The received protocol message did not contain a send application message")
-					continue
-				}
-				uid, err := uuid.Parse(sendMessage.Id)
-				if err != nil {
-					fmt.Println("The ID of the message is not a valid UUID:", err)
-					continue
-				}
-				if uid.Version() != 4 {
-					fmt.Println("The ID of the message is not a valid version 4 UUID")
-					continue
-				}
-				if sendMessage.Subject != subName {
-					fmt.Println("The subject of the message does not match the name of the subscription")
-					continue
-				}
-				for _, subscriber := range subscribers {
-					subscriber.subMu.Lock()
-					subDeque, exists := subscriber.subMessages[subName]
-					if !exists {
-						subscriber.subMessages[subName] = deque.NewDeque[ProtocolMessage]()
-						subDeque = subscriber.subMessages[subName]
-					}
-					subDeque.Enqueue(ProtocolMessage{Send: sendMessage})
-					subscriber.subMu.Unlock()
-				}
-			}
-		}
-	}
+	<-ch
+	fmt.Println("Received signal, shutting down...")
+	cancel()
 }
