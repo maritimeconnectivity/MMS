@@ -26,7 +26,6 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
-	"github.com/edwingeng/deque/v2"
 	"github.com/golang-jwt/jwt/v4"
 	"github.com/google/uuid"
 	"github.com/hashicorp/mdns"
@@ -38,6 +37,7 @@ import (
 	drouting "github.com/libp2p/go-libp2p/p2p/discovery/routing"
 	dutil "github.com/libp2p/go-libp2p/p2p/discovery/util"
 	"github.com/mitchellh/mapstructure"
+	amqp "github.com/rabbitmq/amqp091-go"
 	"golang.org/x/crypto/ocsp"
 	"io"
 	"net/http"
@@ -52,14 +52,10 @@ import (
 
 // Agent type representing an MMS agent
 type Agent struct {
-	Mrn         string                                   // the MRN of the Agent
-	Interests   []string                                 // the Interests that the Agent wants to subscribe to
-	Dm          bool                                     // whether the Agent wants to be able to receive direct messages
-	Ws          *websocket.Conn                          // the websocket connection to this Agent
-	dms         *deque.Deque[ProtocolMessage]            // a Deque for holding dms for the Agent
-	dmMu        *sync.Mutex                              // Mutex for locking dms Deque while reading and writing
-	subMessages map[string]*deque.Deque[ProtocolMessage] // a mapping from interest name to a Deque of incoming messages
-	subMu       *sync.Mutex                              // Mutex for locking subMessages
+	Mrn       string          // the MRN of the Agent
+	Interests []string        // the Interests that the Agent wants to subscribe to
+	Dm        bool            // whether the Agent wants to be able to receive direct messages
+	Ws        *websocket.Conn // the websocket connection to this Agent
 }
 
 // Register type representing the register protocol message
@@ -124,10 +120,11 @@ type EdgeRouter struct {
 	httpServer    *http.Server             // the http server that is used to bootstrap websocket connections
 	p2pHost       *host.Host               // the libp2p host that is used to connect to the MMS router network
 	pubSub        *pubsub.PubSub           // a PubSub instance for the EdgeRouter
+	rmqConnection *amqp.Connection         // the connection to the RabbitMQ message broker
 	ctx           context.Context          // the main Context of the EdgeRouter
 }
 
-func NewEdgeRouter(p2p *host.Host, pubSub *pubsub.PubSub, listeningAddr string, ctx context.Context) *EdgeRouter {
+func NewEdgeRouter(p2p *host.Host, pubSub *pubsub.PubSub, listeningAddr string, rmqConnection *amqp.Connection, ctx context.Context) *EdgeRouter {
 	subs := make(map[string]*Subscription)
 	mu := &sync.RWMutex{}
 	httpServer := http.Server{
@@ -192,8 +189,25 @@ func NewEdgeRouter(p2p *host.Host, pubSub *pubsub.PubSub, listeningAddr string, 
 				Interests: r.Interests,
 				Dm:        r.Dm,
 				Ws:        c,
-				dms:       deque.NewDeque[ProtocolMessage](),
-				dmMu:      &sync.Mutex{},
+			}
+
+			ch, err := rmqConnection.Channel()
+			if err != nil {
+				fmt.Println("Could not make a channel to RabbitMQ for agent", err)
+				return
+			}
+
+			q, err := ch.QueueDeclare(
+				a.Mrn,
+				true,
+				false,
+				true,
+				false,
+				nil,
+			)
+			if err != nil {
+				fmt.Println("Could not declare a queue for agent", err)
+				return
 			}
 
 			if r.Dm {
@@ -397,6 +411,18 @@ func NewEdgeRouter(p2p *host.Host, pubSub *pubsub.PubSub, listeningAddr string, 
 					}
 					return
 				}
+
+				err = ch.QueueBind(
+					q.Name,
+					a.Mrn,
+					"direct_messages",
+					false,
+					nil,
+				)
+				if err != nil {
+					fmt.Println("Could not bind direct messages to agent queue:", err)
+					return
+				}
 			}
 
 			if len(r.Interests) > 0 {
@@ -415,10 +441,20 @@ func NewEdgeRouter(p2p *host.Host, pubSub *pubsub.PubSub, listeningAddr string, 
 						if err != nil {
 							panic(err)
 						}
-						go handleSubscription(ctx, subscription, p2p, sub)
+						go handleSubscription(ctx, subscription, p2p, sub, rmqConnection)
 						subs[interest] = sub
 					} else {
 						s.AddSubscriber(a)
+					}
+					err = ch.QueueBind(
+						q.Name,
+						interest,
+						"subscriptions",
+						false,
+						nil,
+					)
+					if err != nil {
+						fmt.Println("Could not subscribe agent to topic:", err)
 					}
 				}
 				mu.Unlock()
@@ -450,11 +486,41 @@ func NewEdgeRouter(p2p *host.Host, pubSub *pubsub.PubSub, listeningAddr string, 
 		httpServer:    &httpServer,
 		p2pHost:       p2p,
 		pubSub:        pubSub,
+		rmqConnection: rmqConnection,
 		ctx:           ctx,
 	}
 }
 
 func (er *EdgeRouter) StartEdgeRouter(ctx context.Context) {
+	rmqChannel, err := er.rmqConnection.Channel()
+	if err != nil {
+		panic(err)
+	}
+	defer rmqChannel.Close()
+	err = rmqChannel.ExchangeDeclare(
+		"subscriptions",
+		"direct",
+		true,  // durable
+		false, // auto-deleted
+		false, // internal
+		false, // no-wait
+		nil,   // arguments
+	)
+	if err != nil {
+		panic(err)
+	}
+	err = rmqChannel.ExchangeDeclare(
+		"direct_messages",
+		"direct",
+		true,  // durable
+		false, // auto-deleted
+		false, // internal
+		false, // no-wait
+		nil,   // arguments
+	)
+	if err != nil {
+		panic(err)
+	}
 	go func() {
 		fmt.Println("Starting edge router")
 		if err := er.httpServer.ListenAndServe(); err != nil {
@@ -469,12 +535,17 @@ func (er *EdgeRouter) StartEdgeRouter(ctx context.Context) {
 	}
 }
 
-func handleSubscription(ctx context.Context, sub *pubsub.Subscription, host *host.Host, subscription *Subscription) {
+func handleSubscription(ctx context.Context, sub *pubsub.Subscription, host *host.Host, subscription *Subscription, rmqConnection *amqp.Connection) {
+	ch, err := rmqConnection.Channel()
+	if err != nil {
+		panic(err)
+	}
+	defer ch.Close()
 	for {
 		select {
 		case <-ctx.Done():
 			sub.Cancel()
-			return
+			break
 		default:
 			m, err := sub.Next(ctx)
 			if err != nil {
@@ -506,18 +577,20 @@ func handleSubscription(ctx context.Context, sub *pubsub.Subscription, host *hos
 					fmt.Println("The subject of the message does not match the name of the subscription")
 					continue
 				}
-				subscription.subsMu.RLock()
-				for _, subscriber := range subscription.Subscribers {
-					subscriber.subMu.Lock()
-					subDeque, exists := subscriber.subMessages[subName]
-					if !exists {
-						subscriber.subMessages[subName] = deque.NewDeque[ProtocolMessage]()
-						subDeque = subscriber.subMessages[subName]
-					}
-					subDeque.Enqueue(ProtocolMessage{Send: sendMessage})
-					subscriber.subMu.Unlock()
+				err = ch.PublishWithContext(
+					ctx,
+					"subscriptions",
+					subName,
+					false,
+					false,
+					amqp.Publishing{
+						ContentType: "application/json",
+						Body:        m.Data,
+					},
+				)
+				if err != nil {
+					fmt.Println("Could not publish subscription message", err)
 				}
-				subscription.subsMu.RUnlock()
 			}
 		}
 	}
@@ -560,11 +633,17 @@ func main() {
 		panic(err)
 	}
 
+	rmq, err := amqp.Dial("amqp://guest:guest@localhost:5672/")
+	if err != nil {
+		panic(err)
+	}
+	defer rmq.Close()
+
 	// wait for a SIGINT or SIGTERM signal
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, os.Interrupt)
 
-	er := NewEdgeRouter(&h, pubSub, "0.0.0.0:8080", ctx)
+	er := NewEdgeRouter(&h, pubSub, "0.0.0.0:8080", rmq, ctx)
 	go er.StartEdgeRouter(ctx)
 
 	hst, err := os.Hostname()
