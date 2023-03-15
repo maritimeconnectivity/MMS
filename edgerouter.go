@@ -123,12 +123,12 @@ func NewEdgeRouter(p2p *host.Host, pubSub *pubsub.PubSub, listeningAddr string, 
 	subs := make(map[string]*Subscription)
 	mu := &sync.RWMutex{}
 	httpServer := http.Server{
-		Addr: listeningAddr,
+		Addr:    listeningAddr,
 		Handler: handleHttpConnection(p2p, pubSub, rmqConnection, mu, subs, ctx),
 		TLSConfig: &tls.Config{
-			ClientAuth: tls.VerifyClientCertIfGiven,
-			ClientCAs:  nil,
-			MinVersion: tls.VersionTLS13,
+			ClientAuth:            tls.VerifyClientCertIfGiven,
+			ClientCAs:             nil,
+			MinVersion:            tls.VersionTLS13,
 			VerifyPeerCertificate: verifyAgentCertificate(),
 		},
 	}
@@ -149,12 +149,7 @@ func (er *EdgeRouter) StartEdgeRouter(ctx context.Context) {
 	if err != nil {
 		panic(err)
 	}
-	defer func(rmqChannel *amqp.Channel) {
-		err := rmqChannel.Close()
-		if err != amqp.ErrClosed {
-			fmt.Println("Connection to RabbitMQ could not be properly closed")
-		}
-	}(rmqChannel)
+	rmqChannel.Close()
 	err = rmqChannel.ExchangeDeclare(
 		"subscriptions",
 		"direct",
