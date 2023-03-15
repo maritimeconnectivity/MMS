@@ -124,226 +124,12 @@ func NewEdgeRouter(p2p *host.Host, pubSub *pubsub.PubSub, listeningAddr string, 
 	mu := &sync.RWMutex{}
 	httpServer := http.Server{
 		Addr: listeningAddr,
-		Handler: http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-			c, err := websocket.Accept(writer, request, nil)
-			if err != nil {
-				fmt.Println(err)
-				return
-			}
-			defer func(c *websocket.Conn, code websocket.StatusCode, reason string) {
-				err := c.Close(code, reason)
-				if err != nil {
-					fmt.Println("Could not close connection:", err)
-				}
-			}(c, websocket.StatusInternalError, "PANIC!!!")
-
-			var buf interface{}
-			err = wsjson.Read(request.Context(), c, &buf)
-			if err != nil {
-				fmt.Println(err)
-				return
-			}
-
-			m, ok := buf.(map[string]interface{})
-			if !ok {
-				fmt.Println("Could not convert buffer to map")
-				return
-			}
-
-			tmp, ok := m["register"]
-			if !ok {
-				if err = c.Close(websocket.StatusUnsupportedData, "First message needs to contain a 'register' object"); err != nil {
-					fmt.Println(err)
-				}
-				return
-			}
-
-			reg, ok := tmp.(map[string]interface{})
-			if !ok {
-				if err = c.Close(websocket.StatusUnsupportedData, "The received 'register' object could not be parsed"); err != nil {
-					fmt.Println(err)
-				}
-				return
-			}
-			// if dm has not been explicitly set, it implicitly means that it is true
-			_, ok = reg["dm"]
-			if !ok {
-				reg["dm"] = true
-			}
-
-			var r Register
-			err = mapstructure.Decode(&reg, &r)
-			if err != nil {
-				fmt.Println("The received message could not be decoded as a register protocol message", err)
-				return
-			}
-			fmt.Println(r)
-
-			a := &Agent{
-				Mrn:       r.Mrn,
-				Interests: r.Interests,
-				Dm:        r.Dm,
-				Ws:        c,
-			}
-
-			ch, err := rmqConnection.Channel()
-			if err != nil {
-				fmt.Println("Could not make a channel to RabbitMQ for agent", err)
-				return
-			}
-
-			q, err := ch.QueueDeclare(
-				a.Mrn,
-				true,
-				false,
-				true,
-				false,
-				nil,
-			)
-			if err != nil {
-				fmt.Println("Could not declare a queue for agent", err)
-				return
-			}
-
-			if r.Dm && len(request.TLS.VerifiedChains) > 0 {
-				err = ch.QueueBind(
-					q.Name,
-					a.Mrn,
-					"direct_messages",
-					false,
-					nil,
-				)
-				if err != nil {
-					fmt.Println("Could not bind direct messages to agent queue:", err)
-					return
-				}
-			}
-
-			if len(r.Interests) > 0 {
-				mu.Lock()
-				for _, interest := range r.Interests {
-					s, exists := subs[interest]
-					if !exists {
-						sub := NewSubscription(interest)
-						topic, err := pubSub.Join(interest)
-						if err != nil {
-							panic(err)
-						}
-						sub.AddSubscriber(a)
-						sub.Topic = topic
-						subscription, err := topic.Subscribe()
-						if err != nil {
-							panic(err)
-						}
-						go handleSubscription(ctx, subscription, p2p, sub, rmqConnection)
-						subs[interest] = sub
-					} else {
-						s.AddSubscriber(a)
-					}
-					err = ch.QueueBind(
-						q.Name,
-						interest,
-						"subscriptions",
-						false,
-						nil,
-					)
-					if err != nil {
-						fmt.Println("Could not subscribe agent to topic:", err)
-					}
-				}
-				mu.Unlock()
-				// Make sure to delete agent after it disconnects
-				defer func() {
-					for _, interest := range a.Interests {
-						subs[interest].DeleteSubscriber(a)
-					}
-				}()
-			}
-
-			for {
-				err = wsjson.Read(request.Context(), c, &buf)
-				if err != nil {
-					fmt.Println("Could not read message from agent:", err)
-					break
-				}
-			}
-		}),
+		Handler: handleHttpConnection(p2p, pubSub, rmqConnection, mu, subs, ctx),
 		TLSConfig: &tls.Config{
 			ClientAuth: tls.VerifyClientCertIfGiven,
 			ClientCAs:  nil,
 			MinVersion: tls.VersionTLS13,
-			VerifyPeerCertificate: func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
-				// we did not receive a certificate from the client
-				if len(rawCerts) == 0 || len(verifiedChains) == 0 {
-					return nil
-				}
-
-				clientCert := verifiedChains[0][0]
-				issuingCert := verifiedChains[0][1]
-
-				httpClient := http.DefaultClient
-				if len(clientCert.OCSPServer) > 0 {
-					ocspUrl := clientCert.OCSPServer[0]
-					ocspReq, err := ocsp.CreateRequest(clientCert, issuingCert, nil)
-					if err != nil {
-						return fmt.Errorf("could not create OCSP request for the given client cert: %w", err)
-					}
-					resp, err := httpClient.Post(ocspUrl, "application/ocsp-request", bytes.NewBuffer(ocspReq))
-					if err != nil {
-						return fmt.Errorf("could not send OCSP request: %w", err)
-					}
-					respBytes, err := io.ReadAll(resp.Body)
-					if err != nil {
-						return fmt.Errorf("getting OCSP response failed: %w", err)
-					}
-					if err = resp.Body.Close(); err != nil {
-						return fmt.Errorf("could not close response body: %w", err)
-					}
-					ocspResp, err := ocsp.ParseResponse(respBytes, nil)
-					if err != nil {
-						return fmt.Errorf("parsing OCSP response failed: %w", err)
-					}
-					if ocspResp.SerialNumber.Cmp(clientCert.SerialNumber) != 0 {
-						return fmt.Errorf("the serial number in the OCSP response does not correspond to the serial number of the certificate being checked")
-					}
-					if err = ocspResp.CheckSignatureFrom(issuingCert); err != nil {
-						return fmt.Errorf("the signature on the OCSP response is not valid: %w", err)
-					}
-					if ocspResp.Status != ocsp.Good {
-						return fmt.Errorf("the given client certificate has been revoked")
-					}
-				} else if len(clientCert.CRLDistributionPoints) > 0 {
-					crlURL := clientCert.CRLDistributionPoints[0]
-					resp, err := httpClient.Get(crlURL)
-					if err != nil {
-						return fmt.Errorf("could not send CRL request: %w", err)
-					}
-					respBody, err := io.ReadAll(resp.Body)
-					if err != nil {
-						return fmt.Errorf("getting CRL response body failed: %w", err)
-					}
-					if err = resp.Body.Close(); err != nil {
-						return fmt.Errorf("failed to close CRL response: %w body", err)
-					}
-					crl, err := x509.ParseRevocationList(respBody)
-					if err != nil {
-						return fmt.Errorf("could not parse received CRL: %w", err)
-					}
-					if err = crl.CheckSignatureFrom(issuingCert); err != nil {
-						return fmt.Errorf("signature on CRL is not valid: %w", err)
-					}
-					now := time.Now().UTC()
-					for _, rev := range crl.RevokedCertificates {
-						if (rev.SerialNumber.Cmp(clientCert.SerialNumber) == 0) && (rev.RevocationTime.UTC().Before(now)) {
-							return fmt.Errorf("the given client certificate has been revoked")
-						}
-					}
-				} else {
-					return fmt.Errorf("was not able to check revocation status of client certificate")
-				}
-
-				return nil
-			},
+			VerifyPeerCertificate: verifyAgentCertificate(),
 		},
 	}
 
@@ -363,7 +149,12 @@ func (er *EdgeRouter) StartEdgeRouter(ctx context.Context) {
 	if err != nil {
 		panic(err)
 	}
-	defer rmqChannel.Close()
+	defer func(rmqChannel *amqp.Channel) {
+		err := rmqChannel.Close()
+		if err != amqp.ErrClosed {
+			fmt.Println("Connection to RabbitMQ could not be properly closed")
+		}
+	}(rmqChannel)
 	err = rmqChannel.ExchangeDeclare(
 		"subscriptions",
 		"direct",
@@ -399,6 +190,228 @@ func (er *EdgeRouter) StartEdgeRouter(ctx context.Context) {
 	fmt.Println("subscriptions:", er.subscriptions)
 	if err := er.httpServer.Shutdown(ctx); err != nil {
 		panic(err)
+	}
+}
+
+func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, rmqConnection *amqp.Connection, mu *sync.RWMutex, subs map[string]*Subscription, ctx context.Context) http.HandlerFunc {
+	return func(writer http.ResponseWriter, request *http.Request) {
+		c, err := websocket.Accept(writer, request, nil)
+		if err != nil {
+			fmt.Println("Could not establish websocket connection", err)
+			return
+		}
+		defer func(c *websocket.Conn, code websocket.StatusCode, reason string) {
+			err := c.Close(code, reason)
+			if err != nil {
+				fmt.Println("Could not close connection:", err)
+			}
+		}(c, websocket.StatusInternalError, "PANIC!!!")
+
+		var buf interface{}
+		err = wsjson.Read(request.Context(), c, &buf)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+
+		m, ok := buf.(map[string]interface{})
+		if !ok {
+			fmt.Println("Could not convert buffer to map")
+			return
+		}
+
+		tmp, ok := m["register"]
+		if !ok {
+			if err = c.Close(websocket.StatusUnsupportedData, "First message needs to contain a 'register' object"); err != nil {
+				fmt.Println(err)
+			}
+			return
+		}
+
+		reg, ok := tmp.(map[string]interface{})
+		if !ok {
+			if err = c.Close(websocket.StatusUnsupportedData, "The received 'register' object could not be parsed"); err != nil {
+				fmt.Println(err)
+			}
+			return
+		}
+		// if dm has not been explicitly set, it implicitly means that it is true
+		_, ok = reg["dm"]
+		if !ok {
+			reg["dm"] = true
+		}
+
+		var r Register
+		err = mapstructure.Decode(&reg, &r)
+		if err != nil {
+			fmt.Println("The received message could not be decoded as a register protocol message", err)
+			return
+		}
+		fmt.Println(r)
+
+		a := &Agent{
+			Mrn:       r.Mrn,
+			Interests: r.Interests,
+			Dm:        r.Dm,
+			Ws:        c,
+		}
+
+		ch, err := rmqConnection.Channel()
+		if err != nil {
+			fmt.Println("Could not make a channel to RabbitMQ for agent", err)
+			return
+		}
+
+		q, err := ch.QueueDeclare(
+			a.Mrn,
+			true,
+			false,
+			true,
+			false,
+			nil,
+		)
+		if err != nil {
+			fmt.Println("Could not declare a queue for agent", err)
+			return
+		}
+
+		if r.Dm && len(request.TLS.VerifiedChains) > 0 {
+			err = ch.QueueBind(
+				q.Name,
+				a.Mrn,
+				"direct_messages",
+				false,
+				nil,
+			)
+			if err != nil {
+				fmt.Println("Could not bind direct messages to agent queue:", err)
+				return
+			}
+		}
+
+		if len(r.Interests) > 0 {
+			mu.Lock()
+			for _, interest := range r.Interests {
+				s, exists := subs[interest]
+				if !exists {
+					sub := NewSubscription(interest)
+					topic, err := pubSub.Join(interest)
+					if err != nil {
+						panic(err)
+					}
+					sub.AddSubscriber(a)
+					sub.Topic = topic
+					subscription, err := topic.Subscribe()
+					if err != nil {
+						panic(err)
+					}
+					go handleSubscription(ctx, subscription, p2p, sub, rmqConnection)
+					subs[interest] = sub
+				} else {
+					s.AddSubscriber(a)
+				}
+				err = ch.QueueBind(
+					q.Name,
+					interest,
+					"subscriptions",
+					false,
+					nil,
+				)
+				if err != nil {
+					fmt.Println("Could not subscribe agent to topic:", err)
+				}
+			}
+			mu.Unlock()
+			// Make sure to delete agent after it disconnects
+			defer func() {
+				for _, interest := range a.Interests {
+					subs[interest].DeleteSubscriber(a)
+				}
+			}()
+		}
+
+		for {
+			err = wsjson.Read(request.Context(), c, &buf)
+			if err != nil {
+				fmt.Println("Could not read message from agent:", err)
+				break
+			}
+		}
+	}
+}
+
+func verifyAgentCertificate() func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+	return func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+		// we did not receive a certificate from the client, so we just return early
+		if len(rawCerts) == 0 || len(verifiedChains) == 0 {
+			return nil
+		}
+
+		clientCert := verifiedChains[0][0]
+		issuingCert := verifiedChains[0][1]
+
+		httpClient := http.DefaultClient
+		if len(clientCert.OCSPServer) > 0 {
+			ocspUrl := clientCert.OCSPServer[0]
+			ocspReq, err := ocsp.CreateRequest(clientCert, issuingCert, nil)
+			if err != nil {
+				return fmt.Errorf("could not create OCSP request for the given client cert: %w", err)
+			}
+			resp, err := httpClient.Post(ocspUrl, "application/ocsp-request", bytes.NewBuffer(ocspReq))
+			if err != nil {
+				return fmt.Errorf("could not send OCSP request: %w", err)
+			}
+			respBytes, err := io.ReadAll(resp.Body)
+			if err != nil {
+				return fmt.Errorf("getting OCSP response failed: %w", err)
+			}
+			if err = resp.Body.Close(); err != nil {
+				return fmt.Errorf("could not close response body: %w", err)
+			}
+			ocspResp, err := ocsp.ParseResponse(respBytes, nil)
+			if err != nil {
+				return fmt.Errorf("parsing OCSP response failed: %w", err)
+			}
+			if ocspResp.SerialNumber.Cmp(clientCert.SerialNumber) != 0 {
+				return fmt.Errorf("the serial number in the OCSP response does not correspond to the serial number of the certificate being checked")
+			}
+			if err = ocspResp.CheckSignatureFrom(issuingCert); err != nil {
+				return fmt.Errorf("the signature on the OCSP response is not valid: %w", err)
+			}
+			if ocspResp.Status != ocsp.Good {
+				return fmt.Errorf("the given client certificate has been revoked")
+			}
+		} else if len(clientCert.CRLDistributionPoints) > 0 {
+			crlURL := clientCert.CRLDistributionPoints[0]
+			resp, err := httpClient.Get(crlURL)
+			if err != nil {
+				return fmt.Errorf("could not send CRL request: %w", err)
+			}
+			respBody, err := io.ReadAll(resp.Body)
+			if err != nil {
+				return fmt.Errorf("getting CRL response body failed: %w", err)
+			}
+			if err = resp.Body.Close(); err != nil {
+				return fmt.Errorf("failed to close CRL response: %w body", err)
+			}
+			crl, err := x509.ParseRevocationList(respBody)
+			if err != nil {
+				return fmt.Errorf("could not parse received CRL: %w", err)
+			}
+			if err = crl.CheckSignatureFrom(issuingCert); err != nil {
+				return fmt.Errorf("signature on CRL is not valid: %w", err)
+			}
+			now := time.Now().UTC()
+			for _, rev := range crl.RevokedCertificates {
+				if (rev.SerialNumber.Cmp(clientCert.SerialNumber) == 0) && (rev.RevocationTime.UTC().Before(now)) {
+					return fmt.Errorf("the given client certificate has been revoked")
+				}
+			}
+		} else {
+			return fmt.Errorf("was not able to check revocation status of client certificate")
+		}
+
+		return nil
 	}
 }
 
