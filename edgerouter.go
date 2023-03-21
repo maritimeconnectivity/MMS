@@ -326,10 +326,44 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, rmqConnection *
 		}
 
 		for {
-			err = wsjson.Read(request.Context(), c, &buf)
+			var protoMessage ProtocolMessage
+			err = wsjson.Read(request.Context(), c, &protoMessage)
 			if err != nil {
 				fmt.Println("Could not read message from agent:", err)
 				break
+			}
+
+			subject := protoMessage.Send.Subject
+			subscription, ok := subs[subject]
+			if !ok {
+				fmt.Printf("Nobody is subscribed to the subject %s\n", subject)
+				continue
+			}
+
+			msgJson, err := json.Marshal(protoMessage)
+			if err != nil {
+				fmt.Println("Could not JSON marshal the message", err)
+				continue
+			}
+
+			err = subscription.Topic.Publish(request.Context(), msgJson)
+			if err != nil {
+				fmt.Println("Could not publish message to topic", err)
+			}
+
+			err = ch.PublishWithContext(
+				ctx,
+				"subscriptions",
+				subject,
+				false,
+				false,
+				amqp.Publishing{
+					ContentType: "application/json",
+					Body:        msgJson,
+				},
+			)
+			if err != nil {
+				fmt.Println("Could not publish subscription message", err)
 			}
 		}
 	}
