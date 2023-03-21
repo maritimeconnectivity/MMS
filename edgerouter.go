@@ -149,7 +149,7 @@ func (er *EdgeRouter) StartEdgeRouter(ctx context.Context) {
 	if err != nil {
 		panic(err)
 	}
-	rmqChannel.Close()
+	defer rmqChannel.Close()
 	err = rmqChannel.ExchangeDeclare(
 		"subscriptions",
 		"direct",
@@ -510,7 +510,7 @@ func main() {
 
 	rmq, err := amqp.Dial("amqp://guest:guest@localhost:5672/")
 	if err != nil {
-		panic(err)
+		panic("Could not connect to RabbitMQ")
 	}
 	defer rmq.Close()
 
