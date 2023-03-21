@@ -261,7 +261,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, rmqConnection *
 			a.Mrn,
 			true,
 			false,
-			true,
+			false,
 			false,
 			nil,
 		)
