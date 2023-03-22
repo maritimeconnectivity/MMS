@@ -41,6 +41,7 @@ import (
 	"nhooyr.io/websocket/wsjson"
 	"os"
 	"os/signal"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -77,7 +78,8 @@ type ApplicationMessage struct {
 }
 
 type ProtocolMessage struct {
-	Send *ApplicationMessage `json:"send,omitempty"`
+	Send    *ApplicationMessage `json:"send,omitempty"`
+	Receive interface{}         `json:"receive,omitempty"`
 }
 
 // Subscription type representing a subscription
@@ -333,37 +335,86 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, rmqConnection *
 				break
 			}
 
-			subject := protoMessage.Send.Subject
-			subscription, ok := subs[subject]
-			if !ok {
-				fmt.Printf("Nobody is subscribed to the subject %s\n", subject)
-				continue
-			}
+			if protoMessage.Send != nil {
+				sendMsg := protoMessage.Send
 
-			msgJson, err := json.Marshal(protoMessage)
-			if err != nil {
-				fmt.Println("Could not JSON marshal the message", err)
-				continue
-			}
+				// for now, we just assume that it is a subject cast message
+				subject := sendMsg.Subject
+				subscription, ok := subs[subject]
+				if !ok {
+					fmt.Printf("Nobody is subscribed to the subject %s\n", subject)
+					continue
+				}
 
-			err = subscription.Topic.Publish(request.Context(), msgJson)
-			if err != nil {
-				fmt.Println("Could not publish message to topic", err)
-			}
+				newProtMsg := ProtocolMessage{Send: sendMsg}
 
-			err = ch.PublishWithContext(
-				ctx,
-				"subscriptions",
-				subject,
-				false,
-				false,
-				amqp.Publishing{
+				msgJson, err := json.Marshal(newProtMsg)
+				if err != nil {
+					fmt.Println("Could not JSON marshal the message", err)
+					continue
+				}
+
+				err = subscription.Topic.Publish(request.Context(), msgJson)
+				if err != nil {
+					fmt.Println("Could not publish message to topic", err)
+				}
+
+				msg := amqp.Publishing{
 					ContentType: "application/json",
 					Body:        msgJson,
-				},
-			)
-			if err != nil {
-				fmt.Println("Could not publish subscription message", err)
+					AppId:       q.Name, // we set this, so we later can filter out messages pushed by ourselves
+				}
+
+				// if the message has a TTL we should also set it on the message being published
+				if sendMsg.Expires > 0 {
+					msg.Expiration = strconv.FormatUint(sendMsg.Expires, 10)
+				}
+
+				err = ch.PublishWithContext(
+					ctx,
+					"subscriptions",
+					subject,
+					false,
+					false,
+					msg,
+				)
+				if err != nil {
+					fmt.Println("Could not publish subscription message:", err)
+				}
+			}
+
+			if protoMessage.Receive != nil {
+				msgs := make([]ProtocolMessage, 0, 10)
+				msgChan, err := ch.Consume(q.Name, q.Name, true, true, true, false, nil)
+				if err != nil {
+					fmt.Println("Could not get messages from queue:", err)
+					continue
+				}
+				go func() {
+					for delivery := range msgChan {
+						// we don't care about messages that were published by ourselves
+						if delivery.AppId == q.Name {
+							continue
+						}
+						var protoMessage ProtocolMessage
+						err = json.Unmarshal(delivery.Body, &protoMessage)
+						if err != nil {
+							fmt.Println("Could not unmarshal message:", err)
+							continue
+						}
+						msgs = append(msgs, protoMessage)
+					}
+				}()
+				err = ch.Cancel(q.Name, false) // cancel consumer immediately to get current messages in queue
+				if err != nil {
+					fmt.Println("Could not cancel consumer:", err)
+					continue
+				}
+
+				err = wsjson.Write(request.Context(), c, msgs)
+				if err != nil {
+					fmt.Println("Could not send message to agent over websocket:", err)
+				}
 			}
 		}
 	}
@@ -486,16 +537,24 @@ func handleSubscription(ctx context.Context, sub *pubsub.Subscription, host *hos
 					fmt.Println("The subject of the message does not match the name of the subscription")
 					continue
 				}
+
+				msg := amqp.Publishing{
+					ContentType: "application/json",
+					Body:        m.Data,
+				}
+
+				// if the received message has a TTL we should set it on the message being published
+				if sendMessage.Expires != 0 {
+					msg.Expiration = strconv.FormatUint(sendMessage.Expires, 10)
+				}
+
 				err = ch.PublishWithContext(
 					ctx,
 					"subscriptions",
 					subName,
 					false,
 					false,
-					amqp.Publishing{
-						ContentType: "application/json",
-						Body:        m.Data,
-					},
+					msg,
 				)
 				if err != nil {
 					fmt.Println("Could not publish subscription message", err)
