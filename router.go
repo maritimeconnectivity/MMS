@@ -35,7 +35,6 @@ func main() {
 
 	// start a libp2p node with default settings
 	node, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/0.0.0.0/udp/0/quic-v1", "/ip6/::/udp/0/quic-v1"))
-	//node, err := libp2p.New(libp2p.NoListenAddrs, libp2p.EnableRelay())
 	if err != nil {
 		panic(err)
 	}
@@ -43,20 +42,15 @@ func main() {
 	// print the node's listening addresses
 	fmt.Println("Listen addresses:", node.Addrs())
 
-	relay, err := peer.AddrInfoFromString("/ip4/127.0.0.1/udp/27000/quic-v1/p2p/QmcUKyMuepvXqZhpMSBP59KKBymRNstk41qGMPj38QStfx")
+	bootstrapNode, err := peer.AddrInfoFromString("/ip4/127.0.0.1/udp/27000/quic-v1/p2p/QmcUKyMuepvXqZhpMSBP59KKBymRNstk41qGMPj38QStfx")
 	if err != nil {
 		panic(err)
 	}
 
-	err = node.Connect(ctx, *relay)
+	err = node.Connect(ctx, *bootstrapNode)
 	if err != nil {
 		panic(err)
 	}
-
-	//_, err = client.Reserve(ctx, node, *relay)
-	//if err != nil {
-	//	panic(err)
-	//}
 
 	kademlia, err := dht.New(ctx, node, dht.Mode(dht.ModeAutoServer))
 	if err != nil {
