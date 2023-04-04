@@ -73,14 +73,6 @@ func main() {
 	addrs, err := peerstore.AddrInfoToP2pAddrs(&peerInfo)
 	fmt.Println("libp2p node addresses:", addrs)
 
-	peerChan, err := rd.FindPeers(ctx, "over here")
-	if err != nil {
-		panic(err)
-	}
-	for p := range peerChan {
-		fmt.Println(p)
-	}
-
 	// Look for others who have announced and attempt to connect to them
 	anyConnected := false
 	for !anyConnected {
