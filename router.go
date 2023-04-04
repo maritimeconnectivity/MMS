@@ -57,9 +57,9 @@ func main() {
 		panic(err)
 	}
 
-	//if err = kademlia.Bootstrap(ctx); err != nil {
-	//	panic(err)
-	//}
+	if err = kademlia.Bootstrap(ctx); err != nil {
+		panic(err)
+	}
 
 	rd := drouting.NewRoutingDiscovery(kademlia)
 
