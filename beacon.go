@@ -25,8 +25,6 @@ import (
 	dht "github.com/libp2p/go-libp2p-kad-dht"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	peerstore "github.com/libp2p/go-libp2p/core/peer"
-	drouting "github.com/libp2p/go-libp2p/p2p/discovery/routing"
-	dutil "github.com/libp2p/go-libp2p/p2p/discovery/util"
 	"os"
 	"os/signal"
 )
@@ -74,10 +72,6 @@ func main() {
 	if err = kademlia.Bootstrap(ctx); err != nil {
 		panic(err)
 	}
-
-	rd := drouting.NewRoutingDiscovery(kademlia)
-
-	dutil.Advertise(ctx, rd, "over here")
 
 	// wait for a SIGINT or SIGTERM signal
 	ch := make(chan os.Signal, 1)
