@@ -47,12 +47,7 @@ func main() {
 		panic(err)
 	}
 
-	err = node.Connect(ctx, *bootstrapNode)
-	if err != nil {
-		panic(err)
-	}
-
-	kademlia, err := dht.New(ctx, node, dht.Mode(dht.ModeAutoServer))
+	kademlia, err := dht.New(ctx, node, dht.Mode(dht.ModeAutoServer), dht.BootstrapPeers(*bootstrapNode))
 	if err != nil {
 		panic(err)
 	}
