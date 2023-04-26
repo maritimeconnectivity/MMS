@@ -17,11 +17,11 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"github.com/libp2p/go-libp2p"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
-	"github.com/libp2p/go-libp2p/core/peer"
 	peerstore "github.com/libp2p/go-libp2p/core/peer"
 	drouting "github.com/libp2p/go-libp2p/p2p/discovery/routing"
 	dutil "github.com/libp2p/go-libp2p/p2p/discovery/util"
@@ -42,12 +42,21 @@ func main() {
 	// print the node's listening addresses
 	fmt.Println("Listen addresses:", node.Addrs())
 
-	bootstrapNode, err := peer.AddrInfoFromString("/ip4/127.0.0.1/udp/27000/quic-v1/p2p/QmcUKyMuepvXqZhpMSBP59KKBymRNstk41qGMPj38QStfx")
-	if err != nil {
-		panic(err)
+	beacons := make([]peerstore.AddrInfo, 0, 1)
+	beaconsFile, err := os.Open("beacons.txt")
+	if err == nil {
+		fileScanner := bufio.NewScanner(beaconsFile)
+		for fileScanner.Scan() {
+			addrInfo, err := peerstore.AddrInfoFromString(fileScanner.Text())
+			if err != nil {
+				fmt.Println("Failed to parse beacon address:", err)
+				continue
+			}
+			beacons = append(beacons, *addrInfo)
+		}
 	}
 
-	kademlia, err := dht.New(ctx, node, dht.Mode(dht.ModeAutoServer), dht.BootstrapPeers(*bootstrapNode))
+	kademlia, err := dht.New(ctx, node, dht.Mode(dht.ModeAutoServer), dht.BootstrapPeers(beacons...))
 	if err != nil {
 		panic(err)
 	}
