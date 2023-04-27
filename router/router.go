@@ -39,7 +39,8 @@ func main() {
 
 	// Look for others who have announced and attempt to connect to them
 	anyConnected := false
-	for !anyConnected {
+	attempts := 0
+	for !anyConnected && attempts < 20 {
 		fmt.Println("Searching for peers...")
 		peerChan, err := rd.FindPeers(ctx, "over here")
 		if err != nil {
@@ -58,6 +59,7 @@ func main() {
 				anyConnected = true
 			}
 		}
+		attempts++
 		time.Sleep(2 * time.Second)
 	}
 	fmt.Println("Peer discovery complete")
