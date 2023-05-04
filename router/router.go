@@ -377,6 +377,11 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, rmqConnection *
 					fmt.Println("Could not get messages from queue:", err)
 					continue
 				}
+
+				// make a WaitGroup to make sure that messages from the message queue are written to the slice before continuing
+				var wg sync.WaitGroup
+				wg.Add(1)
+
 				go func() {
 					for delivery := range msgChan {
 						// we don't care about messages that were published by ourselves
@@ -391,12 +396,16 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, rmqConnection *
 						}
 						msgs = append(msgs, protoMessage)
 					}
+					wg.Done()
 				}()
+
 				err = ch.Cancel(q.Name, false) // cancel consumer immediately to get current messages in queue
 				if err != nil {
 					fmt.Println("Could not cancel consumer:", err)
 					continue
 				}
+
+				wg.Wait()
 
 				err = wsjson.Write(request.Context(), c, msgs)
 				if err != nil {
