@@ -420,7 +420,7 @@ func verifyEdgeRouterCertificate() func(rawCerts [][]byte, verifiedChains [][]*x
 	return func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
 		// we did not receive a certificate from the client, so we just return early
 		if len(rawCerts) == 0 || len(verifiedChains) == 0 {
-			return nil
+			return fmt.Errorf("client did not send a valid certificate")
 		}
 
 		clientCert := verifiedChains[0][0]
