@@ -325,7 +325,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, rmqConnection *
 			if protoMessage.Send != nil {
 				sendMsg := protoMessage.Send
 
-				// for now, we just assume that it is e subject cast message
+				// for now, we just assume that it is a subject cast message
 				subject := sendMsg.Subject
 				subscription, ok := subs[subject]
 				if !ok {
@@ -352,7 +352,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, rmqConnection *
 					AppId:       q.Name, // we set this, so we later can filter out messages pushed by ourselves
 				}
 
-				// if the message has e TTL we should also set it on the message being published
+				// if the message has a TTL we should also set it on the message being published
 				if sendMsg.Expires > 0 {
 					now := time.Now().UnixMilli()
 					ttl := (sendMsg.Expires * 1000) - now
