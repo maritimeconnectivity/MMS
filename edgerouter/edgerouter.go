@@ -367,8 +367,8 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, rmqConnection *
 
 				// if the message has a TTL we should also set it on the message being published
 				if sendMsg.Expires > 0 {
-					now := time.Now().Unix()
-					ttl := sendMsg.Expires - now
+					now := time.Now().UnixMilli()
+					ttl := (sendMsg.Expires * 1000) - now
 					msg.Expiration = strconv.FormatInt(ttl, 10)
 				}
 
@@ -547,8 +547,8 @@ func handleSubscription(ctx context.Context, sub *pubsub.Subscription, host *hos
 
 				// if the received message has a TTL we should set it on the message being published
 				if sendMessage.Expires != 0 {
-					now := time.Now().Unix()
-					ttl := sendMessage.Expires - now
+					now := time.Now().UnixMilli()
+					ttl := (sendMessage.Expires * 1000) - now
 					msg.Expiration = strconv.FormatInt(ttl, 10)
 				}
 
