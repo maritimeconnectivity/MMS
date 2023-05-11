@@ -209,7 +209,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, rmqConnection *
 
 		tmp, ok := m["register"]
 		if !ok {
-			if err = c.Close(websocket.StatusUnsupportedData, "First message needs to contain e 'register' object"); err != nil {
+			if err = c.Close(websocket.StatusUnsupportedData, "First message needs to contain a 'register' object"); err != nil {
 				fmt.Println(err)
 			}
 			return
@@ -231,7 +231,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, rmqConnection *
 		var r Register
 		err = mapstructure.Decode(&reg, &r)
 		if err != nil {
-			fmt.Println("The received message could not be decoded as e register protocol message", err)
+			fmt.Println("The received message could not be decoded as a register protocol message", err)
 			return
 		}
 		fmt.Println(r)
@@ -244,7 +244,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, rmqConnection *
 
 		ch, err := rmqConnection.Channel()
 		if err != nil {
-			fmt.Println("Could not make e channel to RabbitMQ for edge router", err)
+			fmt.Println("Could not make a channel to RabbitMQ for edge router", err)
 			return
 		}
 
@@ -257,7 +257,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, rmqConnection *
 			nil,
 		)
 		if err != nil {
-			fmt.Println("Could not declare e queue for edge router", err)
+			fmt.Println("Could not declare a queue for edge router", err)
 			return
 		}
 
