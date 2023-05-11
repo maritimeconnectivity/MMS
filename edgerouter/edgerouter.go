@@ -72,7 +72,7 @@ type ApplicationMessage struct {
 	Id         string   `json:"id,omitempty"`
 	Subject    string   `json:"subject"`
 	Recipients []string `json:"recipients"`
-	Expires    uint64   `json:"expires,omitempty"`
+	Expires    int64    `json:"expires,omitempty"`
 	Sender     string   `json:"sender,omitempty"`
 	Body       string   `json:"body,omitempty"`
 }
@@ -367,7 +367,9 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, rmqConnection *
 
 				// if the message has a TTL we should also set it on the message being published
 				if sendMsg.Expires > 0 {
-					msg.Expiration = strconv.FormatUint(sendMsg.Expires, 10)
+					now := time.Now().Unix()
+					ttl := sendMsg.Expires - now
+					msg.Expiration = strconv.FormatInt(ttl, 10)
 				}
 
 				err = ch.PublishWithContext(
@@ -545,7 +547,9 @@ func handleSubscription(ctx context.Context, sub *pubsub.Subscription, host *hos
 
 				// if the received message has a TTL we should set it on the message being published
 				if sendMessage.Expires != 0 {
-					msg.Expiration = strconv.FormatUint(sendMessage.Expires, 10)
+					now := time.Now().Unix()
+					ttl := sendMessage.Expires - now
+					msg.Expiration = strconv.FormatInt(ttl, 10)
 				}
 
 				err = ch.PublishWithContext(
