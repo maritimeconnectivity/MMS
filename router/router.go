@@ -318,46 +318,46 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, rmqConnection *
 			}
 		}
 
-		if len(r.Interests) > 0 {
-			mu.Lock()
-			for _, interest := range r.Interests {
-				s, exists := subs[interest]
-				if !exists {
-					sub := NewSubscription(interest)
-					topic, err := pubSub.Join(interest)
-					if err != nil {
-						panic(err)
-					}
-					sub.AddSubscriber(e)
-					sub.Topic = topic
-					subscription, err := topic.Subscribe()
-					if err != nil {
-						panic(err)
-					}
-					go handleSubscription(ctx, subscription, p2p, sub, rmqConnection)
-					subs[interest] = sub
-				} else {
-					s.AddSubscriber(e)
-				}
-				err = ch.QueueBind(
-					q.Name,
-					interest,
-					"subscriptions",
-					false,
-					nil,
-				)
-				if err != nil {
-					fmt.Println("Could not subscribe edge router to topic:", err)
-				}
-			}
-			mu.Unlock()
-			// Make sure to delete edge router after it disconnects
-			defer func() {
-				for _, interest := range e.Interests {
-					subs[interest].DeleteSubscriber(e)
-				}
-			}()
-		}
+		//if len(r.Interests) > 0 {
+		//	mu.Lock()
+		//	for _, interest := range r.Interests {
+		//		s, exists := subs[interest]
+		//		if !exists {
+		//			sub := NewSubscription(interest)
+		//			topic, err := pubSub.Join(interest)
+		//			if err != nil {
+		//				panic(err)
+		//			}
+		//			sub.AddSubscriber(e)
+		//			sub.Topic = topic
+		//			subscription, err := topic.Subscribe()
+		//			if err != nil {
+		//				panic(err)
+		//			}
+		//			go handleSubscription(ctx, subscription, p2p, sub, rmqConnection)
+		//			subs[interest] = sub
+		//		} else {
+		//			s.AddSubscriber(e)
+		//		}
+		//		err = ch.QueueBind(
+		//			q.Name,
+		//			interest,
+		//			"subscriptions",
+		//			false,
+		//			nil,
+		//		)
+		//		if err != nil {
+		//			fmt.Println("Could not subscribe edge router to topic:", err)
+		//		}
+		//	}
+		//	mu.Unlock()
+		//	// Make sure to delete edge router after it disconnects
+		//	defer func() {
+		//		for _, interest := range e.Interests {
+		//			subs[interest].DeleteSubscriber(e)
+		//		}
+		//	}()
+		//}
 
 		for {
 			var protoMessage ProtocolMessage
