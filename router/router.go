@@ -32,45 +32,54 @@ import (
 	peerstore "github.com/libp2p/go-libp2p/core/peer"
 	drouting "github.com/libp2p/go-libp2p/p2p/discovery/routing"
 	dutil "github.com/libp2p/go-libp2p/p2p/discovery/util"
-	"github.com/mitchellh/mapstructure"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"golang.org/x/crypto/ocsp"
 	"io"
+	"maritimeconnectivity.net/mms-router/generated/mmtp"
 	"net/http"
 	"nhooyr.io/websocket"
 	"nhooyr.io/websocket/wsjson"
+	"nhooyr.io/websocket/wspb"
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
 
 type EdgeRouter struct {
-	Mrn       string          // the MRN of the EdgeRouter
-	Interests []string        // the Interests that the EdgeRouter wants to subscribe to
-	Ws        *websocket.Conn // the websocket connection to this EdgeRouter
+	Mrn       string                       // the MRN of the EdgeRouter
+	Interests []string                     // the Interests that the EdgeRouter wants to subscribe to
+	Messages  map[string]*mmtp.MmtpMessage // the incoming messages for this EdgeRouter
+	msgMu     sync.RWMutex                 // RWMutex for locking the Messages map
+	Ws        *websocket.Conn              // the websocket connection to this EdgeRouter
 }
 
-// Register type representing the register protocol message
-type Register struct {
-	Mrn       string   // the MRN of the EdgeRouter
-	Interests []string // the Interests that the EdgeRouter wants to subscribe to
+func (er *EdgeRouter) QueueMessage(mmtpMessage *mmtp.MmtpMessage) error {
+	uUid := mmtpMessage.GetUuid()
+	if uUid == "" {
+		return fmt.Errorf("the message does not contain a UUID")
+	}
+	er.msgMu.Lock()
+	er.Messages[uUid] = mmtpMessage
+	er.msgMu.Unlock()
+	return nil
 }
 
-type ApplicationMessage struct {
-	Id         string   `json:"id,omitempty"`
-	Subject    string   `json:"subject"`
-	Recipients []string `json:"recipients"`
-	Expires    int64    `json:"expires,omitempty"`
-	Sender     string   `json:"sender,omitempty"`
-	Body       string   `json:"body,omitempty"`
-}
-
-type ProtocolMessage struct {
-	Send    *ApplicationMessage `json:"send,omitempty"`
-	Receive interface{}         `json:"receive,omitempty"`
-}
+//type ApplicationMessage struct {
+//	Id         string   `json:"id,omitempty"`
+//	Subject    string   `json:"subject"`
+//	Recipients []string `json:"recipients"`
+//	Expires    int64    `json:"expires,omitempty"`
+//	Sender     string   `json:"sender,omitempty"`
+//	Body       string   `json:"body,omitempty"`
+//}
+//
+//type ProtocolMessage struct {
+//	Send    *ApplicationMessage `json:"send,omitempty"`
+//	Receive interface{}         `json:"receive,omitempty"`
+//}
 
 // Subscription type representing a subscription
 type Subscription struct {
@@ -143,7 +152,7 @@ func (r *MMSRouter) StartRouter(ctx context.Context) {
 	}
 	defer rmqChannel.Close()
 	err = rmqChannel.ExchangeDeclare(
-		"subscriptions",
+		"incoming_messages",
 		"direct",
 		true,  // durable
 		false, // auto-deleted
@@ -155,7 +164,7 @@ func (r *MMSRouter) StartRouter(ctx context.Context) {
 		panic(err)
 	}
 	err = rmqChannel.ExchangeDeclare(
-		"direct_messages",
+		"outgoing_messages",
 		"direct",
 		true,  // durable
 		false, // auto-deleted
@@ -194,83 +203,119 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, rmqConnection *
 			}
 		}(c, websocket.StatusInternalError, "PANIC!!!")
 
-		var buf interface{}
-		err = wsjson.Read(request.Context(), c, &buf)
+		var mmtpMessage mmtp.MmtpMessage
+		err = wspb.Read(request.Context(), c, &mmtpMessage)
 		if err != nil {
 			fmt.Println(err)
 			return
 		}
 
-		m, ok := buf.(map[string]interface{})
-		if !ok {
-			fmt.Println("Could not convert buffer to map")
-			return
-		}
-
-		tmp, ok := m["register"]
-		if !ok {
-			if err = c.Close(websocket.StatusUnsupportedData, "First message needs to contain a 'register' object"); err != nil {
+		protoMessage := mmtpMessage.GetProtocolMessage()
+		if mmtpMessage.MsgType != mmtp.MsgType_PROTOCOL_MESSAGE || protoMessage == nil {
+			if err = c.Close(websocket.StatusUnsupportedData, "The first message needs to be a Protocol Message containing a Connect message with the MRN of the Edge Router"); err != nil {
 				fmt.Println(err)
 			}
 			return
 		}
 
-		reg, ok := tmp.(map[string]interface{})
-		if !ok {
-			if err = c.Close(websocket.StatusUnsupportedData, "The received 'register' object could not be parsed"); err != nil {
+		connect := protoMessage.GetConnectMessage()
+		if connect == nil {
+			if err = c.Close(websocket.StatusUnsupportedData, "The first message needs to contain a Connect message with the MRN of the Edge Router"); err != nil {
 				fmt.Println(err)
 			}
 			return
 		}
-		// if dm has not been explicitly set, it implicitly means that it is true
-		_, ok = reg["dm"]
-		if !ok {
-			reg["dm"] = true
-		}
 
-		var r Register
-		err = mapstructure.Decode(&reg, &r)
-		if err != nil {
-			fmt.Println("The received message could not be decoded as a register protocol message", err)
+		erMrn := connect.GetOwnMrn()
+		if erMrn == "" {
+			if err = c.Close(websocket.StatusUnsupportedData, "The first message needs to be a Connect message with the MRN of the Edge Router"); err != nil {
+				fmt.Println(err)
+			}
 			return
 		}
-		fmt.Println(r)
+
+		uidOid := []int{0, 9, 2342, 19200300, 100, 1, 1}
+
+		// https://stackoverflow.com/a/50640119
+		for _, n := range request.TLS.PeerCertificates[0].Subject.Names {
+			if n.Type.Equal(uidOid) {
+				if v, ok := n.Value.(string); ok {
+					if !strings.EqualFold(v, erMrn) {
+						if err = c.Close(websocket.StatusUnsupportedData, "The MRN given in the Connect message does not match the one in the certificate that was used for authentication"); err != nil {
+							fmt.Println(err)
+						}
+						return
+					}
+				}
+			}
+		}
 
 		e := &EdgeRouter{
-			Mrn:       r.Mrn,
-			Interests: r.Interests,
+			Mrn:       erMrn,
+			Interests: make([]string, 0, 1),
 			Ws:        c,
 		}
 
-		ch, err := rmqConnection.Channel()
-		if err != nil {
-			fmt.Println("Could not make a channel to RabbitMQ for edge router", err)
-			return
-		}
+		for {
+			err = wspb.Read(request.Context(), c, &mmtpMessage)
+			if err != nil {
+				fmt.Println(err)
+				return
+			}
+			switch mmtpMessage.GetMsgType() {
+			case mmtp.MsgType_PROTOCOL_MESSAGE:
+				{
+					protoMessage = mmtpMessage.GetProtocolMessage()
+					if protoMessage == nil {
+						continue
+					}
+					switch protoMessage.ProtocolMsgType {
+					case mmtp.ProtocolMessageType_SUBSCRIBE_MESSAGE:
+						{
+							if subscribe := protoMessage.GetSubscribeMessage(); subscribe != nil {
+								subject := subscribe.GetSubject()
+								if subject == "" {
+									continue
+								}
+								mu.Lock()
+								sub, exists := subs[subject]
+								if !exists {
+									sub = NewSubscription(subject)
+									topic, err := pubSub.Join(subject)
+									if err != nil {
+										panic(err)
+									}
+									sub.AddSubscriber(e)
+									sub.Topic = topic
+									subscription, err := topic.Subscribe()
+									if err != nil {
+										panic(err)
+									}
+									go handleSubscription(ctx, subscription, p2p, sub, rmqConnection)
+									subs[subject] = sub
+								} else {
+									sub.AddSubscriber(e)
+								}
+								mu.Unlock()
+							}
+						}
+					case mmtp.ProtocolMessageType_UNSUBSCRIBE_MESSAGE:
+					case mmtp.ProtocolMessageType_SEND_MESSAGE:
+					case mmtp.ProtocolMessageType_RECEIVE_MESSAGE:
+					case mmtp.ProtocolMessageType_FETCH_MESSAGE:
+					case mmtp.ProtocolMessageType_DISCONNECT_MESSAGE:
+					case mmtp.ProtocolMessageType_CONNECT_MESSAGE:
+					default:
+						continue
+					}
+				}
+			case mmtp.MsgType_RESPONSE_MESSAGE:
+				{
 
-		q, err := ch.QueueDeclare(
-			e.Mrn,
-			true,
-			false,
-			false,
-			false,
-			nil,
-		)
-		if err != nil {
-			fmt.Println("Could not declare a queue for edge router", err)
-			return
-		}
-
-		err = ch.QueueBind(
-			q.Name,
-			e.Mrn,
-			"direct_messages",
-			false,
-			nil,
-		)
-		if err != nil {
-			fmt.Println("Could not bind direct messages to edge router queue:", err)
-			return
+				}
+			default:
+				continue
+			}
 		}
 
 		if len(r.Interests) > 0 {
