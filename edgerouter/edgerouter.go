@@ -33,7 +33,6 @@ import (
 	drouting "github.com/libp2p/go-libp2p/p2p/discovery/routing"
 	dutil "github.com/libp2p/go-libp2p/p2p/discovery/util"
 	"github.com/mitchellh/mapstructure"
-	amqp "github.com/rabbitmq/amqp091-go"
 	"golang.org/x/crypto/ocsp"
 	"io"
 	"net/http"
