@@ -22,7 +22,6 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/json"
 	"fmt"
 	"github.com/google/uuid"
 	"github.com/libp2p/go-libp2p"
@@ -32,18 +31,15 @@ import (
 	peerstore "github.com/libp2p/go-libp2p/core/peer"
 	drouting "github.com/libp2p/go-libp2p/p2p/discovery/routing"
 	dutil "github.com/libp2p/go-libp2p/p2p/discovery/util"
-	amqp "github.com/rabbitmq/amqp091-go"
 	"golang.org/x/crypto/ocsp"
+	"google.golang.org/protobuf/proto"
 	"io"
 	"maritimeconnectivity.net/mms-router/generated/mmtp"
 	"net/http"
 	"nhooyr.io/websocket"
-	"nhooyr.io/websocket/wsjson"
 	"nhooyr.io/websocket/wspb"
 	"os"
 	"os/signal"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 )
@@ -52,7 +48,7 @@ type EdgeRouter struct {
 	Mrn       string                       // the MRN of the EdgeRouter
 	Interests []string                     // the Interests that the EdgeRouter wants to subscribe to
 	Messages  map[string]*mmtp.MmtpMessage // the incoming messages for this EdgeRouter
-	msgMu     sync.RWMutex                 // RWMutex for locking the Messages map
+	msgMu     *sync.RWMutex                // RWMutex for locking the Messages map
 	Ws        *websocket.Conn              // the websocket connection to this EdgeRouter
 }
 
@@ -67,19 +63,13 @@ func (er *EdgeRouter) QueueMessage(mmtpMessage *mmtp.MmtpMessage) error {
 	return nil
 }
 
-//type ApplicationMessage struct {
-//	Id         string   `json:"id,omitempty"`
-//	Subject    string   `json:"subject"`
-//	Recipients []string `json:"recipients"`
-//	Expires    int64    `json:"expires,omitempty"`
-//	Sender     string   `json:"sender,omitempty"`
-//	Body       string   `json:"body,omitempty"`
-//}
-//
-//type ProtocolMessage struct {
-//	Send    *ApplicationMessage `json:"send,omitempty"`
-//	Receive interface{}         `json:"receive,omitempty"`
-//}
+func (er *EdgeRouter) BulkQueueMessages(mmtpMessages []*mmtp.MmtpMessage) {
+	er.msgMu.Lock()
+	for _, message := range mmtpMessages {
+		er.Messages[message.Uuid] = message
+	}
+	er.msgMu.Unlock()
+}
 
 // Subscription type representing a subscription
 type Subscription struct {
@@ -111,21 +101,27 @@ func (sub *Subscription) DeleteSubscriber(edgeRouter *EdgeRouter) {
 
 // MMSRouter type representing an MMS edge router
 type MMSRouter struct {
-	subscriptions map[string]*Subscription // a mapping from Interest names to Subscription slices
-	subMu         *sync.RWMutex            // a Mutex for locking the subscriptions map
-	httpServer    *http.Server             // the http server that is used to bootstrap websocket connections
-	p2pHost       *host.Host               // the libp2p host that is used to connect to the MMS router network
-	pubSub        *pubsub.PubSub           // a PubSub instance for the EdgeRouter
-	rmqConnection *amqp.Connection         // the connection to the RabbitMQ message broker
-	ctx           context.Context          // the main Context of the EdgeRouter
+	subscriptions   map[string]*Subscription // a mapping from Interest names to Subscription slices
+	subMu           *sync.RWMutex            // a Mutex for locking the subscriptions map
+	edgeRouters     map[string]*EdgeRouter   // a map of connected EdgeRouters
+	erMu            *sync.RWMutex            // a Mutex for locking the edgeRouters map
+	httpServer      *http.Server             // the http server that is used to bootstrap websocket connections
+	p2pHost         *host.Host               // the libp2p host that is used to connect to the MMS router network
+	pubSub          *pubsub.PubSub           // a PubSub instance for the EdgeRouter
+	topicHandles    map[string]*pubsub.Topic // a map of Topic handles
+	incomingChannel chan *mmtp.MmtpMessage   // channel for incoming messages
+	outgoingChannel chan *mmtp.MmtpMessage   // channel for outgoing messages
+	ctx             context.Context          // the main Context of the EdgeRouter
 }
 
-func NewMMSRouter(p2p *host.Host, pubSub *pubsub.PubSub, listeningAddr string, rmqConnection *amqp.Connection, ctx context.Context) *MMSRouter {
+func NewMMSRouter(p2p *host.Host, pubSub *pubsub.PubSub, listeningAddr string, incomingChannel chan *mmtp.MmtpMessage, outgoingChannel chan *mmtp.MmtpMessage, ctx context.Context) *MMSRouter {
 	subs := make(map[string]*Subscription)
 	mu := &sync.RWMutex{}
+	edgeRouters := make(map[string]*EdgeRouter)
+	erMu := &sync.RWMutex{}
 	httpServer := http.Server{
 		Addr:    listeningAddr,
-		Handler: handleHttpConnection(p2p, pubSub, rmqConnection, mu, subs, ctx),
+		Handler: handleHttpConnection(p2p, pubSub, incomingChannel, outgoingChannel, subs, mu, edgeRouters, erMu, ctx),
 		TLSConfig: &tls.Config{
 			ClientAuth:            tls.RequireAndVerifyClientCert,
 			ClientCAs:             nil, // this should come from a file containing the CAs we trust
@@ -135,61 +131,39 @@ func NewMMSRouter(p2p *host.Host, pubSub *pubsub.PubSub, listeningAddr string, r
 	}
 
 	return &MMSRouter{
-		subscriptions: subs,
-		subMu:         mu,
-		httpServer:    &httpServer,
-		p2pHost:       p2p,
-		pubSub:        pubSub,
-		rmqConnection: rmqConnection,
-		ctx:           ctx,
+		subscriptions:   subs,
+		subMu:           mu,
+		edgeRouters:     edgeRouters,
+		erMu:            erMu,
+		httpServer:      &httpServer,
+		p2pHost:         p2p,
+		pubSub:          pubSub,
+		topicHandles:    make(map[string]*pubsub.Topic),
+		incomingChannel: incomingChannel,
+		outgoingChannel: outgoingChannel,
+		ctx:             ctx,
 	}
 }
 
 func (r *MMSRouter) StartRouter(ctx context.Context) {
-	rmqChannel, err := r.rmqConnection.Channel()
-	if err != nil {
-		panic(err)
-	}
-	defer rmqChannel.Close()
-	err = rmqChannel.ExchangeDeclare(
-		"incoming_messages",
-		"direct",
-		true,  // durable
-		false, // auto-deleted
-		false, // internal
-		false, // no-wait
-		nil,   // arguments
-	)
-	if err != nil {
-		panic(err)
-	}
-	err = rmqChannel.ExchangeDeclare(
-		"outgoing_messages",
-		"direct",
-		true,  // durable
-		false, // auto-deleted
-		false, // internal
-		false, // no-wait
-		nil,   // arguments
-	)
-	if err != nil {
-		panic(err)
-	}
 	go func() {
 		fmt.Println("Starting MMS Router")
 		if err := r.httpServer.ListenAndServe(); err != nil {
 			fmt.Println(err)
 		}
 	}()
+	go handleIncomingMessages(ctx, r)
+	go handleOutgoingMessages(ctx, r)
 	<-ctx.Done()
 	fmt.Println("Shutting down MMS router")
-	fmt.Println("subscriptions:", r.subscriptions)
+	close(r.incomingChannel)
+	close(r.outgoingChannel)
 	if err := r.httpServer.Shutdown(ctx); err != nil {
 		panic(err)
 	}
 }
 
-func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, rmqConnection *amqp.Connection, mu *sync.RWMutex, subs map[string]*Subscription, ctx context.Context) http.HandlerFunc {
+func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel chan *mmtp.MmtpMessage, outgoingChannel chan<- *mmtp.MmtpMessage, subs map[string]*Subscription, mu *sync.RWMutex, edgeRouters map[string]*EdgeRouter, erMu *sync.RWMutex, ctx context.Context) http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
 		c, err := websocket.Accept(writer, request, nil)
 		if err != nil {
@@ -234,26 +208,43 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, rmqConnection *
 			return
 		}
 
-		uidOid := []int{0, 9, 2342, 19200300, 100, 1, 1}
-
-		// https://stackoverflow.com/a/50640119
-		for _, n := range request.TLS.PeerCertificates[0].Subject.Names {
-			if n.Type.Equal(uidOid) {
-				if v, ok := n.Value.(string); ok {
-					if !strings.EqualFold(v, erMrn) {
-						if err = c.Close(websocket.StatusUnsupportedData, "The MRN given in the Connect message does not match the one in the certificate that was used for authentication"); err != nil {
-							fmt.Println(err)
-						}
-						return
-					}
-				}
-			}
-		}
+		// Uncomment the following block when using TLS
+		//uidOid := []int{0, 9, 2342, 19200300, 100, 1, 1}
+		//
+		//// https://stackoverflow.com/a/50640119
+		//for _, n := range request.TLS.PeerCertificates[0].Subject.Names {
+		//	if n.Type.Equal(uidOid) {
+		//		if v, ok := n.Value.(string); ok {
+		//			if !strings.EqualFold(v, erMrn) {
+		//				if err = c.Close(websocket.StatusUnsupportedData, "The MRN given in the Connect message does not match the one in the certificate that was used for authentication"); err != nil {
+		//					fmt.Println(err)
+		//				}
+		//				return
+		//			}
+		//		}
+		//	}
+		//}
 
 		e := &EdgeRouter{
 			Mrn:       erMrn,
 			Interests: make([]string, 0, 1),
+			Messages:  make(map[string]*mmtp.MmtpMessage),
+			msgMu:     &sync.RWMutex{},
 			Ws:        c,
+		}
+
+		erMu.Lock()
+		edgeRouters[e.Mrn] = e
+		erMu.Unlock()
+
+		resp := mmtp.MmtpMessage{MsgType: mmtp.MsgType_RESPONSE_MESSAGE, Uuid: uuid.NewString(), Body: &mmtp.MmtpMessage_ResponseMessage{ResponseMessage: &mmtp.ResponseMessage{
+			ResponseToUuid: mmtpMessage.GetUuid(),
+			Response:       mmtp.ResponseEnum_GOOD,
+		}}}
+		err = wspb.Write(request.Context(), c, &resp)
+		if err != nil {
+			fmt.Println(err)
+			return
 		}
 
 		for {
@@ -291,18 +282,98 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, rmqConnection *
 									if err != nil {
 										panic(err)
 									}
-									go handleSubscription(ctx, subscription, p2p, sub, rmqConnection)
+									go handleSubscription(ctx, subscription, p2p, incomingChannel)
 									subs[subject] = sub
 								} else {
 									sub.AddSubscriber(e)
 								}
 								mu.Unlock()
 							}
+							break
 						}
 					case mmtp.ProtocolMessageType_UNSUBSCRIBE_MESSAGE:
+						{
+							if unsubscribe := protoMessage.GetUnsubscribeMessage(); unsubscribe != nil {
+								subject := unsubscribe.GetSubject()
+								if subject == "" {
+									continue
+								}
+								mu.Lock()
+								sub, exists := subs[subject]
+								if !exists {
+									continue
+								}
+								sub.DeleteSubscriber(e)
+								mu.Unlock()
+							}
+							break
+						}
 					case mmtp.ProtocolMessageType_SEND_MESSAGE:
+						{
+							if send := protoMessage.GetSendMessage(); send != nil {
+								outgoingChannel <- &mmtpMessage
+							}
+							break
+						}
 					case mmtp.ProtocolMessageType_RECEIVE_MESSAGE:
+						{
+							if receive := protoMessage.GetReceiveMessage(); receive != nil {
+								if msgUuids := receive.GetFilter().GetMessageUuids(); msgUuids != nil {
+									msgsLen := len(msgUuids)
+									mmtpMessages := make([]*mmtp.MmtpMessage, 0, msgsLen)
+									appMsgs := make([]*mmtp.ApplicationMessage, 0, msgsLen)
+									e.msgMu.Lock()
+									for _, msgUuid := range msgUuids {
+										msg := e.Messages[msgUuid].GetProtocolMessage().GetSendMessage().GetApplicationMessage()
+										appMsgs = append(appMsgs, msg)
+										delete(e.Messages, msgUuid)
+									}
+									e.msgMu.Unlock()
+									resp = mmtp.MmtpMessage{
+										MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+										Uuid:    uuid.NewString(),
+										Body: &mmtp.MmtpMessage_ResponseMessage{ResponseMessage: &mmtp.ResponseMessage{
+											ResponseToUuid:      mmtpMessage.GetUuid(),
+											Response:            mmtp.ResponseEnum_GOOD,
+											ApplicationMessages: appMsgs,
+										}},
+									}
+									err = wspb.Write(request.Context(), c, &resp)
+									if err != nil {
+										fmt.Println("Could not send messages to Edge Router:", err)
+										e.BulkQueueMessages(mmtpMessages)
+									}
+								}
+							}
+							break
+						}
 					case mmtp.ProtocolMessageType_FETCH_MESSAGE:
+						{
+							if fetch := protoMessage.GetFetchMessage(); fetch != nil {
+								e.msgMu.RLock()
+								msgHeaders := make([]*mmtp.ApplicationMessageHeader, 0, len(e.Messages))
+								for _, msg := range e.Messages {
+									msgHeader := msg.GetProtocolMessage().GetSendMessage().GetApplicationMessage().GetHeader()
+									msgHeaders = append(msgHeaders, msgHeader)
+								}
+								e.msgMu.RUnlock()
+								resp = mmtp.MmtpMessage{
+									MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+									Uuid:    uuid.NewString(),
+									Body: &mmtp.MmtpMessage_ResponseMessage{
+										ResponseMessage: &mmtp.ResponseMessage{
+											ResponseToUuid:  mmtpMessage.GetUuid(),
+											Response:        mmtp.ResponseEnum_GOOD,
+											MessageMetadata: []*mmtp.MessageMetadata{{Headers: msgHeaders}},
+										}},
+								}
+								err = wspb.Write(request.Context(), c, &resp)
+								if err != nil {
+									fmt.Println("Could not send fetch response to Edge Router:", err)
+								}
+							}
+							break
+						}
 					case mmtp.ProtocolMessageType_DISCONNECT_MESSAGE:
 					case mmtp.ProtocolMessageType_CONNECT_MESSAGE:
 					default:
@@ -315,149 +386,6 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, rmqConnection *
 				}
 			default:
 				continue
-			}
-		}
-
-		//if len(r.Interests) > 0 {
-		//	mu.Lock()
-		//	for _, interest := range r.Interests {
-		//		s, exists := subs[interest]
-		//		if !exists {
-		//			sub := NewSubscription(interest)
-		//			topic, err := pubSub.Join(interest)
-		//			if err != nil {
-		//				panic(err)
-		//			}
-		//			sub.AddSubscriber(e)
-		//			sub.Topic = topic
-		//			subscription, err := topic.Subscribe()
-		//			if err != nil {
-		//				panic(err)
-		//			}
-		//			go handleSubscription(ctx, subscription, p2p, sub, rmqConnection)
-		//			subs[interest] = sub
-		//		} else {
-		//			s.AddSubscriber(e)
-		//		}
-		//		err = ch.QueueBind(
-		//			q.Name,
-		//			interest,
-		//			"subscriptions",
-		//			false,
-		//			nil,
-		//		)
-		//		if err != nil {
-		//			fmt.Println("Could not subscribe edge router to topic:", err)
-		//		}
-		//	}
-		//	mu.Unlock()
-		//	// Make sure to delete edge router after it disconnects
-		//	defer func() {
-		//		for _, interest := range e.Interests {
-		//			subs[interest].DeleteSubscriber(e)
-		//		}
-		//	}()
-		//}
-
-		for {
-			var protoMessage ProtocolMessage
-			err = wsjson.Read(request.Context(), c, &protoMessage)
-			if err != nil {
-				fmt.Println("Could not read message from edge router:", err)
-				break
-			}
-
-			if protoMessage.Send != nil {
-				sendMsg := protoMessage.Send
-
-				// for now, we just assume that it is a subject cast message
-				subject := sendMsg.Subject
-				subscription, ok := subs[subject]
-				if !ok {
-					fmt.Printf("Nobody is subscribed to the subject %s\n", subject)
-					continue
-				}
-
-				newProtMsg := ProtocolMessage{Send: sendMsg}
-
-				msgJson, err := json.Marshal(newProtMsg)
-				if err != nil {
-					fmt.Println("Could not JSON marshal the message", err)
-					continue
-				}
-
-				err = subscription.Topic.Publish(request.Context(), msgJson)
-				if err != nil {
-					fmt.Println("Could not publish message to topic", err)
-				}
-
-				msg := amqp.Publishing{
-					ContentType: "application/json",
-					Body:        msgJson,
-					AppId:       q.Name, // we set this, so we later can filter out messages pushed by ourselves
-				}
-
-				// if the message has a TTL we should also set it on the message being published
-				if sendMsg.Expires > 0 {
-					now := time.Now().UnixMilli()
-					ttl := (sendMsg.Expires * 1000) - now
-					msg.Expiration = strconv.FormatInt(ttl, 10)
-				}
-
-				err = ch.PublishWithContext(
-					ctx,
-					"subscriptions",
-					subject,
-					false,
-					false,
-					msg,
-				)
-				if err != nil {
-					fmt.Println("Could not publish subscription message:", err)
-				}
-			}
-
-			if protoMessage.Receive != nil {
-				msgs := make([]ProtocolMessage, 0, 10)
-				msgChan, err := ch.Consume(q.Name, q.Name, true, true, true, false, nil)
-				if err != nil {
-					fmt.Println("Could not get messages from queue:", err)
-					continue
-				}
-
-				// make a WaitGroup to make sure that messages from the message queue are written to the slice before continuing
-				var wg sync.WaitGroup
-				wg.Add(1)
-
-				go func() {
-					for delivery := range msgChan {
-						// we don't care about messages that were published by ourselves
-						if delivery.AppId == q.Name {
-							continue
-						}
-						var protoMessage ProtocolMessage
-						err = json.Unmarshal(delivery.Body, &protoMessage)
-						if err != nil {
-							fmt.Println("Could not unmarshal message:", err)
-							continue
-						}
-						msgs = append(msgs, protoMessage)
-					}
-					wg.Done()
-				}()
-
-				err = ch.Cancel(q.Name, false) // cancel consumer immediately to get current messages in queue
-				if err != nil {
-					fmt.Println("Could not cancel consumer:", err)
-					continue
-				}
-
-				wg.Wait()
-
-				err = wsjson.Write(request.Context(), c, msgs)
-				if err != nil {
-					fmt.Println("Could not send message to edge router over websocket:", err)
-				}
 			}
 		}
 	}
@@ -540,12 +468,7 @@ func verifyEdgeRouterCertificate() func(rawCerts [][]byte, verifiedChains [][]*x
 	}
 }
 
-func handleSubscription(ctx context.Context, sub *pubsub.Subscription, host *host.Host, subscription *Subscription, rmqConnection *amqp.Connection) {
-	ch, err := rmqConnection.Channel()
-	if err != nil {
-		panic(err)
-	}
-	defer ch.Close()
+func handleSubscription(ctx context.Context, sub *pubsub.Subscription, host *host.Host, incomingChannel chan<- *mmtp.MmtpMessage) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -558,53 +481,140 @@ func handleSubscription(ctx context.Context, sub *pubsub.Subscription, host *hos
 				continue
 			}
 			if m.GetFrom() != (*host).ID() {
-				var protoMessage ProtocolMessage
-				if err = json.Unmarshal(m.Data, &protoMessage); err != nil {
-					fmt.Println("Could not unmarshal received message as an protocol message:", err)
+				var mmtpMessage mmtp.MmtpMessage
+				if err = proto.Unmarshal(m.Data, &mmtpMessage); err != nil {
+					fmt.Println("Could not unmarshal received message as an mmtp message:", err)
 					continue
 				}
-				sendMessage := protoMessage.Send
-				if sendMessage == nil {
-					fmt.Println("The received protocol message did not contain a send application message")
+				uid, err := uuid.Parse(mmtpMessage.GetUuid())
+				if err != nil || uid.Version() != 4 {
+					fmt.Println("The UUID of the message is not a valid version 4 UUID")
 					continue
 				}
-				uid, err := uuid.Parse(sendMessage.Id)
-				if err != nil {
-					fmt.Println("The ID of the message is not a valid UUID:", err)
+				switch mmtpMessage.GetMsgType() {
+				case mmtp.MsgType_PROTOCOL_MESSAGE:
+					{
+						if sendMsg := mmtpMessage.GetProtocolMessage().GetSendMessage(); sendMsg != nil {
+							incomingChannel <- &mmtpMessage
+						}
+						break
+					}
+				case mmtp.MsgType_RESPONSE_MESSAGE:
+				default:
 					continue
 				}
-				if uid.Version() != 4 {
-					fmt.Println("The ID of the message is not a valid version 4 UUID")
-					continue
-				}
-				subName := subscription.Interest
-				if sendMessage.Subject != subName {
-					fmt.Println("The subject of the message does not match the name of the subscription")
-					continue
-				}
+			}
+		}
+	}
+}
 
-				msg := amqp.Publishing{
-					ContentType: "application/json",
-					Body:        m.Data,
+func handleIncomingMessages(ctx context.Context, router *MMSRouter) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			for incomingMessage := range router.incomingChannel {
+				switch incomingMessage.GetMsgType() {
+				case mmtp.MsgType_PROTOCOL_MESSAGE:
+					{
+						appMsg := incomingMessage.GetProtocolMessage().GetSendMessage().GetApplicationMessage()
+						if appMsg == nil {
+							continue
+						}
+						switch subjectOrRecipient := appMsg.GetHeader().GetSubjectOrRecipient().(type) {
+						case *mmtp.ApplicationMessageHeader_Subject:
+							{
+								router.subMu.RLock()
+								for _, subscriber := range router.subscriptions[subjectOrRecipient.Subject].Subscribers {
+									if err := subscriber.QueueMessage(incomingMessage); err != nil {
+										fmt.Println("Could not queue message:", err)
+										continue
+									}
+								}
+								router.subMu.RUnlock()
+							}
+						case *mmtp.ApplicationMessageHeader_Recipients:
+							{
+								router.erMu.RLock()
+								for _, recipient := range subjectOrRecipient.Recipients.GetRecipients() {
+									err := router.edgeRouters[recipient].QueueMessage(incomingMessage)
+									if err != nil {
+										fmt.Println("Could not queue message for Edge Router:", err)
+									}
+								}
+								router.erMu.RUnlock()
+							}
+						}
+					}
+				default:
+					continue
 				}
+			}
+		}
+	}
+}
 
-				// if the received message has a TTL we should set it on the message being published
-				if sendMessage.Expires != 0 {
-					now := time.Now().UnixMilli()
-					ttl := (sendMessage.Expires * 1000) - now
-					msg.Expiration = strconv.FormatInt(ttl, 10)
-				}
-
-				err = ch.PublishWithContext(
-					ctx,
-					"subscriptions",
-					subName,
-					false,
-					false,
-					msg,
-				)
-				if err != nil {
-					fmt.Println("Could not publish subscription message", err)
+func handleOutgoingMessages(ctx context.Context, router *MMSRouter) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			for outgoingMessage := range router.outgoingChannel {
+				switch outgoingMessage.GetMsgType() {
+				case mmtp.MsgType_PROTOCOL_MESSAGE:
+					{
+						appMsg := outgoingMessage.GetProtocolMessage().GetSendMessage().GetApplicationMessage()
+						if appMsg == nil {
+							continue
+						}
+						msgBytes, err := proto.Marshal(outgoingMessage)
+						if err != nil {
+							fmt.Println("Could not marshal outgoing message:", err)
+							continue
+						}
+						switch subjectOrRecipient := appMsg.GetHeader().GetSubjectOrRecipient().(type) {
+						case *mmtp.ApplicationMessageHeader_Subject:
+							{
+								topic, ok := router.topicHandles[subjectOrRecipient.Subject]
+								if !ok {
+									topic, err = router.pubSub.Join(subjectOrRecipient.Subject)
+									if err != nil {
+										fmt.Println("Could not join topic:", err)
+										continue
+									}
+									router.topicHandles[subjectOrRecipient.Subject] = topic
+								}
+								err = topic.Publish(ctx, msgBytes)
+								if err != nil {
+									fmt.Println("Could not public message to topic:", err)
+									continue
+								}
+							}
+						case *mmtp.ApplicationMessageHeader_Recipients:
+							{
+								for _, recipient := range subjectOrRecipient.Recipients.GetRecipients() {
+									topic, ok := router.topicHandles[recipient]
+									if !ok {
+										topic, err = router.pubSub.Join(recipient)
+										if err != nil {
+											fmt.Println("Could not join topic:", err)
+											continue
+										}
+										router.topicHandles[recipient] = topic
+									}
+									err = topic.Publish(ctx, msgBytes)
+									if err != nil {
+										fmt.Println("Could not public message to topic:", err)
+										continue
+									}
+								}
+							}
+						}
+					}
+				default:
+					continue
 				}
 			}
 		}
@@ -649,13 +659,10 @@ func main() {
 	}
 	fmt.Println("Peer discovery complete")
 
-	rmq, err := amqp.Dial("amqp://guest:guest@localhost:5672/")
-	if err != nil {
-		panic("Could not connect to RabbitMQ")
-	}
-	defer rmq.Close()
+	incomingChannel := make(chan *mmtp.MmtpMessage)
+	outgoingChannel := make(chan *mmtp.MmtpMessage)
 
-	router := NewMMSRouter(&node, pubSub, "0.0.0.0:8080", rmq, ctx)
+	router := NewMMSRouter(&node, pubSub, "0.0.0.0:8081", incomingChannel, outgoingChannel, ctx)
 	go router.StartRouter(ctx)
 
 	// wait for a SIGINT or SIGTERM signal
