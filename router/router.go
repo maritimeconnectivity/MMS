@@ -250,7 +250,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 		for {
 			err = wspb.Read(request.Context(), c, &mmtpMessage)
 			if err != nil {
-				fmt.Println(err)
+				fmt.Println("Something went wrong while reading message from Edge Router:", err)
 				return
 			}
 			switch mmtpMessage.GetMsgType() {
@@ -375,15 +375,50 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 							break
 						}
 					case mmtp.ProtocolMessageType_DISCONNECT_MESSAGE:
+						{
+							if disconnect := protoMessage.GetDisconnectMessage(); disconnect != nil {
+								resp = mmtp.MmtpMessage{
+									MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+									Uuid:    uuid.NewString(),
+									Body: &mmtp.MmtpMessage_ResponseMessage{
+										ResponseMessage: &mmtp.ResponseMessage{
+											ResponseToUuid: mmtpMessage.GetUuid(),
+											Response:       mmtp.ResponseEnum_GOOD,
+										}},
+								}
+								if err = wspb.Write(request.Context(), c, &resp); err != nil {
+									fmt.Println("Could not send disconnect response to Edge Router:", err)
+								}
+								if err = c.Close(websocket.StatusNormalClosure, "Closed connection after receiving Disconnect message"); err != nil {
+									fmt.Println("Websocket could not be closed cleanly:", err)
+									return
+								}
+							}
+							break
+						}
 					case mmtp.ProtocolMessageType_CONNECT_MESSAGE:
+						{
+							reason := "Already connected"
+							resp = mmtp.MmtpMessage{
+								MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+								Uuid:    uuid.NewString(),
+								Body: &mmtp.MmtpMessage_ResponseMessage{
+									ResponseMessage: &mmtp.ResponseMessage{
+										ResponseToUuid: mmtpMessage.GetUuid(),
+										Response:       mmtp.ResponseEnum_ERROR,
+										ReasonText:     &reason,
+									}},
+							}
+							if err = wspb.Write(request.Context(), c, &resp); err != nil {
+								fmt.Println("Could not send error response:", err)
+							}
+							break
+						}
 					default:
 						continue
 					}
 				}
 			case mmtp.MsgType_RESPONSE_MESSAGE:
-				{
-
-				}
 			default:
 				continue
 			}
