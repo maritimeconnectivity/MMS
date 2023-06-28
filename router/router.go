@@ -410,10 +410,14 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 						{
 							if fetch := protoMessage.GetFetchMessage(); fetch != nil {
 								e.msgMu.RLock()
-								msgHeaders := make([]*mmtp.ApplicationMessageHeader, 0, len(e.Messages))
+								metadata := make([]*mmtp.MessageMetadata, 0, len(e.Messages))
 								for _, msg := range e.Messages {
 									msgHeader := msg.GetProtocolMessage().GetSendMessage().GetApplicationMessage().GetHeader()
-									msgHeaders = append(msgHeaders, msgHeader)
+									msgMetadata := &mmtp.MessageMetadata{
+										Uuid:   msg.GetUuid(),
+										Header: msgHeader,
+									}
+									metadata = append(metadata, msgMetadata)
 								}
 								e.msgMu.RUnlock()
 								resp = mmtp.MmtpMessage{
@@ -423,7 +427,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 										ResponseMessage: &mmtp.ResponseMessage{
 											ResponseToUuid:  mmtpMessage.GetUuid(),
 											Response:        mmtp.ResponseEnum_GOOD,
-											MessageMetadata: []*mmtp.MessageMetadata{{Headers: msgHeaders}},
+											MessageMetadata: metadata,
 										}},
 								}
 								err = wspb.Write(request.Context(), c, &resp)
