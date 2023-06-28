@@ -107,5 +107,6 @@ enum ResponseEnum {
 }
 
 message MessageMetadata {
-  repeated ApplicationMessageHeader headers = 1;
+  string uuid = 1;
+  ApplicationMessageHeader header = 2;
 }
