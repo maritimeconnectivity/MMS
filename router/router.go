@@ -702,7 +702,7 @@ func main() {
 	incomingChannel := make(chan *mmtp.MmtpMessage)
 	outgoingChannel := make(chan *mmtp.MmtpMessage)
 
-	router := NewMMSRouter(&node, pubSub, "0.0.0.0:8081", incomingChannel, outgoingChannel, ctx)
+	router := NewMMSRouter(&node, pubSub, "0.0.0.0:8080", incomingChannel, outgoingChannel, ctx)
 	go router.StartRouter(ctx)
 
 	// wait for a SIGINT or SIGTERM signal
