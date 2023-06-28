@@ -40,6 +40,7 @@ import (
 	"nhooyr.io/websocket/wspb"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"time"
 )
@@ -238,10 +239,14 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 		edgeRouters[e.Mrn] = e
 		erMu.Unlock()
 
-		resp := mmtp.MmtpMessage{MsgType: mmtp.MsgType_RESPONSE_MESSAGE, Uuid: uuid.NewString(), Body: &mmtp.MmtpMessage_ResponseMessage{ResponseMessage: &mmtp.ResponseMessage{
-			ResponseToUuid: mmtpMessage.GetUuid(),
-			Response:       mmtp.ResponseEnum_GOOD,
-		}}}
+		resp := mmtp.MmtpMessage{
+			MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+			Uuid:    uuid.NewString(),
+			Body: &mmtp.MmtpMessage_ResponseMessage{
+				ResponseMessage: &mmtp.ResponseMessage{
+					ResponseToUuid: mmtpMessage.GetUuid(),
+					Response:       mmtp.ResponseEnum_GOOD,
+				}}}
 		err = wspb.Write(request.Context(), c, &resp)
 		if err != nil {
 			fmt.Println(err)
@@ -293,6 +298,20 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 									sub.AddSubscriber(e)
 								}
 								mu.Unlock()
+								e.Interests = append(e.Interests, subject)
+
+								resp = mmtp.MmtpMessage{
+									MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+									Uuid:    uuid.NewString(),
+									Body: &mmtp.MmtpMessage_ResponseMessage{
+										ResponseMessage: &mmtp.ResponseMessage{
+											ResponseToUuid: mmtpMessage.GetUuid(),
+											Response:       mmtp.ResponseEnum_GOOD,
+										}},
+								}
+								if err = wspb.Write(request.Context(), c, &resp); err != nil {
+									fmt.Println("Could not send subscribe response to Edge Router:", err)
+								}
 							}
 							break
 						}
@@ -310,6 +329,27 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 								}
 								sub.DeleteSubscriber(e)
 								mu.Unlock()
+								interests := e.Interests
+								for i := range interests {
+									if strings.EqualFold(subject, interests[i]) {
+										interests[i] = interests[len(interests)-1]
+										interests[len(interests)-1] = ""
+										interests = interests[:len(interests)-1]
+										e.Interests = interests
+									}
+								}
+								resp = mmtp.MmtpMessage{
+									MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+									Uuid:    uuid.NewString(),
+									Body: &mmtp.MmtpMessage_ResponseMessage{
+										ResponseMessage: &mmtp.ResponseMessage{
+											ResponseToUuid: mmtpMessage.GetUuid(),
+											Response:       mmtp.ResponseEnum_GOOD,
+										}},
+								}
+								if err = wspb.Write(request.Context(), c, &resp); err != nil {
+									fmt.Println("Could not write response to unsubscribe message:", err)
+								}
 							}
 							break
 						}
@@ -317,6 +357,19 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 						{
 							if send := protoMessage.GetSendMessage(); send != nil {
 								outgoingChannel <- &mmtpMessage
+
+								resp = mmtp.MmtpMessage{
+									MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+									Uuid:    uuid.NewString(),
+									Body: &mmtp.MmtpMessage_ResponseMessage{
+										ResponseMessage: &mmtp.ResponseMessage{
+											ResponseToUuid: mmtpMessage.GetUuid(),
+											Response:       mmtp.ResponseEnum_GOOD,
+										}},
+								}
+								if err = wspb.Write(request.Context(), c, &resp); err != nil {
+									fmt.Println("Could not send Send response to Edge Router:", err)
+								}
 							}
 							break
 						}
@@ -394,6 +447,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 								if err = wspb.Write(request.Context(), c, &resp); err != nil {
 									fmt.Println("Could not send disconnect response to Edge Router:", err)
 								}
+
 								if err = c.Close(websocket.StatusNormalClosure, "Closed connection after receiving Disconnect message"); err != nil {
 									fmt.Println("Websocket could not be closed cleanly:", err)
 									return
