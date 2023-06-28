@@ -119,9 +119,10 @@ func NewMMSRouter(p2p *host.Host, pubSub *pubsub.PubSub, listeningAddr string, i
 	mu := &sync.RWMutex{}
 	edgeRouters := make(map[string]*EdgeRouter)
 	erMu := &sync.RWMutex{}
+	topicHandles := make(map[string]*pubsub.Topic)
 	httpServer := http.Server{
 		Addr:    listeningAddr,
-		Handler: handleHttpConnection(p2p, pubSub, incomingChannel, outgoingChannel, subs, mu, edgeRouters, erMu, ctx),
+		Handler: handleHttpConnection(p2p, pubSub, incomingChannel, outgoingChannel, subs, mu, edgeRouters, erMu, topicHandles, ctx),
 		TLSConfig: &tls.Config{
 			ClientAuth:            tls.RequireAndVerifyClientCert,
 			ClientCAs:             nil, // this should come from a file containing the CAs we trust
@@ -138,7 +139,7 @@ func NewMMSRouter(p2p *host.Host, pubSub *pubsub.PubSub, listeningAddr string, i
 		httpServer:      &httpServer,
 		p2pHost:         p2p,
 		pubSub:          pubSub,
-		topicHandles:    make(map[string]*pubsub.Topic),
+		topicHandles:    topicHandles,
 		incomingChannel: incomingChannel,
 		outgoingChannel: outgoingChannel,
 		ctx:             ctx,
@@ -163,7 +164,7 @@ func (r *MMSRouter) StartRouter(ctx context.Context) {
 	}
 }
 
-func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel chan *mmtp.MmtpMessage, outgoingChannel chan<- *mmtp.MmtpMessage, subs map[string]*Subscription, mu *sync.RWMutex, edgeRouters map[string]*EdgeRouter, erMu *sync.RWMutex, ctx context.Context) http.HandlerFunc {
+func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel chan *mmtp.MmtpMessage, outgoingChannel chan<- *mmtp.MmtpMessage, subs map[string]*Subscription, mu *sync.RWMutex, edgeRouters map[string]*EdgeRouter, erMu *sync.RWMutex, topicHandles map[string]*pubsub.Topic, ctx context.Context) http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
 		c, err := websocket.Accept(writer, request, nil)
 		if err != nil {
@@ -272,9 +273,13 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 								sub, exists := subs[subject]
 								if !exists {
 									sub = NewSubscription(subject)
-									topic, err := pubSub.Join(subject)
-									if err != nil {
-										panic(err)
+									topic, ok := topicHandles[subject]
+									if !ok {
+										topic, err = pubSub.Join(subject)
+										if err != nil {
+											panic(err)
+										}
+										topicHandles[subject] = topic
 									}
 									sub.AddSubscriber(e)
 									sub.Topic = topic
