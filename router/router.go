@@ -45,6 +45,7 @@ import (
 	"time"
 )
 
+// EdgeRouter type representing a connected Edge Router
 type EdgeRouter struct {
 	Mrn       string                       // the MRN of the EdgeRouter
 	Interests []string                     // the Interests that the EdgeRouter wants to subscribe to
