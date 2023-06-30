@@ -445,6 +445,30 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 										fmt.Println("Could not send messages to Edge Router:", err)
 										e.BulkQueueMessages(mmtpMessages)
 									}
+								} else { // Receive all messages
+									e.msgMu.Lock()
+									msgsLen := len(e.Messages)
+									appMsgs := make([]*mmtp.ApplicationMessage, 0, msgsLen)
+									for _, mmtpMsg := range e.Messages {
+										msg := mmtpMsg.GetProtocolMessage().GetSendMessage().GetApplicationMessage()
+										appMsgs = append(appMsgs, msg)
+									}
+									resp = mmtp.MmtpMessage{
+										MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+										Uuid:    uuid.NewString(),
+										Body: &mmtp.MmtpMessage_ResponseMessage{ResponseMessage: &mmtp.ResponseMessage{
+											ResponseToUuid:      mmtpMessage.GetUuid(),
+											Response:            mmtp.ResponseEnum_GOOD,
+											ApplicationMessages: appMsgs,
+										}},
+									}
+									err = wspb.Write(request.Context(), c, &resp)
+									if err != nil {
+										fmt.Println("Could not send messages to Edge Router:", err)
+									} else {
+										e.Messages = make(map[string]*mmtp.MmtpMessage)
+									}
+									e.msgMu.Unlock()
 								}
 							}
 							break
