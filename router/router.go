@@ -47,11 +47,11 @@ import (
 
 // EdgeRouter type representing a connected Edge Router
 type EdgeRouter struct {
-	Mrn       string                       // the MRN of the EdgeRouter
-	Interests []string                     // the Interests that the EdgeRouter wants to subscribe to
-	Messages  map[string]*mmtp.MmtpMessage // the incoming messages for this EdgeRouter
-	msgMu     *sync.RWMutex                // RWMutex for locking the Messages map
-	Ws        *websocket.Conn              // the websocket connection to this EdgeRouter
+	Mrn            string                       // the MRN of the EdgeRouter
+	Interests      []string                     // the Interests that the EdgeRouter wants to subscribe to
+	Messages       map[string]*mmtp.MmtpMessage // the incoming messages for this EdgeRouter
+	msgMu          *sync.RWMutex                // RWMutex for locking the Messages map
+	reconnectToken string                       // token for reconnecting to a previous session
 }
 
 func (er *EdgeRouter) QueueMessage(mmtpMessage *mmtp.MmtpMessage) error {
@@ -228,13 +228,55 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 		//	}
 		//}
 
-		e := &EdgeRouter{
-			Mrn:       erMrn,
-			Interests: make([]string, 0, 1),
-			Messages:  make(map[string]*mmtp.MmtpMessage),
-			msgMu:     &sync.RWMutex{},
-			Ws:        c,
+		var e *EdgeRouter
+		if connect.ReconnectToken != nil {
+			erMu.RLock()
+			e = edgeRouters[e.Mrn]
+			erMu.RUnlock()
+			if e == nil {
+				errorMsg := "No existing session was found for the given MRN"
+				resp := &mmtp.MmtpMessage{
+					MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+					Uuid:    uuid.NewString(),
+					Body: &mmtp.MmtpMessage_ResponseMessage{
+						ResponseMessage: &mmtp.ResponseMessage{
+							ResponseToUuid: mmtpMessage.GetUuid(),
+							Response:       mmtp.ResponseEnum_ERROR,
+							ReasonText:     &errorMsg,
+						}},
+				}
+				if err = wspb.Write(request.Context(), c, resp); err != nil {
+					fmt.Println("Could not write error message:", err)
+					return
+				}
+			}
+			if connect.GetReconnectToken() != e.reconnectToken {
+				errorMsg := "The given reconnect token does not match the one that is stored"
+				resp := &mmtp.MmtpMessage{
+					MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+					Uuid:    uuid.NewString(),
+					Body: &mmtp.MmtpMessage_ResponseMessage{
+						ResponseMessage: &mmtp.ResponseMessage{
+							ResponseToUuid: mmtpMessage.GetUuid(),
+							Response:       mmtp.ResponseEnum_ERROR,
+							ReasonText:     &errorMsg,
+						}},
+				}
+				if err = wspb.Write(request.Context(), c, resp); err != nil {
+					fmt.Println("Could not write error message:", err)
+					return
+				}
+			}
+		} else {
+			e = &EdgeRouter{
+				Mrn:       erMrn,
+				Interests: make([]string, 0, 1),
+				Messages:  make(map[string]*mmtp.MmtpMessage),
+				msgMu:     &sync.RWMutex{},
+			}
 		}
+
+		e.reconnectToken = uuid.NewString()
 
 		erMu.Lock()
 		edgeRouters[e.Mrn] = e
@@ -247,7 +289,8 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 				ResponseMessage: &mmtp.ResponseMessage{
 					ResponseToUuid: mmtpMessage.GetUuid(),
 					Response:       mmtp.ResponseEnum_GOOD,
-				}}}
+				}},
+		}
 		err = wspb.Write(request.Context(), c, &resp)
 		if err != nil {
 			fmt.Println(err)
