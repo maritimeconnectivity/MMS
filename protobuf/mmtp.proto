@@ -79,6 +79,7 @@ message Disconnect {
 
 message Connect {
   optional string ownMrn = 1;
+  optional string reconnectToken = 2;
 }
 
 enum ProtocolMessageType {
@@ -98,6 +99,7 @@ message ResponseMessage {
   optional string reasonText = 3;
   repeated MessageMetadata messageMetadata = 4;
   repeated ApplicationMessage applicationMessages = 5;
+  optional string reconnectToken = 6;
 }
 
 enum ResponseEnum {
