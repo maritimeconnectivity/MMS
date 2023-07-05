@@ -21,26 +21,18 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/json"
 	"fmt"
-	"github.com/google/uuid"
 	"github.com/hashicorp/mdns"
 	"github.com/libp2p/go-libp2p"
-	dht "github.com/libp2p/go-libp2p-kad-dht"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
-	"github.com/libp2p/go-libp2p/core/host"
-	"github.com/libp2p/go-libp2p/core/peer"
-	drouting "github.com/libp2p/go-libp2p/p2p/discovery/routing"
-	dutil "github.com/libp2p/go-libp2p/p2p/discovery/util"
 	"golang.org/x/crypto/ocsp"
+	"google.golang.org/protobuf/proto"
 	"io"
 	"maritimeconnectivity.net/mms-router/generated/mmtp"
 	"net/http"
 	"nhooyr.io/websocket"
-	"nhooyr.io/websocket/wsjson"
 	"os"
 	"os/signal"
-	"strconv"
 	"sync"
 	"time"
 )
@@ -120,7 +112,7 @@ func NewEdgeRouter(listeningAddr string, incomingChannel chan *mmtp.MmtpMessage,
 	agentsMu := &sync.RWMutex{}
 	httpServer := http.Server{
 		Addr:    listeningAddr,
-		Handler: handleHttpConnection(mu, subs, ctx),
+		Handler: handleHttpConnection(incomingChannel, outgoingChannel, subs, mu, ctx),
 		TLSConfig: &tls.Config{
 			ClientAuth:            tls.VerifyClientCertIfGiven,
 			ClientCAs:             nil,
@@ -247,71 +239,80 @@ func verifyAgentCertificate() func(rawCerts [][]byte, verifiedChains [][]*x509.C
 	}
 }
 
-func handleSubscription(ctx context.Context, sub *pubsub.Subscription, host *host.Host, subscription *Subscription, rmqConnection *amqp.Connection) {
-	ch, err := rmqConnection.Channel()
-	if err != nil {
-		panic(err)
-	}
-	defer ch.Close()
+func handleIncomingMessages(ctx context.Context, edgeRouter *EdgeRouter) {
 	for {
 		select {
 		case <-ctx.Done():
-			sub.Cancel()
-			break
+			return
 		default:
-			m, err := sub.Next(ctx)
-			if err != nil {
-				fmt.Println("Could not get message from subscription:", err)
-				continue
+			for incomingMessage := range edgeRouter.incomingChannel {
+				switch incomingMessage.GetMsgType() {
+				case mmtp.MsgType_PROTOCOL_MESSAGE:
+					{
+						appMsg := incomingMessage.GetProtocolMessage().GetSendMessage().GetApplicationMessage()
+						if appMsg == nil {
+							continue
+						}
+						switch subjectOrRecipient := appMsg.GetHeader().GetSubjectOrRecipient().(type) {
+						case *mmtp.ApplicationMessageHeader_Subject:
+							{
+								edgeRouter.subMu.RLock()
+								for _, subscriber := range edgeRouter.subscriptions[subjectOrRecipient.Subject].Subscribers {
+									if err := subscriber.QueueMessage(incomingMessage); err != nil {
+										fmt.Println("Could not queue message:", err)
+										continue
+									}
+								}
+								edgeRouter.subMu.RUnlock()
+							}
+						case *mmtp.ApplicationMessageHeader_Recipients:
+							{
+								edgeRouter.agentsMu.RLock()
+								for _, recipient := range subjectOrRecipient.Recipients.GetRecipients() {
+									err := edgeRouter.agents[recipient].QueueMessage(incomingMessage)
+									if err != nil {
+										fmt.Println("Could not queue message for Edge Router:", err)
+									}
+								}
+								edgeRouter.agentsMu.RUnlock()
+							}
+						}
+					}
+				default:
+					continue
+				}
 			}
-			if m.GetFrom() != (*host).ID() {
-				var protoMessage ProtocolMessage
-				if err = json.Unmarshal(m.Data, &protoMessage); err != nil {
-					fmt.Println("Could not unmarshal received message as an protocol message:", err)
-					continue
-				}
-				sendMessage := protoMessage.Send
-				if sendMessage == nil {
-					fmt.Println("The received protocol message did not contain a send application message")
-					continue
-				}
-				uid, err := uuid.Parse(sendMessage.Id)
-				if err != nil {
-					fmt.Println("The ID of the message is not a valid UUID:", err)
-					continue
-				}
-				if uid.Version() != 4 {
-					fmt.Println("The ID of the message is not a valid version 4 UUID")
-					continue
-				}
-				subName := subscription.Interest
-				if sendMessage.Subject != subName {
-					fmt.Println("The subject of the message does not match the name of the subscription")
-					continue
-				}
+		}
+	}
+}
 
-				msg := amqp.Publishing{
-					ContentType: "application/json",
-					Body:        m.Data,
-				}
-
-				// if the received message has a TTL we should set it on the message being published
-				if sendMessage.Expires != 0 {
-					now := time.Now().UnixMilli()
-					ttl := (sendMessage.Expires * 1000) - now
-					msg.Expiration = strconv.FormatInt(ttl, 10)
-				}
-
-				err = ch.PublishWithContext(
-					ctx,
-					"subscriptions",
-					subName,
-					false,
-					false,
-					msg,
-				)
-				if err != nil {
-					fmt.Println("Could not publish subscription message", err)
+func handleOutgoingMessages(ctx context.Context, edgeRouter *EdgeRouter) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			for outgoingMessage := range edgeRouter.outgoingChannel {
+				switch outgoingMessage.GetMsgType() {
+				case mmtp.MsgType_PROTOCOL_MESSAGE:
+					{
+						appMsg := outgoingMessage.GetProtocolMessage().GetSendMessage().GetApplicationMessage()
+						if appMsg == nil {
+							continue
+						}
+						msgBytes, err := proto.Marshal(outgoingMessage)
+						if err != nil {
+							fmt.Println("Could not marshal outgoing message:", err)
+							continue
+						}
+						switch subjectOrRecipient := appMsg.GetHeader().GetSubjectOrRecipient().(type) {
+						case *mmtp.ApplicationMessageHeader_Subject:
+						case *mmtp.ApplicationMessageHeader_Recipients:
+							// Everything should just be sent to the Router
+						}
+					}
+				default:
+					continue
 				}
 			}
 		}
@@ -332,40 +333,14 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	pubSub, err := pubsub.NewGossipSub(ctx, h)
-	if err != nil {
-		panic(err)
-	}
-
-	kademlia, err := dht.New(ctx, h)
-	if err != nil {
-		panic(err)
-	}
-
-	rd := drouting.NewRoutingDiscovery(kademlia)
-
-	dutil.Advertise(ctx, rd, "over here")
-
-	p, err := peer.AddrInfoFromString("/ip4/127.0.0.1/udp/27000/quic-v1/p2p/QmcUKyMuepvXqZhpMSBP59KKBymRNstk41qGMPj38QStfx")
-	if err != nil {
-		panic(err)
-	}
-
-	if err = h.Connect(ctx, *p); err != nil {
-		panic(err)
-	}
-
-	rmq, err := amqp.Dial("amqp://guest:guest@localhost:5672/")
-	if err != nil {
-		panic("Could not connect to RabbitMQ")
-	}
-	defer rmq.Close()
-
 	// wait for a SIGINT or SIGTERM signal
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, os.Interrupt)
 
-	er := NewEdgeRouter(&h, pubSub, "0.0.0.0:8080", rmq, ctx)
+	incomingChannel := make(chan *mmtp.MmtpMessage)
+	outgoingChannel := make(chan *mmtp.MmtpMessage)
+
+	er := NewEdgeRouter("0.0.0.0:8080", incomingChannel, outgoingChannel, ctx)
 	go er.StartEdgeRouter(ctx)
 
 	hst, err := os.Hostname()
