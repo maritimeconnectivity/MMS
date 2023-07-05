@@ -34,6 +34,7 @@ import (
 	dutil "github.com/libp2p/go-libp2p/p2p/discovery/util"
 	"golang.org/x/crypto/ocsp"
 	"io"
+	"maritimeconnectivity.net/mms-router/generated/mmtp"
 	"net/http"
 	"nhooyr.io/websocket"
 	"nhooyr.io/websocket/wsjson"
@@ -44,40 +45,32 @@ import (
 	"time"
 )
 
-// Agent type representing an MMS agent
+// Agent type representing a connected Edge Router
 type Agent struct {
-	Mrn       string          // the MRN of the Agent
-	Interests []string        // the Interests that the Agent wants to subscribe to
-	Dm        bool            // whether the Agent wants to be able to receive direct messages
-	Ws        *websocket.Conn // the websocket connection to this Agent
+	Mrn            string                       // the MRN of the Agent
+	Interests      []string                     // the Interests that the Agent wants to subscribe to
+	Messages       map[string]*mmtp.MmtpMessage // the incoming messages for this Agent
+	msgMu          *sync.RWMutex                // RWMutex for locking the Messages map
+	reconnectToken string                       // token for reconnecting to a previous session
 }
 
-// Register type representing the register protocol message
-type Register struct {
-	Mrn       string   // the MRN of the Agent
-	Interests []string // the Interests that the Agent wants to subscribe to
-	Dm        bool     // whether the Agent wants to be able to receive direct messages
+func (er *Agent) QueueMessage(mmtpMessage *mmtp.MmtpMessage) error {
+	uUid := mmtpMessage.GetUuid()
+	if uUid == "" {
+		return fmt.Errorf("the message does not contain a UUID")
+	}
+	er.msgMu.Lock()
+	er.Messages[uUid] = mmtpMessage
+	er.msgMu.Unlock()
+	return nil
 }
 
-//type Authentication struct {
-//	Nonce  string `json:"nonce"`
-//	X5u    string `json:"x5u"`
-//	X5t256 string `json:"x5t#256,omitempty"`
-//	jwt.RegisteredClaims
-//}
-
-type ApplicationMessage struct {
-	Id         string   `json:"id,omitempty"`
-	Subject    string   `json:"subject"`
-	Recipients []string `json:"recipients"`
-	Expires    int64    `json:"expires,omitempty"`
-	Sender     string   `json:"sender,omitempty"`
-	Body       string   `json:"body,omitempty"`
-}
-
-type ProtocolMessage struct {
-	Send    *ApplicationMessage `json:"send,omitempty"`
-	Receive interface{}         `json:"receive,omitempty"`
+func (er *Agent) BulkQueueMessages(mmtpMessages []*mmtp.MmtpMessage) {
+	er.msgMu.Lock()
+	for _, message := range mmtpMessages {
+		er.Messages[message.Uuid] = message
+	}
+	er.msgMu.Unlock()
 }
 
 // Subscription type representing a subscription
@@ -110,21 +103,24 @@ func (sub *Subscription) DeleteSubscriber(agent *Agent) {
 
 // EdgeRouter type representing an MMS edge router
 type EdgeRouter struct {
-	subscriptions map[string]*Subscription // a mapping from Interest names to Subscription slices
-	subMu         *sync.RWMutex            // a Mutex for locking the subscriptions map
-	httpServer    *http.Server             // the http server that is used to bootstrap websocket connections
-	p2pHost       *host.Host               // the libp2p host that is used to connect to the MMS router network
-	pubSub        *pubsub.PubSub           // a PubSub instance for the EdgeRouter
-	rmqConnection *amqp.Connection         // the connection to the RabbitMQ message broker
-	ctx           context.Context          // the main Context of the EdgeRouter
+	subscriptions   map[string]*Subscription // a mapping from Interest names to Subscription slices
+	subMu           *sync.RWMutex            // a Mutex for locking the subscriptions map
+	agents          map[string]*Agent        // a map of connected Agents
+	agentsMu        *sync.RWMutex            // a Mutex for locking the agents map
+	httpServer      *http.Server             // the http server that is used to bootstrap websocket connections
+	incomingChannel chan *mmtp.MmtpMessage   // channel for incoming messages
+	outgoingChannel chan *mmtp.MmtpMessage   // channel for outgoing messages
+	ctx             context.Context          // the main Context of the EdgeRouter
 }
 
-func NewEdgeRouter(p2p *host.Host, pubSub *pubsub.PubSub, listeningAddr string, rmqConnection *amqp.Connection, ctx context.Context) *EdgeRouter {
+func NewEdgeRouter(listeningAddr string, incomingChannel chan *mmtp.MmtpMessage, outgoingChannel chan *mmtp.MmtpMessage, ctx context.Context) *EdgeRouter {
 	subs := make(map[string]*Subscription)
 	mu := &sync.RWMutex{}
+	agents := make(map[string]*Agent)
+	agentsMu := &sync.RWMutex{}
 	httpServer := http.Server{
 		Addr:    listeningAddr,
-		Handler: handleHttpConnection(p2p, pubSub, rmqConnection, mu, subs, ctx),
+		Handler: handleHttpConnection(mu, subs, ctx),
 		TLSConfig: &tls.Config{
 			ClientAuth:            tls.VerifyClientCertIfGiven,
 			ClientCAs:             nil,
@@ -134,46 +130,18 @@ func NewEdgeRouter(p2p *host.Host, pubSub *pubsub.PubSub, listeningAddr string, 
 	}
 
 	return &EdgeRouter{
-		subscriptions: subs,
-		subMu:         mu,
-		httpServer:    &httpServer,
-		p2pHost:       p2p,
-		pubSub:        pubSub,
-		rmqConnection: rmqConnection,
-		ctx:           ctx,
+		subscriptions:   subs,
+		subMu:           mu,
+		agents:          agents,
+		agentsMu:        agentsMu,
+		httpServer:      &httpServer,
+		incomingChannel: incomingChannel,
+		outgoingChannel: outgoingChannel,
+		ctx:             ctx,
 	}
 }
 
 func (er *EdgeRouter) StartEdgeRouter(ctx context.Context) {
-	rmqChannel, err := er.rmqConnection.Channel()
-	if err != nil {
-		panic(err)
-	}
-	defer rmqChannel.Close()
-	err = rmqChannel.ExchangeDeclare(
-		"subscriptions",
-		"direct",
-		true,  // durable
-		false, // auto-deleted
-		false, // internal
-		false, // no-wait
-		nil,   // arguments
-	)
-	if err != nil {
-		panic(err)
-	}
-	err = rmqChannel.ExchangeDeclare(
-		"direct_messages",
-		"direct",
-		true,  // durable
-		false, // auto-deleted
-		false, // internal
-		false, // no-wait
-		nil,   // arguments
-	)
-	if err != nil {
-		panic(err)
-	}
 	go func() {
 		fmt.Println("Starting edge router")
 		if err := er.httpServer.ListenAndServe(); err != nil {
@@ -188,7 +156,7 @@ func (er *EdgeRouter) StartEdgeRouter(ctx context.Context) {
 	}
 }
 
-func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, rmqConnection *amqp.Connection, mu *sync.RWMutex, subs map[string]*Subscription, ctx context.Context) http.HandlerFunc {
+func handleHttpConnection(incomingChannel chan *mmtp.MmtpMessage, outgoingChannel chan<- *mmtp.MmtpMessage, subs map[string]*Subscription, mu *sync.RWMutex, ctx context.Context) http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
 		c, err := websocket.Accept(writer, request, nil)
 		if err != nil {
@@ -201,222 +169,6 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, rmqConnection *
 				fmt.Println("Could not close connection:", err)
 			}
 		}(c, websocket.StatusInternalError, "PANIC!!!")
-
-		var buf interface{}
-		err = wsjson.Read(request.Context(), c, &buf)
-		if err != nil {
-			fmt.Println(err)
-			return
-		}
-
-		m, ok := buf.(map[string]interface{})
-		if !ok {
-			fmt.Println("Could not convert buffer to map")
-			return
-		}
-
-		tmp, ok := m["register"]
-		if !ok {
-			if err = c.Close(websocket.StatusUnsupportedData, "First message needs to contain a 'register' object"); err != nil {
-				fmt.Println(err)
-			}
-			return
-		}
-
-		reg, ok := tmp.(map[string]interface{})
-		if !ok {
-			if err = c.Close(websocket.StatusUnsupportedData, "The received 'register' object could not be parsed"); err != nil {
-				fmt.Println(err)
-			}
-			return
-		}
-		// if dm has not been explicitly set, it implicitly means that it is true
-		_, ok = reg["dm"]
-		if !ok {
-			reg["dm"] = true
-		}
-
-		var r Register
-		err = mapstructure.Decode(&reg, &r)
-		if err != nil {
-			fmt.Println("The received message could not be decoded as a register protocol message", err)
-			return
-		}
-		fmt.Println(r)
-
-		a := &Agent{
-			Mrn:       r.Mrn,
-			Interests: r.Interests,
-			Dm:        r.Dm,
-			Ws:        c,
-		}
-
-		ch, err := rmqConnection.Channel()
-		if err != nil {
-			fmt.Println("Could not make a channel to RabbitMQ for agent", err)
-			return
-		}
-
-		q, err := ch.QueueDeclare(
-			a.Mrn,
-			true,
-			false,
-			false,
-			false,
-			nil,
-		)
-		if err != nil {
-			fmt.Println("Could not declare a queue for agent", err)
-			return
-		}
-
-		if r.Dm && len(request.TLS.VerifiedChains) > 0 {
-			err = ch.QueueBind(
-				q.Name,
-				a.Mrn,
-				"direct_messages",
-				false,
-				nil,
-			)
-			if err != nil {
-				fmt.Println("Could not bind direct messages to agent queue:", err)
-				return
-			}
-		}
-
-		if len(r.Interests) > 0 {
-			mu.Lock()
-			for _, interest := range r.Interests {
-				s, exists := subs[interest]
-				if !exists {
-					sub := NewSubscription(interest)
-					topic, err := pubSub.Join(interest)
-					if err != nil {
-						panic(err)
-					}
-					sub.AddSubscriber(a)
-					sub.Topic = topic
-					subscription, err := topic.Subscribe()
-					if err != nil {
-						panic(err)
-					}
-					go handleSubscription(ctx, subscription, p2p, sub, rmqConnection)
-					subs[interest] = sub
-				} else {
-					s.AddSubscriber(a)
-				}
-				err = ch.QueueBind(
-					q.Name,
-					interest,
-					"subscriptions",
-					false,
-					nil,
-				)
-				if err != nil {
-					fmt.Println("Could not subscribe agent to topic:", err)
-				}
-			}
-			mu.Unlock()
-			// Make sure to delete agent after it disconnects
-			defer func() {
-				for _, interest := range a.Interests {
-					subs[interest].DeleteSubscriber(a)
-				}
-			}()
-		}
-
-		for {
-			var protoMessage ProtocolMessage
-			err = wsjson.Read(request.Context(), c, &protoMessage)
-			if err != nil {
-				fmt.Println("Could not read message from agent:", err)
-				break
-			}
-
-			if protoMessage.Send != nil {
-				sendMsg := protoMessage.Send
-
-				// for now, we just assume that it is a subject cast message
-				subject := sendMsg.Subject
-				subscription, ok := subs[subject]
-				if !ok {
-					fmt.Printf("Nobody is subscribed to the subject %s\n", subject)
-					continue
-				}
-
-				newProtMsg := ProtocolMessage{Send: sendMsg}
-
-				msgJson, err := json.Marshal(newProtMsg)
-				if err != nil {
-					fmt.Println("Could not JSON marshal the message", err)
-					continue
-				}
-
-				err = subscription.Topic.Publish(request.Context(), msgJson)
-				if err != nil {
-					fmt.Println("Could not publish message to topic", err)
-				}
-
-				msg := amqp.Publishing{
-					ContentType: "application/json",
-					Body:        msgJson,
-					AppId:       q.Name, // we set this, so we later can filter out messages pushed by ourselves
-				}
-
-				// if the message has a TTL we should also set it on the message being published
-				if sendMsg.Expires > 0 {
-					now := time.Now().UnixMilli()
-					ttl := (sendMsg.Expires * 1000) - now
-					msg.Expiration = strconv.FormatInt(ttl, 10)
-				}
-
-				err = ch.PublishWithContext(
-					ctx,
-					"subscriptions",
-					subject,
-					false,
-					false,
-					msg,
-				)
-				if err != nil {
-					fmt.Println("Could not publish subscription message:", err)
-				}
-			}
-
-			if protoMessage.Receive != nil {
-				msgs := make([]ProtocolMessage, 0, 10)
-				msgChan, err := ch.Consume(q.Name, q.Name, true, true, true, false, nil)
-				if err != nil {
-					fmt.Println("Could not get messages from queue:", err)
-					continue
-				}
-				go func() {
-					for delivery := range msgChan {
-						// we don't care about messages that were published by ourselves
-						if delivery.AppId == q.Name {
-							continue
-						}
-						var protoMessage ProtocolMessage
-						err = json.Unmarshal(delivery.Body, &protoMessage)
-						if err != nil {
-							fmt.Println("Could not unmarshal message:", err)
-							continue
-						}
-						msgs = append(msgs, protoMessage)
-					}
-				}()
-				err = ch.Cancel(q.Name, false) // cancel consumer immediately to get current messages in queue
-				if err != nil {
-					fmt.Println("Could not cancel consumer:", err)
-					continue
-				}
-
-				err = wsjson.Write(request.Context(), c, msgs)
-				if err != nil {
-					fmt.Println("Could not send message to agent over websocket:", err)
-				}
-			}
-		}
 	}
 }
 
