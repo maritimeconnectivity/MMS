@@ -5,6 +5,7 @@ option go_package = "generated/mmtp";
 message ApplicationMessage {
   ApplicationMessageHeader header = 1;
   bytes body = 2;
+  string signature = 3;
 }
 
 message ApplicationMessageHeader {
@@ -14,7 +15,8 @@ message ApplicationMessageHeader {
   }
   int64 expires = 3;
   string sender = 4;
-  uint32 bodySizeNumBytes = 5;
+  optional string qosProfile = 5;
+  uint32 bodySizeNumBytes = 6;
 }
 
 message Recipients {
