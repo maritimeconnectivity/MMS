@@ -401,19 +401,19 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 						{
 							if send := protoMessage.GetSendMessage(); send != nil {
 								outgoingChannel <- &mmtpMessage
-
-								resp = mmtp.MmtpMessage{
-									MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
-									Uuid:    uuid.NewString(),
-									Body: &mmtp.MmtpMessage_ResponseMessage{
-										ResponseMessage: &mmtp.ResponseMessage{
-											ResponseToUuid: mmtpMessage.GetUuid(),
-											Response:       mmtp.ResponseEnum_GOOD,
-										}},
-								}
-								if err = wspb.Write(request.Context(), c, &resp); err != nil {
-									fmt.Println("Could not send Send response to Edge Router:", err)
-								}
+								//
+								//resp = mmtp.MmtpMessage{
+								//	MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+								//	Uuid:    uuid.NewString(),
+								//	Body: &mmtp.MmtpMessage_ResponseMessage{
+								//		ResponseMessage: &mmtp.ResponseMessage{
+								//			ResponseToUuid: mmtpMessage.GetUuid(),
+								//			Response:       mmtp.ResponseEnum_GOOD,
+								//		}},
+								//}
+								//if err = wspb.Write(request.Context(), c, &resp); err != nil {
+								//	fmt.Println("Could not send Send response to Edge Router:", err)
+								//}
 							}
 							break
 						}
