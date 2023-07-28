@@ -22,14 +22,15 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"github.com/google/uuid"
 	"github.com/hashicorp/mdns"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"golang.org/x/crypto/ocsp"
-	"google.golang.org/protobuf/proto"
 	"io"
 	"maritimeconnectivity.net/mms-router/generated/mmtp"
 	"net/http"
 	"nhooyr.io/websocket"
+	"nhooyr.io/websocket/wspb"
 	"os"
 	"os/signal"
 	"sync"
@@ -94,24 +95,25 @@ func (sub *Subscription) DeleteSubscriber(agent *Agent) {
 
 // EdgeRouter type representing an MMS edge router
 type EdgeRouter struct {
+	ownMrn          string                   // The MRN of this EdgeRouter
 	subscriptions   map[string]*Subscription // a mapping from Interest names to Subscription slices
 	subMu           *sync.RWMutex            // a Mutex for locking the subscriptions map
 	agents          map[string]*Agent        // a map of connected Agents
 	agentsMu        *sync.RWMutex            // a Mutex for locking the agents map
 	httpServer      *http.Server             // the http server that is used to bootstrap websocket connections
-	incomingChannel chan *mmtp.MmtpMessage   // channel for incoming messages
 	outgoingChannel chan *mmtp.MmtpMessage   // channel for outgoing messages
+	ws              *websocket.Conn          // the websocket connection to the MMS Router
 	ctx             context.Context          // the main Context of the EdgeRouter
 }
 
-func NewEdgeRouter(listeningAddr string, incomingChannel chan *mmtp.MmtpMessage, outgoingChannel chan *mmtp.MmtpMessage, ctx context.Context) *EdgeRouter {
+func NewEdgeRouter(listeningAddr string, mrn string, outgoingChannel chan *mmtp.MmtpMessage, ws *websocket.Conn, ctx context.Context) *EdgeRouter {
 	subs := make(map[string]*Subscription)
 	mu := &sync.RWMutex{}
 	agents := make(map[string]*Agent)
 	agentsMu := &sync.RWMutex{}
 	httpServer := http.Server{
 		Addr:    listeningAddr,
-		Handler: handleHttpConnection(incomingChannel, outgoingChannel, subs, mu, ctx),
+		Handler: handleHttpConnection(outgoingChannel, subs, mu, ctx),
 		TLSConfig: &tls.Config{
 			ClientAuth:            tls.VerifyClientCertIfGiven,
 			ClientCAs:             nil,
@@ -121,24 +123,61 @@ func NewEdgeRouter(listeningAddr string, incomingChannel chan *mmtp.MmtpMessage,
 	}
 
 	return &EdgeRouter{
+		ownMrn:          mrn,
 		subscriptions:   subs,
 		subMu:           mu,
 		agents:          agents,
 		agentsMu:        agentsMu,
 		httpServer:      &httpServer,
-		incomingChannel: incomingChannel,
 		outgoingChannel: outgoingChannel,
+		ws:              ws,
 		ctx:             ctx,
 	}
 }
 
 func (er *EdgeRouter) StartEdgeRouter(ctx context.Context) {
+	connect := &mmtp.MmtpMessage{
+		MsgType: mmtp.MsgType_PROTOCOL_MESSAGE,
+		Uuid:    uuid.NewString(),
+		Body: &mmtp.MmtpMessage_ProtocolMessage{
+			ProtocolMessage: &mmtp.ProtocolMessage{
+				ProtocolMsgType: mmtp.ProtocolMessageType_CONNECT_MESSAGE,
+				Body: &mmtp.ProtocolMessage_ConnectMessage{
+					ConnectMessage: &mmtp.Connect{
+						OwnMrn: &er.ownMrn,
+					},
+				},
+			},
+		},
+	}
+	if err := wspb.Write(ctx, er.ws, connect); err != nil {
+		fmt.Println("Could not send Connect message to MMS Router:", err)
+		return
+	}
+
+	var response *mmtp.MmtpMessage
+	if err := wspb.Read(ctx, er.ws, response); err != nil {
+		fmt.Println("Something went wrong while receiving response from MMS Router:", err)
+		return
+	}
+
+	connectResp := response.GetResponseMessage()
+	if connectResp.Response != mmtp.ResponseEnum_GOOD {
+		fmt.Println("MMS Router did not accept Connect:", connectResp.GetReasonText())
+		return
+	}
+
+	// TODO store reconnect token and handle reconnection in case of disconnect
+
 	go func() {
 		fmt.Println("Starting edge router")
 		if err := er.httpServer.ListenAndServe(); err != nil {
 			fmt.Println(err)
 		}
 	}()
+
+	go handleIncomingMessages(ctx, er)
+	go handleOutgoingMessages(ctx, er)
 	<-ctx.Done()
 	fmt.Println("Shutting down edge router")
 	fmt.Println("subscriptions:", er.subscriptions)
@@ -147,7 +186,7 @@ func (er *EdgeRouter) StartEdgeRouter(ctx context.Context) {
 	}
 }
 
-func handleHttpConnection(incomingChannel chan *mmtp.MmtpMessage, outgoingChannel chan<- *mmtp.MmtpMessage, subs map[string]*Subscription, mu *sync.RWMutex, ctx context.Context) http.HandlerFunc {
+func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[string]*Subscription, mu *sync.RWMutex, ctx context.Context) http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
 		c, err := websocket.Accept(writer, request, nil)
 		if err != nil {
@@ -239,18 +278,67 @@ func verifyAgentCertificate() func(rawCerts [][]byte, verifiedChains [][]*x509.C
 }
 
 func handleIncomingMessages(ctx context.Context, edgeRouter *EdgeRouter) {
+	ticker := time.NewTicker(10 * time.Second)
+	ws := edgeRouter.ws
+	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		default:
-			for incomingMessage := range edgeRouter.incomingChannel {
-				switch incomingMessage.GetMsgType() {
-				case mmtp.MsgType_PROTOCOL_MESSAGE:
-					{
-						appMsg := incomingMessage.GetProtocolMessage().GetSendMessage().GetApplicationMessage()
+			receiveMsg := &mmtp.MmtpMessage{
+				MsgType: mmtp.MsgType_PROTOCOL_MESSAGE,
+				Uuid:    uuid.NewString(),
+				Body: &mmtp.MmtpMessage_ProtocolMessage{
+					ProtocolMessage: &mmtp.ProtocolMessage{
+						ProtocolMsgType: mmtp.ProtocolMessageType_RECEIVE_MESSAGE,
+						Body: &mmtp.ProtocolMessage_ReceiveMessage{
+							ReceiveMessage: &mmtp.Receive{},
+						},
+					},
+				},
+			}
+			if err := wspb.Write(ctx, ws, receiveMsg); err != nil {
+				fmt.Println("Was not able to send Receive Receive message to MMS Router:", err)
+				continue
+			}
+
+			var response *mmtp.MmtpMessage
+			if err := wspb.Read(ctx, ws, response); err != nil {
+				fmt.Println("Could not receive response from MMS Router:", err)
+				continue
+			}
+
+			if _, err := uuid.Parse(response.GetUuid()); err != nil {
+				// message UUID is invalid, so we discard it
+				continue
+			}
+
+			switch response.GetBody().(type) {
+			case *mmtp.MmtpMessage_ResponseMessage:
+				{
+					responseMsg := response.GetResponseMessage()
+					if responseMsg.Response != mmtp.ResponseEnum_GOOD {
+						fmt.Println("Received response with error:", responseMsg.GetReasonText())
+						continue
+					}
+					for _, appMsg := range responseMsg.GetApplicationMessages() {
 						if appMsg == nil {
 							continue
+						}
+						incomingMessage := &mmtp.MmtpMessage{
+							MsgType: mmtp.MsgType_PROTOCOL_MESSAGE,
+							Uuid:    uuid.NewString(),
+							Body: &mmtp.MmtpMessage_ProtocolMessage{
+								ProtocolMessage: &mmtp.ProtocolMessage{
+									ProtocolMsgType: mmtp.ProtocolMessageType_SEND_MESSAGE,
+									Body: &mmtp.ProtocolMessage_SendMessage{
+										SendMessage: &mmtp.Send{
+											ApplicationMessage: appMsg,
+										},
+									},
+								},
+							},
 						}
 						switch subjectOrRecipient := appMsg.GetHeader().GetSubjectOrRecipient().(type) {
 						case *mmtp.ApplicationMessageHeader_Subject:
@@ -277,9 +365,9 @@ func handleIncomingMessages(ctx context.Context, edgeRouter *EdgeRouter) {
 							}
 						}
 					}
-				default:
-					continue
 				}
+			default:
+				continue
 			}
 		}
 	}
@@ -295,20 +383,9 @@ func handleOutgoingMessages(ctx context.Context, edgeRouter *EdgeRouter) {
 				switch outgoingMessage.GetMsgType() {
 				case mmtp.MsgType_PROTOCOL_MESSAGE:
 					{
-						appMsg := outgoingMessage.GetProtocolMessage().GetSendMessage().GetApplicationMessage()
-						if appMsg == nil {
+						if err := wspb.Write(ctx, edgeRouter.ws, outgoingMessage); err != nil {
+							fmt.Println("Could not send outgoing message to MMS Router:", err)
 							continue
-						}
-						msgBytes, err := proto.Marshal(outgoingMessage)
-						if err != nil {
-							fmt.Println("Could not marshal outgoing message:", err)
-							continue
-						}
-						switch subjectOrRecipient := appMsg.GetHeader().GetSubjectOrRecipient().(type) {
-						case *mmtp.ApplicationMessageHeader_Subject:
-						case *mmtp.ApplicationMessageHeader_Recipients:
-							// Everything should just be sent to the Router
-
 						}
 					}
 				default:
@@ -326,10 +403,15 @@ func main() {
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, os.Interrupt)
 
-	incomingChannel := make(chan *mmtp.MmtpMessage)
 	outgoingChannel := make(chan *mmtp.MmtpMessage)
 
-	er := NewEdgeRouter("0.0.0.0:8080", incomingChannel, outgoingChannel, ctx)
+	ws, _, err := websocket.Dial(ctx, "ws://localhost:8080", nil)
+	if err != nil {
+		fmt.Println("Could not connect to MMS Router:", err)
+		return
+	}
+
+	er := NewEdgeRouter("0.0.0.0:8888", "urn:mrn:mcp:device:idp1:org1:er", outgoingChannel, ws, ctx)
 	go er.StartEdgeRouter(ctx)
 
 	hst, err := os.Hostname()
@@ -338,7 +420,7 @@ func main() {
 		ch <- os.Interrupt
 	}
 	info := []string{"MMS Edge Router"}
-	mdnsService, err := mdns.NewMDNSService(hst, "_mms-edgerouter._tcp", "", "", 8080, nil, info)
+	mdnsService, err := mdns.NewMDNSService(hst, "_mms-edgerouter._tcp", "", "", 8888, nil, info)
 	if err != nil {
 		fmt.Println("Could not create mDNS service, shutting down", err)
 		ch <- os.Interrupt
