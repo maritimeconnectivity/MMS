@@ -23,7 +23,6 @@ import (
 	"crypto/x509"
 	"fmt"
 	"github.com/hashicorp/mdns"
-	"github.com/libp2p/go-libp2p"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"golang.org/x/crypto/ocsp"
 	"google.golang.org/protobuf/proto"
@@ -309,6 +308,7 @@ func handleOutgoingMessages(ctx context.Context, edgeRouter *EdgeRouter) {
 						case *mmtp.ApplicationMessageHeader_Subject:
 						case *mmtp.ApplicationMessageHeader_Recipients:
 							// Everything should just be sent to the Router
+
 						}
 					}
 				default:
@@ -320,17 +320,6 @@ func handleOutgoingMessages(ctx context.Context, edgeRouter *EdgeRouter) {
 }
 
 func main() {
-	h, err := libp2p.New()
-	if err != nil {
-		panic(err)
-	}
-	defer func() {
-		// shut the node down
-		if err := h.Close(); err != nil {
-			fmt.Println("Could not close p2p host")
-		}
-	}()
-
 	ctx, cancel := context.WithCancel(context.Background())
 
 	// wait for a SIGINT or SIGTERM signal
