@@ -9,7 +9,7 @@ require (
 	github.com/libp2p/go-libp2p-kad-dht v0.24.3
 	github.com/libp2p/go-libp2p-pubsub v0.9.3
 	golang.org/x/crypto v0.11.0
-	google.golang.org/protobuf v1.30.0
+	google.golang.org/protobuf v1.31.0
 	nhooyr.io/websocket v1.8.7
 )
 
