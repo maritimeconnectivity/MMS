@@ -24,7 +24,6 @@ import (
 	"fmt"
 	"github.com/google/uuid"
 	"github.com/hashicorp/mdns"
-	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"golang.org/x/crypto/ocsp"
 	"io"
 	"maritimeconnectivity.net/mms-router/generated/mmtp"
@@ -33,6 +32,7 @@ import (
 	"nhooyr.io/websocket/wspb"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"time"
 )
@@ -69,7 +69,6 @@ func (er *Agent) BulkQueueMessages(mmtpMessages []*mmtp.MmtpMessage) {
 type Subscription struct {
 	Interest    string            // the Interest that the Subscription is based on
 	Subscribers map[string]*Agent // the Agents that subscribe
-	Topic       *pubsub.Topic     // The Topic for the subscription
 	subsMu      *sync.RWMutex     // RWMutex for locking the Subscribers map
 }
 
@@ -108,12 +107,12 @@ type EdgeRouter struct {
 
 func NewEdgeRouter(listeningAddr string, mrn string, outgoingChannel chan *mmtp.MmtpMessage, ws *websocket.Conn, ctx context.Context) *EdgeRouter {
 	subs := make(map[string]*Subscription)
-	mu := &sync.RWMutex{}
+	subMu := &sync.RWMutex{}
 	agents := make(map[string]*Agent)
 	agentsMu := &sync.RWMutex{}
 	httpServer := http.Server{
 		Addr:    listeningAddr,
-		Handler: handleHttpConnection(outgoingChannel, subs, mu, ctx),
+		Handler: handleHttpConnection(outgoingChannel, subs, subMu, agents, agentsMu, ctx),
 		TLSConfig: &tls.Config{
 			ClientAuth:            tls.VerifyClientCertIfGiven,
 			ClientCAs:             nil,
@@ -125,7 +124,7 @@ func NewEdgeRouter(listeningAddr string, mrn string, outgoingChannel chan *mmtp.
 	return &EdgeRouter{
 		ownMrn:          mrn,
 		subscriptions:   subs,
-		subMu:           mu,
+		subMu:           subMu,
 		agents:          agents,
 		agentsMu:        agentsMu,
 		httpServer:      &httpServer,
@@ -186,7 +185,7 @@ func (er *EdgeRouter) StartEdgeRouter(ctx context.Context) {
 	}
 }
 
-func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[string]*Subscription, mu *sync.RWMutex, ctx context.Context) http.HandlerFunc {
+func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[string]*Subscription, subMu *sync.RWMutex, agents map[string]*Agent, agentsMu *sync.RWMutex, ctx context.Context) http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
 		c, err := websocket.Accept(writer, request, nil)
 		if err != nil {
@@ -199,6 +198,368 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 				fmt.Println("Could not close connection:", err)
 			}
 		}(c, websocket.StatusInternalError, "PANIC!!!")
+
+		var mmtpMessage mmtp.MmtpMessage
+		err = wspb.Read(request.Context(), c, &mmtpMessage)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+
+		protoMessage := mmtpMessage.GetProtocolMessage()
+		if mmtpMessage.MsgType != mmtp.MsgType_PROTOCOL_MESSAGE || protoMessage == nil {
+			if err = c.Close(websocket.StatusUnsupportedData, "The first message needs to be a Protocol Message containing a Connect message with the MRN of the Edge Router"); err != nil {
+				fmt.Println(err)
+			}
+			return
+		}
+
+		connect := protoMessage.GetConnectMessage()
+		if connect == nil {
+			if err = c.Close(websocket.StatusUnsupportedData, "The first message needs to contain a Connect message with the MRN of the Edge Router"); err != nil {
+				fmt.Println(err)
+			}
+			return
+		}
+
+		agentMrn := connect.GetOwnMrn()
+		if agentMrn == "" {
+			if err = c.Close(websocket.StatusUnsupportedData, "The first message needs to be a Connect message with the MRN of the Edge Router"); err != nil {
+				fmt.Println(err)
+			}
+			return
+		}
+
+		// Uncomment the following block when using TLS
+		//uidOid := []int{0, 9, 2342, 19200300, 100, 1, 1}
+		//
+		//// https://stackoverflow.com/a/50640119
+		//for _, n := range request.TLS.PeerCertificates[0].Subject.Names {
+		//	if n.Type.Equal(uidOid) {
+		//		if v, ok := n.Value.(string); ok {
+		//			if !strings.EqualFold(v, agentMrn) {
+		//				if err = c.Close(websocket.StatusUnsupportedData, "The MRN given in the Connect message does not match the one in the certificate that was used for authentication"); err != nil {
+		//					fmt.Println(err)
+		//				}
+		//				return
+		//			}
+		//		}
+		//	}
+		//}
+
+		var agent *Agent
+		if connect.ReconnectToken != nil {
+			agentsMu.RLock()
+			agent = agents[agentMrn]
+			agentsMu.RUnlock()
+			if agent == nil {
+				errorMsg := "No existing session was found for the given MRN"
+				resp := &mmtp.MmtpMessage{
+					MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+					Uuid:    uuid.NewString(),
+					Body: &mmtp.MmtpMessage_ResponseMessage{
+						ResponseMessage: &mmtp.ResponseMessage{
+							ResponseToUuid: mmtpMessage.GetUuid(),
+							Response:       mmtp.ResponseEnum_ERROR,
+							ReasonText:     &errorMsg,
+						}},
+				}
+				if err = wspb.Write(request.Context(), c, resp); err != nil {
+					fmt.Println("Could not write error message:", err)
+					return
+				}
+			}
+			if connect.GetReconnectToken() != agent.reconnectToken {
+				errorMsg := "The given reconnect token does not match the one that is stored"
+				resp := &mmtp.MmtpMessage{
+					MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+					Uuid:    uuid.NewString(),
+					Body: &mmtp.MmtpMessage_ResponseMessage{
+						ResponseMessage: &mmtp.ResponseMessage{
+							ResponseToUuid: mmtpMessage.GetUuid(),
+							Response:       mmtp.ResponseEnum_ERROR,
+							ReasonText:     &errorMsg,
+						}},
+				}
+				if err = wspb.Write(request.Context(), c, resp); err != nil {
+					fmt.Println("Could not write error message:", err)
+					return
+				}
+			}
+		} else {
+			agent = &Agent{
+				Mrn:       agentMrn,
+				Interests: make([]string, 0, 1),
+				Messages:  make(map[string]*mmtp.MmtpMessage),
+				msgMu:     &sync.RWMutex{},
+			}
+		}
+
+		agent.reconnectToken = uuid.NewString()
+
+		agentsMu.Lock()
+		agents[agent.Mrn] = agent
+		agentsMu.Unlock()
+
+		resp := mmtp.MmtpMessage{
+			MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+			Uuid:    uuid.NewString(),
+			Body: &mmtp.MmtpMessage_ResponseMessage{
+				ResponseMessage: &mmtp.ResponseMessage{
+					ResponseToUuid: mmtpMessage.GetUuid(),
+					Response:       mmtp.ResponseEnum_GOOD,
+				}},
+		}
+		err = wspb.Write(request.Context(), c, &resp)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+
+		for {
+			err = wspb.Read(request.Context(), c, &mmtpMessage)
+			if err != nil {
+				fmt.Println("Something went wrong while reading message from Edge Router:", err)
+				return
+			}
+			switch mmtpMessage.GetMsgType() {
+			case mmtp.MsgType_PROTOCOL_MESSAGE:
+				{
+					protoMessage = mmtpMessage.GetProtocolMessage()
+					if protoMessage == nil {
+						continue
+					}
+					switch protoMessage.ProtocolMsgType {
+					case mmtp.ProtocolMessageType_SUBSCRIBE_MESSAGE:
+						{
+							if subscribe := protoMessage.GetSubscribeMessage(); subscribe != nil {
+								subject := subscribe.GetSubject()
+								if subject == "" {
+									continue
+								}
+								subMu.Lock()
+								sub, exists := subs[subject]
+								if !exists {
+									sub = NewSubscription(subject)
+									sub.AddSubscriber(agent)
+									subs[subject] = sub
+								} else {
+									sub.AddSubscriber(agent)
+								}
+								subMu.Unlock()
+								agent.Interests = append(agent.Interests, subject)
+
+								resp = mmtp.MmtpMessage{
+									MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+									Uuid:    uuid.NewString(),
+									Body: &mmtp.MmtpMessage_ResponseMessage{
+										ResponseMessage: &mmtp.ResponseMessage{
+											ResponseToUuid: mmtpMessage.GetUuid(),
+											Response:       mmtp.ResponseEnum_GOOD,
+										}},
+								}
+								if err = wspb.Write(request.Context(), c, &resp); err != nil {
+									fmt.Println("Could not send subscribe response to Edge Router:", err)
+								}
+							}
+							break
+						}
+					case mmtp.ProtocolMessageType_UNSUBSCRIBE_MESSAGE:
+						{
+							if unsubscribe := protoMessage.GetUnsubscribeMessage(); unsubscribe != nil {
+								subject := unsubscribe.GetSubject()
+								if subject == "" {
+									continue
+								}
+								subMu.Lock()
+								sub, exists := subs[subject]
+								if !exists {
+									continue
+								}
+								sub.DeleteSubscriber(agent)
+								subMu.Unlock()
+								interests := agent.Interests
+								for i := range interests {
+									if strings.EqualFold(subject, interests[i]) {
+										interests[i] = interests[len(interests)-1]
+										interests[len(interests)-1] = ""
+										interests = interests[:len(interests)-1]
+										agent.Interests = interests
+									}
+								}
+								resp = mmtp.MmtpMessage{
+									MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+									Uuid:    uuid.NewString(),
+									Body: &mmtp.MmtpMessage_ResponseMessage{
+										ResponseMessage: &mmtp.ResponseMessage{
+											ResponseToUuid: mmtpMessage.GetUuid(),
+											Response:       mmtp.ResponseEnum_GOOD,
+										}},
+								}
+								if err = wspb.Write(request.Context(), c, &resp); err != nil {
+									fmt.Println("Could not write response to unsubscribe message:", err)
+								}
+							}
+							break
+						}
+					case mmtp.ProtocolMessageType_SEND_MESSAGE:
+						{
+							if send := protoMessage.GetSendMessage(); send != nil {
+								outgoingChannel <- &mmtpMessage
+								//
+								//resp = mmtp.MmtpMessage{
+								//	MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+								//	Uuid:    uuid.NewString(),
+								//	Body: &mmtp.MmtpMessage_ResponseMessage{
+								//		ResponseMessage: &mmtp.ResponseMessage{
+								//			ResponseToUuid: mmtpMessage.GetUuid(),
+								//			Response:       mmtp.ResponseEnum_GOOD,
+								//		}},
+								//}
+								//if err = wspb.Write(request.Context(), c, &resp); err != nil {
+								//	fmt.Println("Could not send Send response to Edge Router:", err)
+								//}
+							}
+							break
+						}
+					case mmtp.ProtocolMessageType_RECEIVE_MESSAGE:
+						{
+							if receive := protoMessage.GetReceiveMessage(); receive != nil {
+								if msgUuids := receive.GetFilter().GetMessageUuids(); msgUuids != nil {
+									msgsLen := len(msgUuids)
+									mmtpMessages := make([]*mmtp.MmtpMessage, 0, msgsLen)
+									appMsgs := make([]*mmtp.ApplicationMessage, 0, msgsLen)
+									agent.msgMu.Lock()
+									for _, msgUuid := range msgUuids {
+										msg := agent.Messages[msgUuid].GetProtocolMessage().GetSendMessage().GetApplicationMessage()
+										appMsgs = append(appMsgs, msg)
+										delete(agent.Messages, msgUuid)
+									}
+									agent.msgMu.Unlock()
+									resp = mmtp.MmtpMessage{
+										MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+										Uuid:    uuid.NewString(),
+										Body: &mmtp.MmtpMessage_ResponseMessage{ResponseMessage: &mmtp.ResponseMessage{
+											ResponseToUuid:      mmtpMessage.GetUuid(),
+											Response:            mmtp.ResponseEnum_GOOD,
+											ApplicationMessages: appMsgs,
+										}},
+									}
+									err = wspb.Write(request.Context(), c, &resp)
+									if err != nil {
+										fmt.Println("Could not send messages to Edge Router:", err)
+										agent.BulkQueueMessages(mmtpMessages)
+									}
+								} else { // Receive all messages
+									agent.msgMu.Lock()
+									msgsLen := len(agent.Messages)
+									appMsgs := make([]*mmtp.ApplicationMessage, 0, msgsLen)
+									for _, mmtpMsg := range agent.Messages {
+										msg := mmtpMsg.GetProtocolMessage().GetSendMessage().GetApplicationMessage()
+										appMsgs = append(appMsgs, msg)
+									}
+									resp = mmtp.MmtpMessage{
+										MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+										Uuid:    uuid.NewString(),
+										Body: &mmtp.MmtpMessage_ResponseMessage{ResponseMessage: &mmtp.ResponseMessage{
+											ResponseToUuid:      mmtpMessage.GetUuid(),
+											Response:            mmtp.ResponseEnum_GOOD,
+											ApplicationMessages: appMsgs,
+										}},
+									}
+									err = wspb.Write(request.Context(), c, &resp)
+									if err != nil {
+										fmt.Println("Could not send messages to Edge Router:", err)
+									} else {
+										agent.Messages = make(map[string]*mmtp.MmtpMessage)
+									}
+									agent.msgMu.Unlock()
+								}
+							}
+							break
+						}
+					case mmtp.ProtocolMessageType_FETCH_MESSAGE:
+						{
+							if fetch := protoMessage.GetFetchMessage(); fetch != nil {
+								agent.msgMu.RLock()
+								metadata := make([]*mmtp.MessageMetadata, 0, len(agent.Messages))
+								for _, msg := range agent.Messages {
+									msgHeader := msg.GetProtocolMessage().GetSendMessage().GetApplicationMessage().GetHeader()
+									msgMetadata := &mmtp.MessageMetadata{
+										Uuid:   msg.GetUuid(),
+										Header: msgHeader,
+									}
+									metadata = append(metadata, msgMetadata)
+								}
+								agent.msgMu.RUnlock()
+								resp = mmtp.MmtpMessage{
+									MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+									Uuid:    uuid.NewString(),
+									Body: &mmtp.MmtpMessage_ResponseMessage{
+										ResponseMessage: &mmtp.ResponseMessage{
+											ResponseToUuid:  mmtpMessage.GetUuid(),
+											Response:        mmtp.ResponseEnum_GOOD,
+											MessageMetadata: metadata,
+										}},
+								}
+								err = wspb.Write(request.Context(), c, &resp)
+								if err != nil {
+									fmt.Println("Could not send fetch response to Edge Router:", err)
+								}
+							}
+							break
+						}
+					case mmtp.ProtocolMessageType_DISCONNECT_MESSAGE:
+						{
+							if disconnect := protoMessage.GetDisconnectMessage(); disconnect != nil {
+								resp = mmtp.MmtpMessage{
+									MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+									Uuid:    uuid.NewString(),
+									Body: &mmtp.MmtpMessage_ResponseMessage{
+										ResponseMessage: &mmtp.ResponseMessage{
+											ResponseToUuid: mmtpMessage.GetUuid(),
+											Response:       mmtp.ResponseEnum_GOOD,
+										}},
+								}
+								if err = wspb.Write(request.Context(), c, &resp); err != nil {
+									fmt.Println("Could not send disconnect response to Edge Router:", err)
+								}
+
+								if err = c.Close(websocket.StatusNormalClosure, "Closed connection after receiving Disconnect message"); err != nil {
+									fmt.Println("Websocket could not be closed cleanly:", err)
+									return
+								}
+							}
+							break
+						}
+					case mmtp.ProtocolMessageType_CONNECT_MESSAGE:
+						{
+							reason := "Already connected"
+							resp = mmtp.MmtpMessage{
+								MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+								Uuid:    uuid.NewString(),
+								Body: &mmtp.MmtpMessage_ResponseMessage{
+									ResponseMessage: &mmtp.ResponseMessage{
+										ResponseToUuid: mmtpMessage.GetUuid(),
+										Response:       mmtp.ResponseEnum_ERROR,
+										ReasonText:     &reason,
+									}},
+							}
+							if err = wspb.Write(request.Context(), c, &resp); err != nil {
+								fmt.Println("Could not send error response:", err)
+							}
+							break
+						}
+					default:
+						continue
+					}
+				}
+			case mmtp.MsgType_RESPONSE_MESSAGE:
+			default:
+				continue
+			}
+		}
+
 	}
 }
 

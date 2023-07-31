@@ -118,13 +118,13 @@ type MMSRouter struct {
 
 func NewMMSRouter(p2p *host.Host, pubSub *pubsub.PubSub, listeningAddr string, incomingChannel chan *mmtp.MmtpMessage, outgoingChannel chan *mmtp.MmtpMessage, ctx context.Context) *MMSRouter {
 	subs := make(map[string]*Subscription)
-	mu := &sync.RWMutex{}
+	subMu := &sync.RWMutex{}
 	edgeRouters := make(map[string]*EdgeRouter)
 	erMu := &sync.RWMutex{}
 	topicHandles := make(map[string]*pubsub.Topic)
 	httpServer := http.Server{
 		Addr:    listeningAddr,
-		Handler: handleHttpConnection(p2p, pubSub, incomingChannel, outgoingChannel, subs, mu, edgeRouters, erMu, topicHandles, ctx),
+		Handler: handleHttpConnection(p2p, pubSub, incomingChannel, outgoingChannel, subs, subMu, edgeRouters, erMu, topicHandles, ctx),
 		TLSConfig: &tls.Config{
 			ClientAuth:            tls.RequireAndVerifyClientCert,
 			ClientCAs:             nil, // this should come from a file containing the CAs we trust
@@ -135,7 +135,7 @@ func NewMMSRouter(p2p *host.Host, pubSub *pubsub.PubSub, listeningAddr string, i
 
 	return &MMSRouter{
 		subscriptions:   subs,
-		subMu:           mu,
+		subMu:           subMu,
 		edgeRouters:     edgeRouters,
 		erMu:            erMu,
 		httpServer:      &httpServer,
@@ -166,7 +166,7 @@ func (r *MMSRouter) StartRouter(ctx context.Context) {
 	}
 }
 
-func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel chan *mmtp.MmtpMessage, outgoingChannel chan<- *mmtp.MmtpMessage, subs map[string]*Subscription, mu *sync.RWMutex, edgeRouters map[string]*EdgeRouter, erMu *sync.RWMutex, topicHandles map[string]*pubsub.Topic, ctx context.Context) http.HandlerFunc {
+func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel chan *mmtp.MmtpMessage, outgoingChannel chan<- *mmtp.MmtpMessage, subs map[string]*Subscription, subMu *sync.RWMutex, edgeRouters map[string]*EdgeRouter, erMu *sync.RWMutex, topicHandles map[string]*pubsub.Topic, ctx context.Context) http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
 		c, err := websocket.Accept(writer, request, nil)
 		if err != nil {
@@ -231,7 +231,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 		var e *EdgeRouter
 		if connect.ReconnectToken != nil {
 			erMu.RLock()
-			e = edgeRouters[e.Mrn]
+			e = edgeRouters[erMrn]
 			erMu.RUnlock()
 			if e == nil {
 				errorMsg := "No existing session was found for the given MRN"
@@ -318,7 +318,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 								if subject == "" {
 									continue
 								}
-								mu.Lock()
+								subMu.Lock()
 								sub, exists := subs[subject]
 								if !exists {
 									sub = NewSubscription(subject)
@@ -341,7 +341,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 								} else {
 									sub.AddSubscriber(e)
 								}
-								mu.Unlock()
+								subMu.Unlock()
 								e.Interests = append(e.Interests, subject)
 
 								resp = mmtp.MmtpMessage{
@@ -366,13 +366,13 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 								if subject == "" {
 									continue
 								}
-								mu.Lock()
+								subMu.Lock()
 								sub, exists := subs[subject]
 								if !exists {
 									continue
 								}
 								sub.DeleteSubscriber(e)
-								mu.Unlock()
+								subMu.Unlock()
 								interests := e.Interests
 								for i := range interests {
 									if strings.EqualFold(subject, interests[i]) {
