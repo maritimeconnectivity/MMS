@@ -6,7 +6,7 @@ require (
 	github.com/google/uuid v1.3.0
 	github.com/hashicorp/mdns v1.0.5
 	github.com/libp2p/go-libp2p v0.29.0
-	github.com/libp2p/go-libp2p-kad-dht v0.24.2
+	github.com/libp2p/go-libp2p-kad-dht v0.24.3
 	github.com/libp2p/go-libp2p-pubsub v0.9.3
 	golang.org/x/crypto v0.11.0
 	google.golang.org/protobuf v1.30.0
