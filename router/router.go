@@ -180,10 +180,16 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 			}
 		}(c, websocket.StatusInternalError, "PANIC!!!")
 
-		var mmtpMessage mmtp.MmtpMessage
-		err = wspb.Read(request.Context(), c, &mmtpMessage)
+		_, b, err := c.Read(request.Context())
 		if err != nil {
-			fmt.Println(err)
+			fmt.Println("Could not receive read websocket:", err)
+			return
+		}
+
+		mmtpMessage := &mmtp.MmtpMessage{}
+		err = proto.Unmarshal(b, mmtpMessage)
+		if err != nil {
+			fmt.Println("Could not unmarshal message:", err)
 			return
 		}
 
@@ -298,7 +304,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 		}
 
 		for {
-			err = wspb.Read(request.Context(), c, &mmtpMessage)
+			err = wspb.Read(request.Context(), c, mmtpMessage)
 			if err != nil {
 				fmt.Println("Something went wrong while reading message from Edge Router:", err)
 				return
@@ -400,7 +406,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 					case mmtp.ProtocolMessageType_SEND_MESSAGE:
 						{
 							if send := protoMessage.GetSendMessage(); send != nil {
-								outgoingChannel <- &mmtpMessage
+								outgoingChannel <- mmtpMessage
 								//
 								//resp = mmtp.MmtpMessage{
 								//	MsgType: mmtp.MsgType_RESPONSE_MESSAGE,

@@ -25,6 +25,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/hashicorp/mdns"
 	"golang.org/x/crypto/ocsp"
+	"google.golang.org/protobuf/proto"
 	"io"
 	"maritimeconnectivity.net/mms-router/generated/mmtp"
 	"net/http"
@@ -149,12 +150,17 @@ func (er *EdgeRouter) StartEdgeRouter(ctx context.Context) {
 			},
 		},
 	}
-	if err := wspb.Write(ctx, er.ws, connect); err != nil {
+	b, err := proto.Marshal(connect)
+	if err != nil {
+		fmt.Println("Could not marshal connect message:", err)
+		return
+	}
+	if err := er.ws.Write(ctx, websocket.MessageBinary, b); err != nil {
 		fmt.Println("Could not send Connect message to MMS Router:", err)
 		return
 	}
 
-	var response *mmtp.MmtpMessage
+	response := &mmtp.MmtpMessage{}
 	if err := wspb.Read(ctx, er.ws, response); err != nil {
 		fmt.Println("Something went wrong while receiving response from MMS Router:", err)
 		return
@@ -664,7 +670,7 @@ func handleIncomingMessages(ctx context.Context, edgeRouter *EdgeRouter) {
 				continue
 			}
 
-			var response *mmtp.MmtpMessage
+			response := &mmtp.MmtpMessage{}
 			if err := wspb.Read(ctx, ws, response); err != nil {
 				fmt.Println("Could not receive response from MMS Router:", err)
 				continue
