@@ -150,18 +150,14 @@ func (er *EdgeRouter) StartEdgeRouter(ctx context.Context) {
 			},
 		},
 	}
-	b, err := proto.Marshal(connect)
+	err := writeMessage(ctx, er.ws, connect)
 	if err != nil {
-		fmt.Println("Could not marshal connect message:", err)
-		return
-	}
-	if err := er.ws.Write(ctx, websocket.MessageBinary, b); err != nil {
-		fmt.Println("Could not send Connect message to MMS Router:", err)
+		fmt.Println("Could not send connect message:", err)
 		return
 	}
 
-	response := &mmtp.MmtpMessage{}
-	if err := wspb.Read(ctx, er.ws, response); err != nil {
+	err, response := readMessage(ctx, er.ws)
+	if err != nil {
 		fmt.Println("Something went wrong while receiving response from MMS Router:", err)
 		return
 	}
@@ -205,8 +201,7 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 			}
 		}(c, websocket.StatusInternalError, "PANIC!!!")
 
-		var mmtpMessage mmtp.MmtpMessage
-		err = wspb.Read(request.Context(), c, &mmtpMessage)
+		err, mmtpMessage := readMessage(request.Context(), c)
 		if err != nil {
 			fmt.Println(err)
 			return
@@ -270,8 +265,8 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 							ReasonText:     &errorMsg,
 						}},
 				}
-				if err = wspb.Write(request.Context(), c, resp); err != nil {
-					fmt.Println("Could not write error message:", err)
+				if err = writeMessage(request.Context(), c, resp); err != nil {
+					fmt.Println("Could not send error message:", err)
 					return
 				}
 			}
@@ -287,8 +282,8 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 							ReasonText:     &errorMsg,
 						}},
 				}
-				if err = wspb.Write(request.Context(), c, resp); err != nil {
-					fmt.Println("Could not write error message:", err)
+				if err = writeMessage(request.Context(), c, resp); err != nil {
+					fmt.Println("Could not send error message:", err)
 					return
 				}
 			}
@@ -307,7 +302,7 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 		agents[agent.Mrn] = agent
 		agentsMu.Unlock()
 
-		resp := mmtp.MmtpMessage{
+		resp := &mmtp.MmtpMessage{
 			MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
 			Uuid:    uuid.NewString(),
 			Body: &mmtp.MmtpMessage_ResponseMessage{
@@ -316,14 +311,14 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 					Response:       mmtp.ResponseEnum_GOOD,
 				}},
 		}
-		err = wspb.Write(request.Context(), c, &resp)
+		err = writeMessage(request.Context(), c, resp)
 		if err != nil {
-			fmt.Println(err)
+			fmt.Println("Could not send response:", err)
 			return
 		}
 
 		for {
-			err = wspb.Read(request.Context(), c, &mmtpMessage)
+			err, mmtpMessage = readMessage(request.Context(), c)
 			if err != nil {
 				fmt.Println("Something went wrong while reading message from Edge Router:", err)
 				return
@@ -355,7 +350,7 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 								subMu.Unlock()
 								agent.Interests = append(agent.Interests, subject)
 
-								resp = mmtp.MmtpMessage{
+								resp = &mmtp.MmtpMessage{
 									MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
 									Uuid:    uuid.NewString(),
 									Body: &mmtp.MmtpMessage_ResponseMessage{
@@ -364,7 +359,7 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 											Response:       mmtp.ResponseEnum_GOOD,
 										}},
 								}
-								if err = wspb.Write(request.Context(), c, &resp); err != nil {
+								if err = writeMessage(request.Context(), c, resp); err != nil {
 									fmt.Println("Could not send subscribe response to Edge Router:", err)
 								}
 							}
@@ -393,7 +388,7 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 										agent.Interests = interests
 									}
 								}
-								resp = mmtp.MmtpMessage{
+								resp = &mmtp.MmtpMessage{
 									MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
 									Uuid:    uuid.NewString(),
 									Body: &mmtp.MmtpMessage_ResponseMessage{
@@ -402,7 +397,7 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 											Response:       mmtp.ResponseEnum_GOOD,
 										}},
 								}
-								if err = wspb.Write(request.Context(), c, &resp); err != nil {
+								if err = writeMessage(request.Context(), c, resp); err != nil {
 									fmt.Println("Could not write response to unsubscribe message:", err)
 								}
 							}
@@ -411,7 +406,7 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 					case mmtp.ProtocolMessageType_SEND_MESSAGE:
 						{
 							if send := protoMessage.GetSendMessage(); send != nil {
-								outgoingChannel <- &mmtpMessage
+								outgoingChannel <- mmtpMessage
 								//
 								//resp = mmtp.MmtpMessage{
 								//	MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
@@ -442,7 +437,7 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 										delete(agent.Messages, msgUuid)
 									}
 									agent.msgMu.Unlock()
-									resp = mmtp.MmtpMessage{
+									resp = &mmtp.MmtpMessage{
 										MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
 										Uuid:    uuid.NewString(),
 										Body: &mmtp.MmtpMessage_ResponseMessage{ResponseMessage: &mmtp.ResponseMessage{
@@ -451,7 +446,7 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 											ApplicationMessages: appMsgs,
 										}},
 									}
-									err = wspb.Write(request.Context(), c, &resp)
+									err = writeMessage(request.Context(), c, resp)
 									if err != nil {
 										fmt.Println("Could not send messages to Edge Router:", err)
 										agent.BulkQueueMessages(mmtpMessages)
@@ -464,7 +459,7 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 										msg := mmtpMsg.GetProtocolMessage().GetSendMessage().GetApplicationMessage()
 										appMsgs = append(appMsgs, msg)
 									}
-									resp = mmtp.MmtpMessage{
+									resp = &mmtp.MmtpMessage{
 										MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
 										Uuid:    uuid.NewString(),
 										Body: &mmtp.MmtpMessage_ResponseMessage{ResponseMessage: &mmtp.ResponseMessage{
@@ -473,7 +468,7 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 											ApplicationMessages: appMsgs,
 										}},
 									}
-									err = wspb.Write(request.Context(), c, &resp)
+									err = writeMessage(request.Context(), c, resp)
 									if err != nil {
 										fmt.Println("Could not send messages to Edge Router:", err)
 									} else {
@@ -498,7 +493,7 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 									metadata = append(metadata, msgMetadata)
 								}
 								agent.msgMu.RUnlock()
-								resp = mmtp.MmtpMessage{
+								resp = &mmtp.MmtpMessage{
 									MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
 									Uuid:    uuid.NewString(),
 									Body: &mmtp.MmtpMessage_ResponseMessage{
@@ -508,7 +503,7 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 											MessageMetadata: metadata,
 										}},
 								}
-								err = wspb.Write(request.Context(), c, &resp)
+								err = writeMessage(request.Context(), c, resp)
 								if err != nil {
 									fmt.Println("Could not send fetch response to Edge Router:", err)
 								}
@@ -518,7 +513,7 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 					case mmtp.ProtocolMessageType_DISCONNECT_MESSAGE:
 						{
 							if disconnect := protoMessage.GetDisconnectMessage(); disconnect != nil {
-								resp = mmtp.MmtpMessage{
+								resp = &mmtp.MmtpMessage{
 									MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
 									Uuid:    uuid.NewString(),
 									Body: &mmtp.MmtpMessage_ResponseMessage{
@@ -527,7 +522,7 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 											Response:       mmtp.ResponseEnum_GOOD,
 										}},
 								}
-								if err = wspb.Write(request.Context(), c, &resp); err != nil {
+								if err = writeMessage(request.Context(), c, resp); err != nil {
 									fmt.Println("Could not send disconnect response to Edge Router:", err)
 								}
 
@@ -541,7 +536,7 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 					case mmtp.ProtocolMessageType_CONNECT_MESSAGE:
 						{
 							reason := "Already connected"
-							resp = mmtp.MmtpMessage{
+							resp = &mmtp.MmtpMessage{
 								MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
 								Uuid:    uuid.NewString(),
 								Body: &mmtp.MmtpMessage_ResponseMessage{
@@ -551,7 +546,7 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 										ReasonText:     &reason,
 									}},
 							}
-							if err = wspb.Write(request.Context(), c, &resp); err != nil {
+							if err = writeMessage(request.Context(), c, resp); err != nil {
 								fmt.Println("Could not send error response:", err)
 							}
 							break
@@ -761,6 +756,30 @@ func handleOutgoingMessages(ctx context.Context, edgeRouter *EdgeRouter) {
 			}
 		}
 	}
+}
+
+func readMessage(ctx context.Context, c *websocket.Conn) (error, *mmtp.MmtpMessage) {
+	_, b, err := c.Read(ctx)
+	if err != nil {
+		return fmt.Errorf("could not read message from edge router: %w", err), nil
+	}
+	mmtpMessage := &mmtp.MmtpMessage{}
+	if err = proto.Unmarshal(b, mmtpMessage); err != nil {
+		return fmt.Errorf("could not unmarshal message: %w", err), nil
+	}
+	return nil, mmtpMessage
+}
+
+func writeMessage(ctx context.Context, c *websocket.Conn, mmtpMessage *mmtp.MmtpMessage) error {
+	b, err := proto.Marshal(mmtpMessage)
+	if err != nil {
+		return fmt.Errorf("could not marshal message: %w", err)
+	}
+	err = c.Write(ctx, websocket.MessageBinary, b)
+	if err != nil {
+		return fmt.Errorf("could not write message: %w", err)
+	}
+	return nil
 }
 
 func main() {
