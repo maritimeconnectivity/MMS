@@ -645,7 +645,7 @@ func handleIncomingMessages(ctx context.Context, edgeRouter *EdgeRouter) {
 		select {
 		case <-ctx.Done():
 			return
-		default:
+		case <-ticker.C:
 			receiveMsg := &mmtp.MmtpMessage{
 				MsgType: mmtp.MsgType_PROTOCOL_MESSAGE,
 				Uuid:    uuid.NewString(),
@@ -729,6 +729,8 @@ func handleIncomingMessages(ctx context.Context, edgeRouter *EdgeRouter) {
 			default:
 				continue
 			}
+		default:
+			continue
 		}
 	}
 }
