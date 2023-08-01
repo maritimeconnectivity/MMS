@@ -30,7 +30,6 @@ import (
 	"maritimeconnectivity.net/mms-router/generated/mmtp"
 	"net/http"
 	"nhooyr.io/websocket"
-	"nhooyr.io/websocket/wspb"
 	"os"
 	"os/signal"
 	"strings"
@@ -744,7 +743,7 @@ func handleOutgoingMessages(ctx context.Context, edgeRouter *EdgeRouter) {
 				switch outgoingMessage.GetMsgType() {
 				case mmtp.MsgType_PROTOCOL_MESSAGE:
 					{
-						if err := wspb.Write(ctx, edgeRouter.ws, outgoingMessage); err != nil {
+						if err := writeMessage(ctx, edgeRouter.ws, outgoingMessage); err != nil {
 							fmt.Println("Could not send outgoing message to MMS Router:", err)
 							continue
 						}
