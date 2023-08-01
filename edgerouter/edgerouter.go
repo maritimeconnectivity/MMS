@@ -730,7 +730,7 @@ func handleIncomingMessages(ctx context.Context, edgeRouter *EdgeRouter) {
 				continue
 			}
 		default:
-			continue
+			time.Sleep(1 * time.Second)
 		}
 	}
 }
