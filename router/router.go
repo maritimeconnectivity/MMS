@@ -180,7 +180,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 		}(c, websocket.StatusInternalError, "PANIC!!!")
 
 		mmtpMessage := &mmtp.MmtpMessage{}
-		err, mmtpMessage = readMessage(request.Context(), c)
+		mmtpMessage, err = readMessage(request.Context(), c)
 		if err != nil {
 			fmt.Println("Could not read message:", err)
 			return
@@ -299,7 +299,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 		}
 
 		for {
-			err, mmtpMessage = readMessage(request.Context(), c)
+			mmtpMessage, err = readMessage(request.Context(), c)
 			if err != nil {
 				fmt.Println("Could not receive message:", err)
 				return
@@ -559,16 +559,16 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 	}
 }
 
-func readMessage(ctx context.Context, c *websocket.Conn) (error, *mmtp.MmtpMessage) {
+func readMessage(ctx context.Context, c *websocket.Conn) (*mmtp.MmtpMessage, error) {
 	_, b, err := c.Read(ctx)
 	if err != nil {
-		return fmt.Errorf("could not read message from edge router: %w", err), nil
+		return nil, fmt.Errorf("could not read message from edge router: %w", err)
 	}
 	mmtpMessage := &mmtp.MmtpMessage{}
 	if err = proto.Unmarshal(b, mmtpMessage); err != nil {
-		return fmt.Errorf("could not unmarshal message: %w", err), nil
+		return nil, fmt.Errorf("could not unmarshal message: %w", err)
 	}
-	return nil, mmtpMessage
+	return mmtpMessage, nil
 }
 
 func writeMessage(ctx context.Context, c *websocket.Conn, mmtpMessage *mmtp.MmtpMessage) error {

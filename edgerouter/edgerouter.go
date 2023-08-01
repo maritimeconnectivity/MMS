@@ -156,7 +156,7 @@ func (er *EdgeRouter) StartEdgeRouter(ctx context.Context) {
 		return
 	}
 
-	err, response := readMessage(ctx, er.ws)
+	response, err := readMessage(ctx, er.ws)
 	if err != nil {
 		fmt.Println("Something went wrong while receiving response from MMS Router:", err)
 		return
@@ -201,7 +201,7 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 			}
 		}(c, websocket.StatusInternalError, "PANIC!!!")
 
-		err, mmtpMessage := readMessage(request.Context(), c)
+		mmtpMessage, err := readMessage(request.Context(), c)
 		if err != nil {
 			fmt.Println(err)
 			return
@@ -318,7 +318,7 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 		}
 
 		for {
-			err, mmtpMessage = readMessage(request.Context(), c)
+			mmtpMessage, err = readMessage(request.Context(), c)
 			if err != nil {
 				fmt.Println("Something went wrong while reading message from Edge Router:", err)
 				return
@@ -641,7 +641,6 @@ func verifyAgentCertificate() func(rawCerts [][]byte, verifiedChains [][]*x509.C
 
 func handleIncomingMessages(ctx context.Context, edgeRouter *EdgeRouter) {
 	ticker := time.NewTicker(10 * time.Second)
-	ws := edgeRouter.ws
 	defer ticker.Stop()
 	for {
 		select {
@@ -660,13 +659,13 @@ func handleIncomingMessages(ctx context.Context, edgeRouter *EdgeRouter) {
 					},
 				},
 			}
-			if err := wspb.Write(ctx, ws, receiveMsg); err != nil {
-				fmt.Println("Was not able to send Receive Receive message to MMS Router:", err)
+			if err := writeMessage(ctx, edgeRouter.ws, receiveMsg); err != nil {
+				fmt.Println("Was not able to send Receive message to MMS Router:", err)
 				continue
 			}
 
-			response := &mmtp.MmtpMessage{}
-			if err := wspb.Read(ctx, ws, response); err != nil {
+			response, err := readMessage(ctx, edgeRouter.ws)
+			if err != nil {
 				fmt.Println("Could not receive response from MMS Router:", err)
 				continue
 			}
@@ -758,16 +757,16 @@ func handleOutgoingMessages(ctx context.Context, edgeRouter *EdgeRouter) {
 	}
 }
 
-func readMessage(ctx context.Context, c *websocket.Conn) (error, *mmtp.MmtpMessage) {
+func readMessage(ctx context.Context, c *websocket.Conn) (*mmtp.MmtpMessage, error) {
 	_, b, err := c.Read(ctx)
 	if err != nil {
-		return fmt.Errorf("could not read message from edge router: %w", err), nil
+		return nil, fmt.Errorf("could not read message from edge router: %w", err)
 	}
 	mmtpMessage := &mmtp.MmtpMessage{}
 	if err = proto.Unmarshal(b, mmtpMessage); err != nil {
-		return fmt.Errorf("could not unmarshal message: %w", err), nil
+		return nil, fmt.Errorf("could not unmarshal message: %w", err)
 	}
-	return nil, mmtpMessage
+	return mmtpMessage, nil
 }
 
 func writeMessage(ctx context.Context, c *websocket.Conn, mmtpMessage *mmtp.MmtpMessage) error {
