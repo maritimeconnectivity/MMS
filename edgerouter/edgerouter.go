@@ -46,23 +46,27 @@ type Agent struct {
 	reconnectToken string                       // token for reconnecting to a previous session
 }
 
-func (er *Agent) QueueMessage(mmtpMessage *mmtp.MmtpMessage) error {
-	uUid := mmtpMessage.GetUuid()
-	if uUid == "" {
-		return fmt.Errorf("the message does not contain a UUID")
+func (a *Agent) QueueMessage(mmtpMessage *mmtp.MmtpMessage) error {
+	if a != nil {
+		uUid := mmtpMessage.GetUuid()
+		if uUid == "" {
+			return fmt.Errorf("the message does not contain a UUID")
+		}
+		a.msgMu.Lock()
+		a.Messages[uUid] = mmtpMessage
+		a.msgMu.Unlock()
 	}
-	er.msgMu.Lock()
-	er.Messages[uUid] = mmtpMessage
-	er.msgMu.Unlock()
 	return nil
 }
 
-func (er *Agent) BulkQueueMessages(mmtpMessages []*mmtp.MmtpMessage) {
-	er.msgMu.Lock()
-	for _, message := range mmtpMessages {
-		er.Messages[message.Uuid] = message
+func (a *Agent) BulkQueueMessages(mmtpMessages []*mmtp.MmtpMessage) {
+	if a != nil {
+		a.msgMu.Lock()
+		for _, message := range mmtpMessages {
+			a.Messages[message.Uuid] = message
+		}
+		a.msgMu.Unlock()
 	}
-	er.msgMu.Unlock()
 }
 
 // Subscription type representing a subscription

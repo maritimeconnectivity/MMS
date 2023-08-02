@@ -54,22 +54,26 @@ type EdgeRouter struct {
 }
 
 func (er *EdgeRouter) QueueMessage(mmtpMessage *mmtp.MmtpMessage) error {
-	uUid := mmtpMessage.GetUuid()
-	if uUid == "" {
-		return fmt.Errorf("the message does not contain a UUID")
+	if er != nil {
+		uUid := mmtpMessage.GetUuid()
+		if uUid == "" {
+			return fmt.Errorf("the message does not contain a UUID")
+		}
+		er.msgMu.Lock()
+		er.Messages[uUid] = mmtpMessage
+		er.msgMu.Unlock()
 	}
-	er.msgMu.Lock()
-	er.Messages[uUid] = mmtpMessage
-	er.msgMu.Unlock()
 	return nil
 }
 
 func (er *EdgeRouter) BulkQueueMessages(mmtpMessages []*mmtp.MmtpMessage) {
-	er.msgMu.Lock()
-	for _, message := range mmtpMessages {
-		er.Messages[message.Uuid] = message
+	if er != nil {
+		er.msgMu.Lock()
+		for _, message := range mmtpMessages {
+			er.Messages[message.Uuid] = message
+		}
+		er.msgMu.Unlock()
 	}
-	er.msgMu.Unlock()
 }
 
 // Subscription type representing a subscription
