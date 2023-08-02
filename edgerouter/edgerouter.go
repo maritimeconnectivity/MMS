@@ -21,72 +21,58 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/json"
 	"fmt"
 	"github.com/google/uuid"
 	"github.com/hashicorp/mdns"
-	"github.com/libp2p/go-libp2p"
-	dht "github.com/libp2p/go-libp2p-kad-dht"
-	pubsub "github.com/libp2p/go-libp2p-pubsub"
-	"github.com/libp2p/go-libp2p/core/host"
-	"github.com/libp2p/go-libp2p/core/peer"
-	drouting "github.com/libp2p/go-libp2p/p2p/discovery/routing"
-	dutil "github.com/libp2p/go-libp2p/p2p/discovery/util"
-	"github.com/mitchellh/mapstructure"
-	amqp "github.com/rabbitmq/amqp091-go"
 	"golang.org/x/crypto/ocsp"
+	"google.golang.org/protobuf/proto"
 	"io"
+	"maritimeconnectivity.net/mms-router/generated/mmtp"
 	"net/http"
 	"nhooyr.io/websocket"
-	"nhooyr.io/websocket/wsjson"
 	"os"
 	"os/signal"
-	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
 
-// Agent type representing an MMS agent
+// Agent type representing a connected Edge Router
 type Agent struct {
-	Mrn       string          // the MRN of the Agent
-	Interests []string        // the Interests that the Agent wants to subscribe to
-	Dm        bool            // whether the Agent wants to be able to receive direct messages
-	Ws        *websocket.Conn // the websocket connection to this Agent
+	Mrn            string                       // the MRN of the Agent
+	Interests      []string                     // the Interests that the Agent wants to subscribe to
+	Messages       map[string]*mmtp.MmtpMessage // the incoming messages for this Agent
+	msgMu          *sync.RWMutex                // RWMutex for locking the Messages map
+	reconnectToken string                       // token for reconnecting to a previous session
 }
 
-// Register type representing the register protocol message
-type Register struct {
-	Mrn       string   // the MRN of the Agent
-	Interests []string // the Interests that the Agent wants to subscribe to
-	Dm        bool     // whether the Agent wants to be able to receive direct messages
+func (a *Agent) QueueMessage(mmtpMessage *mmtp.MmtpMessage) error {
+	if a != nil {
+		uUid := mmtpMessage.GetUuid()
+		if uUid == "" {
+			return fmt.Errorf("the message does not contain a UUID")
+		}
+		a.msgMu.Lock()
+		a.Messages[uUid] = mmtpMessage
+		a.msgMu.Unlock()
+	}
+	return nil
 }
 
-//type Authentication struct {
-//	Nonce  string `json:"nonce"`
-//	X5u    string `json:"x5u"`
-//	X5t256 string `json:"x5t#256,omitempty"`
-//	jwt.RegisteredClaims
-//}
-
-type ApplicationMessage struct {
-	Id         string   `json:"id,omitempty"`
-	Subject    string   `json:"subject"`
-	Recipients []string `json:"recipients"`
-	Expires    int64    `json:"expires,omitempty"`
-	Sender     string   `json:"sender,omitempty"`
-	Body       string   `json:"body,omitempty"`
-}
-
-type ProtocolMessage struct {
-	Send    *ApplicationMessage `json:"send,omitempty"`
-	Receive interface{}         `json:"receive,omitempty"`
+func (a *Agent) BulkQueueMessages(mmtpMessages []*mmtp.MmtpMessage) {
+	if a != nil {
+		a.msgMu.Lock()
+		for _, message := range mmtpMessages {
+			a.Messages[message.Uuid] = message
+		}
+		a.msgMu.Unlock()
+	}
 }
 
 // Subscription type representing a subscription
 type Subscription struct {
 	Interest    string            // the Interest that the Subscription is based on
 	Subscribers map[string]*Agent // the Agents that subscribe
-	Topic       *pubsub.Topic     // The Topic for the subscription
 	subsMu      *sync.RWMutex     // RWMutex for locking the Subscribers map
 }
 
@@ -112,21 +98,26 @@ func (sub *Subscription) DeleteSubscriber(agent *Agent) {
 
 // EdgeRouter type representing an MMS edge router
 type EdgeRouter struct {
-	subscriptions map[string]*Subscription // a mapping from Interest names to Subscription slices
-	subMu         *sync.RWMutex            // a Mutex for locking the subscriptions map
-	httpServer    *http.Server             // the http server that is used to bootstrap websocket connections
-	p2pHost       *host.Host               // the libp2p host that is used to connect to the MMS router network
-	pubSub        *pubsub.PubSub           // a PubSub instance for the EdgeRouter
-	rmqConnection *amqp.Connection         // the connection to the RabbitMQ message broker
-	ctx           context.Context          // the main Context of the EdgeRouter
+	ownMrn          string                   // The MRN of this EdgeRouter
+	subscriptions   map[string]*Subscription // a mapping from Interest names to Subscription slices
+	subMu           *sync.RWMutex            // a Mutex for locking the subscriptions map
+	agents          map[string]*Agent        // a map of connected Agents
+	agentsMu        *sync.RWMutex            // a Mutex for locking the agents map
+	httpServer      *http.Server             // the http server that is used to bootstrap websocket connections
+	outgoingChannel chan *mmtp.MmtpMessage   // channel for outgoing messages
+	ws              *websocket.Conn          // the websocket connection to the MMS Router
+	routerConnMu    *sync.Mutex              // a Mutex for taking a hold on the connection to the router
+	ctx             context.Context          // the main Context of the EdgeRouter
 }
 
-func NewEdgeRouter(p2p *host.Host, pubSub *pubsub.PubSub, listeningAddr string, rmqConnection *amqp.Connection, ctx context.Context) *EdgeRouter {
+func NewEdgeRouter(listeningAddr string, mrn string, outgoingChannel chan *mmtp.MmtpMessage, ws *websocket.Conn, ctx context.Context) *EdgeRouter {
 	subs := make(map[string]*Subscription)
-	mu := &sync.RWMutex{}
+	subMu := &sync.RWMutex{}
+	agents := make(map[string]*Agent)
+	agentsMu := &sync.RWMutex{}
 	httpServer := http.Server{
 		Addr:    listeningAddr,
-		Handler: handleHttpConnection(p2p, pubSub, rmqConnection, mu, subs, ctx),
+		Handler: handleHttpConnection(outgoingChannel, subs, subMu, agents, agentsMu),
 		TLSConfig: &tls.Config{
 			ClientAuth:            tls.VerifyClientCertIfGiven,
 			ClientCAs:             nil,
@@ -136,52 +127,63 @@ func NewEdgeRouter(p2p *host.Host, pubSub *pubsub.PubSub, listeningAddr string, 
 	}
 
 	return &EdgeRouter{
-		subscriptions: subs,
-		subMu:         mu,
-		httpServer:    &httpServer,
-		p2pHost:       p2p,
-		pubSub:        pubSub,
-		rmqConnection: rmqConnection,
-		ctx:           ctx,
+		ownMrn:          mrn,
+		subscriptions:   subs,
+		subMu:           subMu,
+		agents:          agents,
+		agentsMu:        agentsMu,
+		httpServer:      &httpServer,
+		outgoingChannel: outgoingChannel,
+		ws:              ws,
+		routerConnMu:    &sync.Mutex{},
+		ctx:             ctx,
 	}
 }
 
 func (er *EdgeRouter) StartEdgeRouter(ctx context.Context) {
-	rmqChannel, err := er.rmqConnection.Channel()
-	if err != nil {
-		panic(err)
+	connect := &mmtp.MmtpMessage{
+		MsgType: mmtp.MsgType_PROTOCOL_MESSAGE,
+		Uuid:    uuid.NewString(),
+		Body: &mmtp.MmtpMessage_ProtocolMessage{
+			ProtocolMessage: &mmtp.ProtocolMessage{
+				ProtocolMsgType: mmtp.ProtocolMessageType_CONNECT_MESSAGE,
+				Body: &mmtp.ProtocolMessage_ConnectMessage{
+					ConnectMessage: &mmtp.Connect{
+						OwnMrn: &er.ownMrn,
+					},
+				},
+			},
+		},
 	}
-	defer rmqChannel.Close()
-	err = rmqChannel.ExchangeDeclare(
-		"subscriptions",
-		"direct",
-		true,  // durable
-		false, // auto-deleted
-		false, // internal
-		false, // no-wait
-		nil,   // arguments
-	)
+	err := writeMessage(ctx, er.ws, connect)
 	if err != nil {
-		panic(err)
+		fmt.Println("Could not send connect message:", err)
+		return
 	}
-	err = rmqChannel.ExchangeDeclare(
-		"direct_messages",
-		"direct",
-		true,  // durable
-		false, // auto-deleted
-		false, // internal
-		false, // no-wait
-		nil,   // arguments
-	)
+
+	response, err := readMessage(ctx, er.ws)
 	if err != nil {
-		panic(err)
+		fmt.Println("Something went wrong while receiving response from MMS Router:", err)
+		return
 	}
+
+	connectResp := response.GetResponseMessage()
+	if connectResp.Response != mmtp.ResponseEnum_GOOD {
+		fmt.Println("MMS Router did not accept Connect:", connectResp.GetReasonText())
+		return
+	}
+
+	// TODO store reconnect token and handle reconnection in case of disconnect
+
 	go func() {
 		fmt.Println("Starting edge router")
 		if err := er.httpServer.ListenAndServe(); err != nil {
 			fmt.Println(err)
 		}
 	}()
+
+	go handleIncomingMessages(ctx, er)
+	go handleOutgoingMessages(ctx, er)
 	<-ctx.Done()
 	fmt.Println("Shutting down edge router")
 	fmt.Println("subscriptions:", er.subscriptions)
@@ -190,7 +192,7 @@ func (er *EdgeRouter) StartEdgeRouter(ctx context.Context) {
 	}
 }
 
-func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, rmqConnection *amqp.Connection, mu *sync.RWMutex, subs map[string]*Subscription, ctx context.Context) http.HandlerFunc {
+func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[string]*Subscription, subMu *sync.RWMutex, agents map[string]*Agent, agentsMu *sync.RWMutex) http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
 		c, err := websocket.Accept(writer, request, nil)
 		if err != nil {
@@ -204,221 +206,384 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, rmqConnection *
 			}
 		}(c, websocket.StatusInternalError, "PANIC!!!")
 
-		var buf interface{}
-		err = wsjson.Read(request.Context(), c, &buf)
+		mmtpMessage, err := readMessage(request.Context(), c)
 		if err != nil {
 			fmt.Println(err)
 			return
 		}
 
-		m, ok := buf.(map[string]interface{})
-		if !ok {
-			fmt.Println("Could not convert buffer to map")
-			return
-		}
-
-		tmp, ok := m["register"]
-		if !ok {
-			if err = c.Close(websocket.StatusUnsupportedData, "First message needs to contain a 'register' object"); err != nil {
+		protoMessage := mmtpMessage.GetProtocolMessage()
+		if mmtpMessage.MsgType != mmtp.MsgType_PROTOCOL_MESSAGE || protoMessage == nil {
+			if err = c.Close(websocket.StatusUnsupportedData, "The first message needs to be a Protocol Message containing a Connect message"); err != nil {
 				fmt.Println(err)
 			}
 			return
 		}
 
-		reg, ok := tmp.(map[string]interface{})
-		if !ok {
-			if err = c.Close(websocket.StatusUnsupportedData, "The received 'register' object could not be parsed"); err != nil {
+		connect := protoMessage.GetConnectMessage()
+		if connect == nil {
+			if err = c.Close(websocket.StatusUnsupportedData, "The first message needs to contain a Connect message"); err != nil {
 				fmt.Println(err)
 			}
 			return
 		}
-		// if dm has not been explicitly set, it implicitly means that it is true
-		_, ok = reg["dm"]
-		if !ok {
-			reg["dm"] = true
-		}
 
-		var r Register
-		err = mapstructure.Decode(&reg, &r)
-		if err != nil {
-			fmt.Println("The received message could not be decoded as a register protocol message", err)
-			return
-		}
-		fmt.Println(r)
-
-		a := &Agent{
-			Mrn:       r.Mrn,
-			Interests: r.Interests,
-			Dm:        r.Dm,
-			Ws:        c,
-		}
-
-		ch, err := rmqConnection.Channel()
-		if err != nil {
-			fmt.Println("Could not make a channel to RabbitMQ for agent", err)
-			return
-		}
-
-		q, err := ch.QueueDeclare(
-			a.Mrn,
-			true,
-			false,
-			false,
-			false,
-			nil,
-		)
-		if err != nil {
-			fmt.Println("Could not declare a queue for agent", err)
-			return
-		}
-
-		if r.Dm && len(request.TLS.VerifiedChains) > 0 {
-			err = ch.QueueBind(
-				q.Name,
-				a.Mrn,
-				"direct_messages",
-				false,
-				nil,
-			)
-			if err != nil {
-				fmt.Println("Could not bind direct messages to agent queue:", err)
-				return
+		agentMrn := connect.GetOwnMrn()
+		// TODO handle anonymous connections
+		if agentMrn == "" {
+			if err = c.Close(websocket.StatusUnsupportedData, "The first message needs to be a Connect message with the MRN of the Agent"); err != nil {
+				fmt.Println(err)
 			}
+			return
 		}
 
-		if len(r.Interests) > 0 {
-			mu.Lock()
-			for _, interest := range r.Interests {
-				s, exists := subs[interest]
-				if !exists {
-					sub := NewSubscription(interest)
-					topic, err := pubSub.Join(interest)
-					if err != nil {
-						panic(err)
-					}
-					sub.AddSubscriber(a)
-					sub.Topic = topic
-					subscription, err := topic.Subscribe()
-					if err != nil {
-						panic(err)
-					}
-					go handleSubscription(ctx, subscription, p2p, sub, rmqConnection)
-					subs[interest] = sub
-				} else {
-					s.AddSubscriber(a)
+		// Uncomment the following block when using TLS
+		//uidOid := []int{0, 9, 2342, 19200300, 100, 1, 1}
+		//
+		//// https://stackoverflow.com/a/50640119
+		//for _, n := range request.TLS.PeerCertificates[0].Subject.Names {
+		//	if n.Type.Equal(uidOid) {
+		//		if v, ok := n.Value.(string); ok {
+		//			if !strings.EqualFold(v, agentMrn) {
+		//				if err = c.Close(websocket.StatusUnsupportedData, "The MRN given in the Connect message does not match the one in the certificate that was used for authentication"); err != nil {
+		//					fmt.Println(err)
+		//				}
+		//				return
+		//			}
+		//		}
+		//	}
+		//}
+
+		var agent *Agent
+		if connect.ReconnectToken != nil {
+			agentsMu.RLock()
+			agent = agents[agentMrn]
+			agentsMu.RUnlock()
+			if agent == nil {
+				errorMsg := "No existing session was found for the given MRN"
+				resp := &mmtp.MmtpMessage{
+					MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+					Uuid:    uuid.NewString(),
+					Body: &mmtp.MmtpMessage_ResponseMessage{
+						ResponseMessage: &mmtp.ResponseMessage{
+							ResponseToUuid: mmtpMessage.GetUuid(),
+							Response:       mmtp.ResponseEnum_ERROR,
+							ReasonText:     &errorMsg,
+						}},
 				}
-				err = ch.QueueBind(
-					q.Name,
-					interest,
-					"subscriptions",
-					false,
-					nil,
-				)
-				if err != nil {
-					fmt.Println("Could not subscribe agent to topic:", err)
+				if err = writeMessage(request.Context(), c, resp); err != nil {
+					fmt.Println("Could not send error message:", err)
+					return
 				}
 			}
-			mu.Unlock()
-			// Make sure to delete agent after it disconnects
-			defer func() {
-				for _, interest := range a.Interests {
-					subs[interest].DeleteSubscriber(a)
+			if connect.GetReconnectToken() != agent.reconnectToken {
+				errorMsg := "The given reconnect token does not match the one that is stored"
+				resp := &mmtp.MmtpMessage{
+					MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+					Uuid:    uuid.NewString(),
+					Body: &mmtp.MmtpMessage_ResponseMessage{
+						ResponseMessage: &mmtp.ResponseMessage{
+							ResponseToUuid: mmtpMessage.GetUuid(),
+							Response:       mmtp.ResponseEnum_ERROR,
+							ReasonText:     &errorMsg,
+						}},
 				}
-			}()
+				if err = writeMessage(request.Context(), c, resp); err != nil {
+					fmt.Println("Could not send error message:", err)
+					return
+				}
+			}
+		} else {
+			agent = &Agent{
+				Mrn:       agentMrn,
+				Interests: make([]string, 0, 1),
+				Messages:  make(map[string]*mmtp.MmtpMessage),
+				msgMu:     &sync.RWMutex{},
+			}
+			// Subscribe on direct messages to the Agent
+			sub := &mmtp.MmtpMessage{
+				MsgType: mmtp.MsgType_PROTOCOL_MESSAGE,
+				Uuid:    uuid.NewString(),
+				Body: &mmtp.MmtpMessage_ProtocolMessage{
+					ProtocolMessage: &mmtp.ProtocolMessage{
+						ProtocolMsgType: mmtp.ProtocolMessageType_SUBSCRIBE_MESSAGE,
+						Body: &mmtp.ProtocolMessage_SubscribeMessage{
+							SubscribeMessage: &mmtp.Subscribe{
+								Subject: agentMrn,
+							},
+						},
+					},
+				},
+			}
+			outgoingChannel <- sub
+		}
+
+		agent.reconnectToken = uuid.NewString()
+
+		agentsMu.Lock()
+		agents[agent.Mrn] = agent
+		agentsMu.Unlock()
+
+		resp := &mmtp.MmtpMessage{
+			MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+			Uuid:    uuid.NewString(),
+			Body: &mmtp.MmtpMessage_ResponseMessage{
+				ResponseMessage: &mmtp.ResponseMessage{
+					ResponseToUuid: mmtpMessage.GetUuid(),
+					Response:       mmtp.ResponseEnum_GOOD,
+				}},
+		}
+		err = writeMessage(request.Context(), c, resp)
+		if err != nil {
+			fmt.Println("Could not send response:", err)
+			return
 		}
 
 		for {
-			var protoMessage ProtocolMessage
-			err = wsjson.Read(request.Context(), c, &protoMessage)
+			mmtpMessage, err = readMessage(request.Context(), c)
 			if err != nil {
-				fmt.Println("Could not read message from agent:", err)
-				break
+				fmt.Println("Something went wrong while reading message from Edge Router:", err)
+				return
 			}
-
-			if protoMessage.Send != nil {
-				sendMsg := protoMessage.Send
-
-				// for now, we just assume that it is a subject cast message
-				subject := sendMsg.Subject
-				subscription, ok := subs[subject]
-				if !ok {
-					fmt.Printf("Nobody is subscribed to the subject %s\n", subject)
-					continue
-				}
-
-				newProtMsg := ProtocolMessage{Send: sendMsg}
-
-				msgJson, err := json.Marshal(newProtMsg)
-				if err != nil {
-					fmt.Println("Could not JSON marshal the message", err)
-					continue
-				}
-
-				err = subscription.Topic.Publish(request.Context(), msgJson)
-				if err != nil {
-					fmt.Println("Could not publish message to topic", err)
-				}
-
-				msg := amqp.Publishing{
-					ContentType: "application/json",
-					Body:        msgJson,
-					AppId:       q.Name, // we set this, so we later can filter out messages pushed by ourselves
-				}
-
-				// if the message has a TTL we should also set it on the message being published
-				if sendMsg.Expires > 0 {
-					now := time.Now().UnixMilli()
-					ttl := (sendMsg.Expires * 1000) - now
-					msg.Expiration = strconv.FormatInt(ttl, 10)
-				}
-
-				err = ch.PublishWithContext(
-					ctx,
-					"subscriptions",
-					subject,
-					false,
-					false,
-					msg,
-				)
-				if err != nil {
-					fmt.Println("Could not publish subscription message:", err)
-				}
-			}
-
-			if protoMessage.Receive != nil {
-				msgs := make([]ProtocolMessage, 0, 10)
-				msgChan, err := ch.Consume(q.Name, q.Name, true, true, true, false, nil)
-				if err != nil {
-					fmt.Println("Could not get messages from queue:", err)
-					continue
-				}
-				go func() {
-					for delivery := range msgChan {
-						// we don't care about messages that were published by ourselves
-						if delivery.AppId == q.Name {
-							continue
-						}
-						var protoMessage ProtocolMessage
-						err = json.Unmarshal(delivery.Body, &protoMessage)
-						if err != nil {
-							fmt.Println("Could not unmarshal message:", err)
-							continue
-						}
-						msgs = append(msgs, protoMessage)
+			switch mmtpMessage.GetMsgType() {
+			case mmtp.MsgType_PROTOCOL_MESSAGE:
+				{
+					protoMessage = mmtpMessage.GetProtocolMessage()
+					if protoMessage == nil {
+						continue
 					}
-				}()
-				err = ch.Cancel(q.Name, false) // cancel consumer immediately to get current messages in queue
-				if err != nil {
-					fmt.Println("Could not cancel consumer:", err)
-					continue
-				}
+					switch protoMessage.ProtocolMsgType {
+					case mmtp.ProtocolMessageType_SUBSCRIBE_MESSAGE:
+						{
+							if subscribe := protoMessage.GetSubscribeMessage(); subscribe != nil {
+								subject := subscribe.GetSubject()
+								if subject == "" {
+									continue
+								}
+								subMu.Lock()
+								sub, exists := subs[subject]
+								if !exists {
+									sub = NewSubscription(subject)
+									sub.AddSubscriber(agent)
+									subs[subject] = sub
+									outgoingChannel <- mmtpMessage
+								} else {
+									sub.AddSubscriber(agent)
+								}
+								subMu.Unlock()
+								agent.Interests = append(agent.Interests, subject)
 
-				err = wsjson.Write(request.Context(), c, msgs)
-				if err != nil {
-					fmt.Println("Could not send message to agent over websocket:", err)
+								resp = &mmtp.MmtpMessage{
+									MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+									Uuid:    uuid.NewString(),
+									Body: &mmtp.MmtpMessage_ResponseMessage{
+										ResponseMessage: &mmtp.ResponseMessage{
+											ResponseToUuid: mmtpMessage.GetUuid(),
+											Response:       mmtp.ResponseEnum_GOOD,
+										}},
+								}
+								if err = writeMessage(request.Context(), c, resp); err != nil {
+									fmt.Println("Could not send subscribe response to Edge Router:", err)
+								}
+							}
+							break
+						}
+					case mmtp.ProtocolMessageType_UNSUBSCRIBE_MESSAGE:
+						{
+							if unsubscribe := protoMessage.GetUnsubscribeMessage(); unsubscribe != nil {
+								subject := unsubscribe.GetSubject()
+								if subject == "" {
+									continue
+								}
+								subMu.Lock()
+								sub, exists := subs[subject]
+								if !exists {
+									continue
+								}
+								sub.DeleteSubscriber(agent)
+								subMu.Unlock()
+								interests := agent.Interests
+								for i := range interests {
+									if strings.EqualFold(subject, interests[i]) {
+										interests[i] = interests[len(interests)-1]
+										interests[len(interests)-1] = ""
+										interests = interests[:len(interests)-1]
+										agent.Interests = interests
+									}
+								}
+								resp = &mmtp.MmtpMessage{
+									MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+									Uuid:    uuid.NewString(),
+									Body: &mmtp.MmtpMessage_ResponseMessage{
+										ResponseMessage: &mmtp.ResponseMessage{
+											ResponseToUuid: mmtpMessage.GetUuid(),
+											Response:       mmtp.ResponseEnum_GOOD,
+										}},
+								}
+								if err = writeMessage(request.Context(), c, resp); err != nil {
+									fmt.Println("Could not write response to unsubscribe message:", err)
+								}
+							}
+							break
+						}
+					case mmtp.ProtocolMessageType_SEND_MESSAGE:
+						{
+							if send := protoMessage.GetSendMessage(); send != nil {
+								outgoingChannel <- mmtpMessage
+								//
+								//resp = mmtp.MmtpMessage{
+								//	MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+								//	Uuid:    uuid.NewString(),
+								//	Body: &mmtp.MmtpMessage_ResponseMessage{
+								//		ResponseMessage: &mmtp.ResponseMessage{
+								//			ResponseToUuid: mmtpMessage.GetUuid(),
+								//			Response:       mmtp.ResponseEnum_GOOD,
+								//		}},
+								//}
+								//if err = wspb.Write(request.Context(), c, &resp); err != nil {
+								//	fmt.Println("Could not send Send response to Edge Router:", err)
+								//}
+							}
+							break
+						}
+					case mmtp.ProtocolMessageType_RECEIVE_MESSAGE:
+						{
+							if receive := protoMessage.GetReceiveMessage(); receive != nil {
+								if msgUuids := receive.GetFilter().GetMessageUuids(); msgUuids != nil {
+									msgsLen := len(msgUuids)
+									mmtpMessages := make([]*mmtp.MmtpMessage, 0, msgsLen)
+									appMsgs := make([]*mmtp.ApplicationMessage, 0, msgsLen)
+									agent.msgMu.Lock()
+									for _, msgUuid := range msgUuids {
+										msg := agent.Messages[msgUuid].GetProtocolMessage().GetSendMessage().GetApplicationMessage()
+										appMsgs = append(appMsgs, msg)
+										delete(agent.Messages, msgUuid)
+									}
+									agent.msgMu.Unlock()
+									resp = &mmtp.MmtpMessage{
+										MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+										Uuid:    uuid.NewString(),
+										Body: &mmtp.MmtpMessage_ResponseMessage{ResponseMessage: &mmtp.ResponseMessage{
+											ResponseToUuid:      mmtpMessage.GetUuid(),
+											Response:            mmtp.ResponseEnum_GOOD,
+											ApplicationMessages: appMsgs,
+										}},
+									}
+									err = writeMessage(request.Context(), c, resp)
+									if err != nil {
+										fmt.Println("Could not send messages to Edge Router:", err)
+										agent.BulkQueueMessages(mmtpMessages)
+									}
+								} else { // Receive all messages
+									agent.msgMu.Lock()
+									msgsLen := len(agent.Messages)
+									appMsgs := make([]*mmtp.ApplicationMessage, 0, msgsLen)
+									for _, mmtpMsg := range agent.Messages {
+										msg := mmtpMsg.GetProtocolMessage().GetSendMessage().GetApplicationMessage()
+										appMsgs = append(appMsgs, msg)
+									}
+									resp = &mmtp.MmtpMessage{
+										MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+										Uuid:    uuid.NewString(),
+										Body: &mmtp.MmtpMessage_ResponseMessage{ResponseMessage: &mmtp.ResponseMessage{
+											ResponseToUuid:      mmtpMessage.GetUuid(),
+											Response:            mmtp.ResponseEnum_GOOD,
+											ApplicationMessages: appMsgs,
+										}},
+									}
+									err = writeMessage(request.Context(), c, resp)
+									if err != nil {
+										fmt.Println("Could not send messages to Edge Router:", err)
+									} else {
+										agent.Messages = make(map[string]*mmtp.MmtpMessage)
+									}
+									agent.msgMu.Unlock()
+								}
+							}
+							break
+						}
+					case mmtp.ProtocolMessageType_FETCH_MESSAGE:
+						{
+							if fetch := protoMessage.GetFetchMessage(); fetch != nil {
+								agent.msgMu.RLock()
+								metadata := make([]*mmtp.MessageMetadata, 0, len(agent.Messages))
+								for _, msg := range agent.Messages {
+									msgHeader := msg.GetProtocolMessage().GetSendMessage().GetApplicationMessage().GetHeader()
+									msgMetadata := &mmtp.MessageMetadata{
+										Uuid:   msg.GetUuid(),
+										Header: msgHeader,
+									}
+									metadata = append(metadata, msgMetadata)
+								}
+								agent.msgMu.RUnlock()
+								resp = &mmtp.MmtpMessage{
+									MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+									Uuid:    uuid.NewString(),
+									Body: &mmtp.MmtpMessage_ResponseMessage{
+										ResponseMessage: &mmtp.ResponseMessage{
+											ResponseToUuid:  mmtpMessage.GetUuid(),
+											Response:        mmtp.ResponseEnum_GOOD,
+											MessageMetadata: metadata,
+										}},
+								}
+								err = writeMessage(request.Context(), c, resp)
+								if err != nil {
+									fmt.Println("Could not send fetch response to Edge Router:", err)
+								}
+							}
+							break
+						}
+					case mmtp.ProtocolMessageType_DISCONNECT_MESSAGE:
+						{
+							if disconnect := protoMessage.GetDisconnectMessage(); disconnect != nil {
+								resp = &mmtp.MmtpMessage{
+									MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+									Uuid:    uuid.NewString(),
+									Body: &mmtp.MmtpMessage_ResponseMessage{
+										ResponseMessage: &mmtp.ResponseMessage{
+											ResponseToUuid: mmtpMessage.GetUuid(),
+											Response:       mmtp.ResponseEnum_GOOD,
+										}},
+								}
+								if err = writeMessage(request.Context(), c, resp); err != nil {
+									fmt.Println("Could not send disconnect response to Edge Router:", err)
+								}
+
+								if err = c.Close(websocket.StatusNormalClosure, "Closed connection after receiving Disconnect message"); err != nil {
+									fmt.Println("Websocket could not be closed cleanly:", err)
+									return
+								}
+							}
+							break
+						}
+					case mmtp.ProtocolMessageType_CONNECT_MESSAGE:
+						{
+							reason := "Already connected"
+							resp = &mmtp.MmtpMessage{
+								MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+								Uuid:    uuid.NewString(),
+								Body: &mmtp.MmtpMessage_ResponseMessage{
+									ResponseMessage: &mmtp.ResponseMessage{
+										ResponseToUuid: mmtpMessage.GetUuid(),
+										Response:       mmtp.ResponseEnum_ERROR,
+										ReasonText:     &reason,
+									}},
+							}
+							if err = writeMessage(request.Context(), c, resp); err != nil {
+								fmt.Println("Could not send error response:", err)
+							}
+							break
+						}
+					default:
+						continue
+					}
 				}
+			case mmtp.MsgType_RESPONSE_MESSAGE:
+			default:
+				continue
 			}
 		}
+
 	}
 }
 
@@ -497,125 +662,188 @@ func verifyAgentCertificate() func(rawCerts [][]byte, verifiedChains [][]*x509.C
 	}
 }
 
-func handleSubscription(ctx context.Context, sub *pubsub.Subscription, host *host.Host, subscription *Subscription, rmqConnection *amqp.Connection) {
-	ch, err := rmqConnection.Channel()
-	if err != nil {
-		panic(err)
-	}
-	defer ch.Close()
+func handleIncomingMessages(ctx context.Context, edgeRouter *EdgeRouter) {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
-			sub.Cancel()
-			break
-		default:
-			m, err := sub.Next(ctx)
-			if err != nil {
-				fmt.Println("Could not get message from subscription:", err)
+			return
+		case <-ticker.C:
+			receiveMsg := &mmtp.MmtpMessage{
+				MsgType: mmtp.MsgType_PROTOCOL_MESSAGE,
+				Uuid:    uuid.NewString(),
+				Body: &mmtp.MmtpMessage_ProtocolMessage{
+					ProtocolMessage: &mmtp.ProtocolMessage{
+						ProtocolMsgType: mmtp.ProtocolMessageType_RECEIVE_MESSAGE,
+						Body: &mmtp.ProtocolMessage_ReceiveMessage{
+							ReceiveMessage: &mmtp.Receive{},
+						},
+					},
+				},
+			}
+			edgeRouter.routerConnMu.Lock()
+			if err := writeMessage(ctx, edgeRouter.ws, receiveMsg); err != nil {
+				fmt.Println("Was not able to send Receive message to MMS Router:", err)
 				continue
 			}
-			if m.GetFrom() != (*host).ID() {
-				var protoMessage ProtocolMessage
-				if err = json.Unmarshal(m.Data, &protoMessage); err != nil {
-					fmt.Println("Could not unmarshal received message as an protocol message:", err)
-					continue
-				}
-				sendMessage := protoMessage.Send
-				if sendMessage == nil {
-					fmt.Println("The received protocol message did not contain a send application message")
-					continue
-				}
-				uid, err := uuid.Parse(sendMessage.Id)
-				if err != nil {
-					fmt.Println("The ID of the message is not a valid UUID:", err)
-					continue
-				}
-				if uid.Version() != 4 {
-					fmt.Println("The ID of the message is not a valid version 4 UUID")
-					continue
-				}
-				subName := subscription.Interest
-				if sendMessage.Subject != subName {
-					fmt.Println("The subject of the message does not match the name of the subscription")
-					continue
-				}
 
-				msg := amqp.Publishing{
-					ContentType: "application/json",
-					Body:        m.Data,
-				}
+			response, err := readMessage(ctx, edgeRouter.ws)
+			edgeRouter.routerConnMu.Unlock()
+			if err != nil {
+				fmt.Println("Could not receive response from MMS Router:", err)
+				continue
+			}
 
-				// if the received message has a TTL we should set it on the message being published
-				if sendMessage.Expires != 0 {
-					now := time.Now().UnixMilli()
-					ttl := (sendMessage.Expires * 1000) - now
-					msg.Expiration = strconv.FormatInt(ttl, 10)
-				}
+			if _, err := uuid.Parse(response.GetUuid()); err != nil {
+				// message UUID is invalid, so we discard it
+				continue
+			}
 
-				err = ch.PublishWithContext(
-					ctx,
-					"subscriptions",
-					subName,
-					false,
-					false,
-					msg,
-				)
-				if err != nil {
-					fmt.Println("Could not publish subscription message", err)
+			switch response.GetBody().(type) {
+			case *mmtp.MmtpMessage_ResponseMessage:
+				{
+					responseMsg := response.GetResponseMessage()
+					if responseMsg.Response != mmtp.ResponseEnum_GOOD {
+						fmt.Println("Received response with error:", responseMsg.GetReasonText())
+						continue
+					}
+					for _, appMsg := range responseMsg.GetApplicationMessages() {
+						if appMsg == nil {
+							continue
+						}
+						incomingMessage := &mmtp.MmtpMessage{
+							MsgType: mmtp.MsgType_PROTOCOL_MESSAGE,
+							Uuid:    uuid.NewString(),
+							Body: &mmtp.MmtpMessage_ProtocolMessage{
+								ProtocolMessage: &mmtp.ProtocolMessage{
+									ProtocolMsgType: mmtp.ProtocolMessageType_SEND_MESSAGE,
+									Body: &mmtp.ProtocolMessage_SendMessage{
+										SendMessage: &mmtp.Send{
+											ApplicationMessage: appMsg,
+										},
+									},
+								},
+							},
+						}
+						switch subjectOrRecipient := appMsg.GetHeader().GetSubjectOrRecipient().(type) {
+						case *mmtp.ApplicationMessageHeader_Subject:
+							{
+								edgeRouter.subMu.RLock()
+								for _, subscriber := range edgeRouter.subscriptions[subjectOrRecipient.Subject].Subscribers {
+									if err := subscriber.QueueMessage(incomingMessage); err != nil {
+										fmt.Println("Could not queue message:", err)
+										continue
+									}
+								}
+								edgeRouter.subMu.RUnlock()
+							}
+						case *mmtp.ApplicationMessageHeader_Recipients:
+							{
+								edgeRouter.agentsMu.RLock()
+								for _, recipient := range subjectOrRecipient.Recipients.GetRecipients() {
+									err := edgeRouter.agents[recipient].QueueMessage(incomingMessage)
+									if err != nil {
+										fmt.Println("Could not queue message for Edge Router:", err)
+									}
+								}
+								edgeRouter.agentsMu.RUnlock()
+							}
+						}
+					}
+				}
+			default:
+				continue
+			}
+		default:
+			time.Sleep(1 * time.Second)
+		}
+	}
+}
+
+func handleOutgoingMessages(ctx context.Context, edgeRouter *EdgeRouter) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			for outgoingMessage := range edgeRouter.outgoingChannel {
+				switch outgoingMessage.GetMsgType() {
+				case mmtp.MsgType_PROTOCOL_MESSAGE:
+					{
+						edgeRouter.routerConnMu.Lock()
+						if err := writeMessage(ctx, edgeRouter.ws, outgoingMessage); err != nil {
+							fmt.Println("Could not send outgoing message to MMS Router, will try again later:", err)
+							edgeRouter.outgoingChannel <- outgoingMessage
+							edgeRouter.routerConnMu.Unlock()
+							continue
+						}
+						protoMsgType := outgoingMessage.GetProtocolMessage().GetProtocolMsgType()
+						if protoMsgType == mmtp.ProtocolMessageType_SUBSCRIBE_MESSAGE ||
+							protoMsgType == mmtp.ProtocolMessageType_UNSUBSCRIBE_MESSAGE {
+							resp, err := readMessage(ctx, edgeRouter.ws)
+							if err != nil {
+								fmt.Println("Could not get response from router:", err)
+								edgeRouter.outgoingChannel <- outgoingMessage
+								edgeRouter.routerConnMu.Unlock()
+								continue
+							}
+							response := resp.GetResponseMessage()
+							if response.GetResponse() != mmtp.ResponseEnum_GOOD {
+								fmt.Println("Response from Router did not contain a GOOD status:", response.GetReasonText())
+								edgeRouter.outgoingChannel <- outgoingMessage
+							}
+						}
+						edgeRouter.routerConnMu.Unlock()
+					}
+				default:
+					continue
 				}
 			}
 		}
 	}
 }
 
+func readMessage(ctx context.Context, c *websocket.Conn) (*mmtp.MmtpMessage, error) {
+	_, b, err := c.Read(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("could not read message from edge router: %w", err)
+	}
+	mmtpMessage := &mmtp.MmtpMessage{}
+	if err = proto.Unmarshal(b, mmtpMessage); err != nil {
+		return nil, fmt.Errorf("could not unmarshal message: %w", err)
+	}
+	return mmtpMessage, nil
+}
+
+func writeMessage(ctx context.Context, c *websocket.Conn, mmtpMessage *mmtp.MmtpMessage) error {
+	b, err := proto.Marshal(mmtpMessage)
+	if err != nil {
+		return fmt.Errorf("could not marshal message: %w", err)
+	}
+	err = c.Write(ctx, websocket.MessageBinary, b)
+	if err != nil {
+		return fmt.Errorf("could not write message: %w", err)
+	}
+	return nil
+}
+
 func main() {
-	h, err := libp2p.New()
-	if err != nil {
-		panic(err)
-	}
-	defer func() {
-		// shut the node down
-		if err := h.Close(); err != nil {
-			fmt.Println("Could not close p2p host")
-		}
-	}()
-
 	ctx, cancel := context.WithCancel(context.Background())
-
-	pubSub, err := pubsub.NewGossipSub(ctx, h)
-	if err != nil {
-		panic(err)
-	}
-
-	kademlia, err := dht.New(ctx, h)
-	if err != nil {
-		panic(err)
-	}
-
-	rd := drouting.NewRoutingDiscovery(kademlia)
-
-	dutil.Advertise(ctx, rd, "over here")
-
-	p, err := peer.AddrInfoFromString("/ip4/127.0.0.1/udp/27000/quic-v1/p2p/QmcUKyMuepvXqZhpMSBP59KKBymRNstk41qGMPj38QStfx")
-	if err != nil {
-		panic(err)
-	}
-
-	if err = h.Connect(ctx, *p); err != nil {
-		panic(err)
-	}
-
-	rmq, err := amqp.Dial("amqp://guest:guest@localhost:5672/")
-	if err != nil {
-		panic("Could not connect to RabbitMQ")
-	}
-	defer rmq.Close()
 
 	// wait for a SIGINT or SIGTERM signal
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, os.Interrupt)
 
-	er := NewEdgeRouter(&h, pubSub, "0.0.0.0:8080", rmq, ctx)
+	outgoingChannel := make(chan *mmtp.MmtpMessage)
+
+	ws, _, err := websocket.Dial(ctx, "ws://localhost:8080", nil)
+	if err != nil {
+		fmt.Println("Could not connect to MMS Router:", err)
+		return
+	}
+
+	er := NewEdgeRouter("0.0.0.0:8888", "urn:mrn:mcp:device:idp1:org1:er", outgoingChannel, ws, ctx)
 	go er.StartEdgeRouter(ctx)
 
 	hst, err := os.Hostname()
@@ -624,7 +852,7 @@ func main() {
 		ch <- os.Interrupt
 	}
 	info := []string{"MMS Edge Router"}
-	mdnsService, err := mdns.NewMDNSService(hst, "_mms-edgerouter._tcp", "", "", 8080, nil, info)
+	mdnsService, err := mdns.NewMDNSService(hst, "_mms-edgerouter._tcp", "", "", 8888, nil, info)
 	if err != nil {
 		fmt.Println("Could not create mDNS service, shutting down", err)
 		ch <- os.Interrupt
