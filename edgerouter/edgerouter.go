@@ -102,6 +102,7 @@ type EdgeRouter struct {
 	httpServer      *http.Server             // the http server that is used to bootstrap websocket connections
 	outgoingChannel chan *mmtp.MmtpMessage   // channel for outgoing messages
 	ws              *websocket.Conn          // the websocket connection to the MMS Router
+	routerConnMu    *sync.Mutex              // a Mutex for taking a hold on the connection to the router
 	ctx             context.Context          // the main Context of the EdgeRouter
 }
 
@@ -130,6 +131,7 @@ func NewEdgeRouter(listeningAddr string, mrn string, outgoingChannel chan *mmtp.
 		httpServer:      &httpServer,
 		outgoingChannel: outgoingChannel,
 		ws:              ws,
+		routerConnMu:    &sync.Mutex{},
 		ctx:             ctx,
 	}
 }
@@ -294,6 +296,22 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 				Messages:  make(map[string]*mmtp.MmtpMessage),
 				msgMu:     &sync.RWMutex{},
 			}
+			// Subscribe on direct messages to the Agent
+			sub := &mmtp.MmtpMessage{
+				MsgType: mmtp.MsgType_PROTOCOL_MESSAGE,
+				Uuid:    uuid.NewString(),
+				Body: &mmtp.MmtpMessage_ProtocolMessage{
+					ProtocolMessage: &mmtp.ProtocolMessage{
+						ProtocolMsgType: mmtp.ProtocolMessageType_SUBSCRIBE_MESSAGE,
+						Body: &mmtp.ProtocolMessage_SubscribeMessage{
+							SubscribeMessage: &mmtp.Subscribe{
+								Subject: agentMrn,
+							},
+						},
+					},
+				},
+			}
+			outgoingChannel <- sub
 		}
 
 		agent.reconnectToken = uuid.NewString()
@@ -344,6 +362,7 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 									sub = NewSubscription(subject)
 									sub.AddSubscriber(agent)
 									subs[subject] = sub
+									outgoingChannel <- mmtpMessage
 								} else {
 									sub.AddSubscriber(agent)
 								}
@@ -659,12 +678,14 @@ func handleIncomingMessages(ctx context.Context, edgeRouter *EdgeRouter) {
 					},
 				},
 			}
+			edgeRouter.routerConnMu.Lock()
 			if err := writeMessage(ctx, edgeRouter.ws, receiveMsg); err != nil {
 				fmt.Println("Was not able to send Receive message to MMS Router:", err)
 				continue
 			}
 
 			response, err := readMessage(ctx, edgeRouter.ws)
+			edgeRouter.routerConnMu.Unlock()
 			if err != nil {
 				fmt.Println("Could not receive response from MMS Router:", err)
 				continue
@@ -746,10 +767,30 @@ func handleOutgoingMessages(ctx context.Context, edgeRouter *EdgeRouter) {
 				switch outgoingMessage.GetMsgType() {
 				case mmtp.MsgType_PROTOCOL_MESSAGE:
 					{
+						edgeRouter.routerConnMu.Lock()
 						if err := writeMessage(ctx, edgeRouter.ws, outgoingMessage); err != nil {
-							fmt.Println("Could not send outgoing message to MMS Router:", err)
+							fmt.Println("Could not send outgoing message to MMS Router, will try again later:", err)
+							edgeRouter.outgoingChannel <- outgoingMessage
+							edgeRouter.routerConnMu.Unlock()
 							continue
 						}
+						protoMsgType := outgoingMessage.GetProtocolMessage().GetProtocolMsgType()
+						if protoMsgType == mmtp.ProtocolMessageType_SUBSCRIBE_MESSAGE ||
+							protoMsgType == mmtp.ProtocolMessageType_UNSUBSCRIBE_MESSAGE {
+							resp, err := readMessage(ctx, edgeRouter.ws)
+							if err != nil {
+								fmt.Println("Could not get response from router:", err)
+								edgeRouter.outgoingChannel <- outgoingMessage
+								edgeRouter.routerConnMu.Unlock()
+								continue
+							}
+							response := resp.GetResponseMessage()
+							if response.GetResponse() != mmtp.ResponseEnum_GOOD {
+								fmt.Println("Response from Router did not contain a GOOD status:", response.GetReasonText())
+								edgeRouter.outgoingChannel <- outgoingMessage
+							}
+						}
+						edgeRouter.routerConnMu.Unlock()
 					}
 				default:
 					continue
