@@ -728,14 +728,17 @@ func handleIncomingMessages(ctx context.Context, router *MMSRouter) {
 							}
 						case *mmtp.ApplicationMessageHeader_Recipients:
 							{
-								router.erMu.RLock()
 								for _, recipient := range subjectOrRecipient.Recipients.GetRecipients() {
-									err := router.edgeRouters[recipient].QueueMessage(incomingMessage)
-									if err != nil {
-										fmt.Println("Could not queue message for Edge Router:", err)
+									router.subMu.RLock()
+									sub := router.subscriptions[recipient]
+									for _, er := range sub.Subscribers {
+										err := er.QueueMessage(incomingMessage)
+										if err != nil {
+											fmt.Println("Could not queue message for Edge Router:", err)
+										}
 									}
+									router.subMu.RUnlock()
 								}
-								router.erMu.RUnlock()
 							}
 						}
 					}
