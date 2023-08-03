@@ -430,19 +430,29 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 						{
 							if send := protoMessage.GetSendMessage(); send != nil {
 								outgoingChannel <- mmtpMessage
-								//
-								//resp = mmtp.MmtpMessage{
-								//	MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
-								//	Uuid:    uuid.NewString(),
-								//	Body: &mmtp.MmtpMessage_ResponseMessage{
-								//		ResponseMessage: &mmtp.ResponseMessage{
-								//			ResponseToUuid: mmtpMessage.GetUuid(),
-								//			Response:       mmtp.ResponseEnum_GOOD,
-								//		}},
-								//}
-								//if err = wspb.Write(request.Context(), c, &resp); err != nil {
-								//	fmt.Println("Could not send Send response to Edge Router:", err)
-								//}
+								header := send.GetApplicationMessage().GetHeader()
+								if len(header.GetRecipients().GetRecipients()) > 0 {
+									agentsMu.RLock()
+									for _, recipient := range header.GetRecipients().Recipients {
+										a, exists := agents[recipient]
+										if exists {
+											if err = a.QueueMessage(mmtpMessage); err != nil {
+												fmt.Println("Could not queue message to agent:", err)
+											}
+										}
+									}
+									agentsMu.RUnlock()
+								} else if header.GetSubject() != "" {
+									subMu.RLock()
+									for _, subscriber := range subs[header.GetSubject()].Subscribers {
+										if subscriber.Mrn != agent.Mrn {
+											if err = subscriber.QueueMessage(mmtpMessage); err != nil {
+												fmt.Println("Could not queue message to agent:", err)
+											}
+										}
+									}
+									subMu.RUnlock()
+								}
 							}
 							break
 						}
@@ -733,10 +743,10 @@ func handleIncomingMessages(ctx context.Context, edgeRouter *EdgeRouter) {
 								for _, subscriber := range edgeRouter.subscriptions[subjectOrRecipient.Subject].Subscribers {
 									if err := subscriber.QueueMessage(incomingMessage); err != nil {
 										fmt.Println("Could not queue message:", err)
-										continue
 									}
 								}
 								edgeRouter.subMu.RUnlock()
+								break
 							}
 						case *mmtp.ApplicationMessageHeader_Recipients:
 							{
@@ -748,6 +758,7 @@ func handleIncomingMessages(ctx context.Context, edgeRouter *EdgeRouter) {
 									}
 								}
 								edgeRouter.agentsMu.RUnlock()
+								break
 							}
 						}
 					}
