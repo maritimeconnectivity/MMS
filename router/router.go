@@ -213,6 +213,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 			}
 			return
 		}
+		erMrn = strings.ToLower(erMrn)
 
 		// Uncomment the following block when using TLS
 		//uidOid := []int{0, 9, 2342, 19200300, 100, 1, 1}
