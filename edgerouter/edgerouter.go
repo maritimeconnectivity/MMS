@@ -236,6 +236,7 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 			}
 			return
 		}
+		agentMrn = strings.ToLower(agentMrn)
 
 		// Uncomment the following block when using TLS
 		//uidOid := []int{0, 9, 2342, 19200300, 100, 1, 1}
