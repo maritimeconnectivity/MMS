@@ -408,19 +408,29 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 						{
 							if send := protoMessage.GetSendMessage(); send != nil {
 								outgoingChannel <- mmtpMessage
-								//
-								//resp = mmtp.MmtpMessage{
-								//	MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
-								//	Uuid:    uuid.NewString(),
-								//	Body: &mmtp.MmtpMessage_ResponseMessage{
-								//		ResponseMessage: &mmtp.ResponseMessage{
-								//			ResponseToUuid: mmtpMessage.GetUuid(),
-								//			Response:       mmtp.ResponseEnum_GOOD,
-								//		}},
-								//}
-								//if err = wspb.Write(request.Context(), c, &resp); err != nil {
-								//	fmt.Println("Could not send Send response to Edge Router:", err)
-								//}
+								header := send.GetApplicationMessage().GetHeader()
+								if len(header.GetRecipients().GetRecipients()) > 0 {
+									erMu.RLock()
+									for _, recipient := range header.GetRecipients().Recipients {
+										a, exists := edgeRouters[recipient]
+										if exists {
+											if err = a.QueueMessage(mmtpMessage); err != nil {
+												fmt.Println("Could not queue message to agent:", err)
+											}
+										}
+									}
+									erMu.RUnlock()
+								} else if header.GetSubject() != "" {
+									subMu.RLock()
+									for _, subscriber := range subs[header.GetSubject()].Subscribers {
+										if subscriber.Mrn != e.Mrn {
+											if err = subscriber.QueueMessage(mmtpMessage); err != nil {
+												fmt.Println("Could not queue message to agent:", err)
+											}
+										}
+									}
+									subMu.RUnlock()
+								}
 							}
 							break
 						}
