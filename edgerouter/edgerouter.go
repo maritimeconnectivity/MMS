@@ -105,12 +105,12 @@ type EdgeRouter struct {
 	agentsMu        *sync.RWMutex            // a Mutex for locking the agents map
 	httpServer      *http.Server             // the http server that is used to bootstrap websocket connections
 	outgoingChannel chan *mmtp.MmtpMessage   // channel for outgoing messages
-	ws              *websocket.Conn          // the websocket connection to the MMS Router
+	routerWs        *websocket.Conn          // the websocket connection to the MMS Router
 	routerConnMu    *sync.Mutex              // a Mutex for taking a hold on the connection to the router
 	ctx             context.Context          // the main Context of the EdgeRouter
 }
 
-func NewEdgeRouter(listeningAddr string, mrn string, outgoingChannel chan *mmtp.MmtpMessage, ws *websocket.Conn, ctx context.Context) *EdgeRouter {
+func NewEdgeRouter(listeningAddr string, mrn string, outgoingChannel chan *mmtp.MmtpMessage, routerWs *websocket.Conn, ctx context.Context) *EdgeRouter {
 	subs := make(map[string]*Subscription)
 	subMu := &sync.RWMutex{}
 	agents := make(map[string]*Agent)
@@ -134,7 +134,7 @@ func NewEdgeRouter(listeningAddr string, mrn string, outgoingChannel chan *mmtp.
 		agentsMu:        agentsMu,
 		httpServer:      &httpServer,
 		outgoingChannel: outgoingChannel,
-		ws:              ws,
+		routerWs:        routerWs,
 		routerConnMu:    &sync.Mutex{},
 		ctx:             ctx,
 	}
@@ -155,13 +155,13 @@ func (er *EdgeRouter) StartEdgeRouter(ctx context.Context) {
 			},
 		},
 	}
-	err := writeMessage(ctx, er.ws, connect)
+	err := writeMessage(ctx, er.routerWs, connect)
 	if err != nil {
 		fmt.Println("Could not send connect message:", err)
 		return
 	}
 
-	response, err := readMessage(ctx, er.ws)
+	response, err := readMessage(ctx, er.routerWs)
 	if err != nil {
 		fmt.Println("Something went wrong while receiving response from MMS Router:", err)
 		return
@@ -694,12 +694,12 @@ func handleIncomingMessages(ctx context.Context, edgeRouter *EdgeRouter) {
 				},
 			}
 			edgeRouter.routerConnMu.Lock()
-			if err := writeMessage(ctx, edgeRouter.ws, receiveMsg); err != nil {
+			if err := writeMessage(ctx, edgeRouter.routerWs, receiveMsg); err != nil {
 				fmt.Println("Was not able to send Receive message to MMS Router:", err)
 				continue
 			}
 
-			response, err := readMessage(ctx, edgeRouter.ws)
+			response, err := readMessage(ctx, edgeRouter.routerWs)
 			edgeRouter.routerConnMu.Unlock()
 			if err != nil {
 				fmt.Println("Could not receive response from MMS Router:", err)
@@ -784,7 +784,7 @@ func handleOutgoingMessages(ctx context.Context, edgeRouter *EdgeRouter) {
 				case mmtp.MsgType_PROTOCOL_MESSAGE:
 					{
 						edgeRouter.routerConnMu.Lock()
-						if err := writeMessage(ctx, edgeRouter.ws, outgoingMessage); err != nil {
+						if err := writeMessage(ctx, edgeRouter.routerWs, outgoingMessage); err != nil {
 							fmt.Println("Could not send outgoing message to MMS Router, will try again later:", err)
 							edgeRouter.outgoingChannel <- outgoingMessage
 							edgeRouter.routerConnMu.Unlock()
@@ -793,7 +793,7 @@ func handleOutgoingMessages(ctx context.Context, edgeRouter *EdgeRouter) {
 						protoMsgType := outgoingMessage.GetProtocolMessage().GetProtocolMsgType()
 						if protoMsgType == mmtp.ProtocolMessageType_SUBSCRIBE_MESSAGE ||
 							protoMsgType == mmtp.ProtocolMessageType_UNSUBSCRIBE_MESSAGE {
-							resp, err := readMessage(ctx, edgeRouter.ws)
+							resp, err := readMessage(ctx, edgeRouter.routerWs)
 							if err != nil {
 								fmt.Println("Could not get response from router:", err)
 								edgeRouter.outgoingChannel <- outgoingMessage
@@ -849,13 +849,13 @@ func main() {
 
 	outgoingChannel := make(chan *mmtp.MmtpMessage)
 
-	ws, _, err := websocket.Dial(ctx, "ws://localhost:8080", nil)
+	routerWs, _, err := websocket.Dial(ctx, "ws://localhost:8080", nil)
 	if err != nil {
 		fmt.Println("Could not connect to MMS Router:", err)
 		return
 	}
 
-	er := NewEdgeRouter("0.0.0.0:8888", "urn:mrn:mcp:device:idp1:org1:er", outgoingChannel, ws, ctx)
+	er := NewEdgeRouter("0.0.0.0:8888", "urn:mrn:mcp:device:idp1:org1:er", outgoingChannel, routerWs, ctx)
 	go er.StartEdgeRouter(ctx)
 
 	hst, err := os.Hostname()
