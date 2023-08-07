@@ -294,6 +294,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 			Body: &mmtp.MmtpMessage_ResponseMessage{
 				ResponseMessage: &mmtp.ResponseMessage{
 					ResponseToUuid: mmtpMessage.GetUuid(),
+					ReconnectToken: &e.reconnectToken,
 					Response:       mmtp.ResponseEnum_GOOD,
 				}},
 		}

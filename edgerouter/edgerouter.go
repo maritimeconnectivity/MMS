@@ -331,6 +331,7 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 			Body: &mmtp.MmtpMessage_ResponseMessage{
 				ResponseMessage: &mmtp.ResponseMessage{
 					ResponseToUuid: mmtpMessage.GetUuid(),
+					ReconnectToken: &agent.reconnectToken,
 					Response:       mmtp.ResponseEnum_GOOD,
 				}},
 		}
