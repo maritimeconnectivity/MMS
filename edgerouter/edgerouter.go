@@ -194,7 +194,7 @@ func (er *EdgeRouter) StartEdgeRouter(ctx context.Context) {
 
 func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[string]*Subscription, subMu *sync.RWMutex, agents map[string]*Agent, agentsMu *sync.RWMutex) http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
-		c, err := websocket.Accept(writer, request, nil)
+		c, err := websocket.Accept(writer, request, &websocket.AcceptOptions{OriginPatterns: []string{"*"}})
 		if err != nil {
 			fmt.Println("Could not establish websocket connection", err)
 			return
