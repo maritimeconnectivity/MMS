@@ -186,7 +186,6 @@ func (er *EdgeRouter) StartEdgeRouter(ctx context.Context) {
 	go handleOutgoingMessages(ctx, er)
 	<-ctx.Done()
 	fmt.Println("Shutting down edge router")
-	fmt.Println("subscriptions:", er.subscriptions)
 	if err := er.httpServer.Shutdown(ctx); err != nil {
 		panic(err)
 	}
