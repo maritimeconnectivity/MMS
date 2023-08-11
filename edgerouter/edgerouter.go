@@ -678,13 +678,11 @@ func verifyAgentCertificate() func(rawCerts [][]byte, verifiedChains [][]*x509.C
 }
 
 func handleIncomingMessages(ctx context.Context, edgeRouter *EdgeRouter) {
-	ticker := time.NewTicker(10 * time.Second)
-	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-time.After(10 * time.Second):
 			receiveMsg := &mmtp.MmtpMessage{
 				MsgType: mmtp.MsgType_PROTOCOL_MESSAGE,
 				Uuid:    uuid.NewString(),
@@ -771,8 +769,6 @@ func handleIncomingMessages(ctx context.Context, edgeRouter *EdgeRouter) {
 			default:
 				continue
 			}
-		default:
-			time.Sleep(1 * time.Second)
 		}
 	}
 }
