@@ -154,8 +154,9 @@ func NewMMSRouter(p2p *host.Host, pubSub *pubsub.PubSub, listeningAddr string, i
 }
 
 func (r *MMSRouter) StartRouter(ctx context.Context) {
+	fmt.Println("Starting MMS Router")
 	go func() {
-		fmt.Println("Starting MMS Router")
+		fmt.Println("Websocket listening on:", r.httpServer.Addr)
 		if err := r.httpServer.ListenAndServe(); err != nil {
 			fmt.Println(err)
 		}
@@ -899,9 +900,6 @@ func setupLibP2P(ctx context.Context) (host.Host, *drouting.RoutingDiscovery) {
 	if err != nil {
 		panic(err)
 	}
-
-	// print the node's listening addresses
-	fmt.Println("Listen addresses:", node.Addrs())
 
 	beacons := make([]peerstore.AddrInfo, 0, 1)
 	beaconsFile, err := os.Open("beacons.txt")
