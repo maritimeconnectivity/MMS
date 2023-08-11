@@ -22,6 +22,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"flag"
 	"fmt"
 	"github.com/google/uuid"
 	"github.com/libp2p/go-libp2p"
@@ -39,6 +40,7 @@ import (
 	"nhooyr.io/websocket"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -836,6 +838,9 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	listeningPort := flag.Int("port", 8080, "The port number that this Router should listen on")
+	flag.Parse()
+
 	node, rd := setupLibP2P(ctx)
 
 	pubSub, err := pubsub.NewGossipSub(ctx, node)
@@ -873,7 +878,7 @@ func main() {
 	incomingChannel := make(chan *mmtp.MmtpMessage)
 	outgoingChannel := make(chan *mmtp.MmtpMessage)
 
-	router := NewMMSRouter(&node, pubSub, "0.0.0.0:8080", incomingChannel, outgoingChannel, ctx)
+	router := NewMMSRouter(&node, pubSub, "0.0.0.0:"+strconv.Itoa(*listeningPort), incomingChannel, outgoingChannel, ctx)
 	go router.StartRouter(ctx)
 
 	// wait for a SIGINT or SIGTERM signal
