@@ -209,6 +209,9 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 			}
 		}(c, websocket.StatusInternalError, "PANIC!!!")
 
+		// Set the read limit to 1 MB instead of 32 KB
+		c.SetReadLimit(1000000)
+
 		mmtpMessage, err := readMessage(request.Context(), c)
 		if err != nil {
 			fmt.Println(err)
@@ -859,6 +862,9 @@ func main() {
 		fmt.Println("Could not connect to MMS Router:", err)
 		return
 	}
+
+	// Set the read limit to 1 MB instead of 32 KB
+	routerWs.SetReadLimit(1000000)
 
 	er := NewEdgeRouter("0.0.0.0:"+strconv.Itoa(*listeningPort), "urn:mrn:mcp:device:idp1:org1:er", outgoingChannel, routerWs, ctx)
 	go er.StartEdgeRouter(ctx)

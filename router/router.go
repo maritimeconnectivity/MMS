@@ -186,6 +186,9 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 			}
 		}(c, websocket.StatusInternalError, "PANIC!!!")
 
+		// Set the read limit to 1 MB instead of 32 KB
+		c.SetReadLimit(1000000)
+
 		mmtpMessage := &mmtp.MmtpMessage{}
 		mmtpMessage, err = readMessage(request.Context(), c)
 		if err != nil {
