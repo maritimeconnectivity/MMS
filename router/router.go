@@ -46,6 +46,10 @@ import (
 	"time"
 )
 
+const (
+	WsReadLimit int64 = 1 << 20
+)
+
 // EdgeRouter type representing a connected Edge Router
 type EdgeRouter struct {
 	Mrn            string                       // the MRN of the EdgeRouter
@@ -186,8 +190,8 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 			}
 		}(c, websocket.StatusInternalError, "PANIC!!!")
 
-		// Set the read limit to 1 MB instead of 32 KB
-		c.SetReadLimit(1000000)
+		// Set the read limit to 1 MiB instead of 32 KiB
+		c.SetReadLimit(WsReadLimit)
 
 		mmtpMessage := &mmtp.MmtpMessage{}
 		mmtpMessage, err = readMessage(request.Context(), c)

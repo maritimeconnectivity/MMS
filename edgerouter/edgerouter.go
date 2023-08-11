@@ -39,6 +39,10 @@ import (
 	"time"
 )
 
+const (
+	WsReadLimit int64 = 1 << 20
+)
+
 // Agent type representing a connected Edge Router
 type Agent struct {
 	Mrn            string                       // the MRN of the Agent
@@ -209,8 +213,8 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 			}
 		}(c, websocket.StatusInternalError, "PANIC!!!")
 
-		// Set the read limit to 1 MB instead of 32 KB
-		c.SetReadLimit(1000000)
+		// Set the read limit to 1 MiB instead of 32 KiB
+		c.SetReadLimit(WsReadLimit)
 
 		mmtpMessage, err := readMessage(request.Context(), c)
 		if err != nil {
@@ -863,8 +867,8 @@ func main() {
 		return
 	}
 
-	// Set the read limit to 1 MB instead of 32 KB
-	routerWs.SetReadLimit(1000000)
+	// Set the read limit to 1 MiB instead of 32 KiB
+	routerWs.SetReadLimit(WsReadLimit)
 
 	er := NewEdgeRouter("0.0.0.0:"+strconv.Itoa(*listeningPort), "urn:mrn:mcp:device:idp1:org1:er", outgoingChannel, routerWs, ctx)
 	go er.StartEdgeRouter(ctx)
