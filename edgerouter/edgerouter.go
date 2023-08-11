@@ -21,6 +21,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"flag"
 	"fmt"
 	"github.com/google/uuid"
 	"github.com/hashicorp/mdns"
@@ -32,6 +33,7 @@ import (
 	"nhooyr.io/websocket"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -141,6 +143,8 @@ func NewEdgeRouter(listeningAddr string, mrn string, outgoingChannel chan *mmtp.
 }
 
 func (er *EdgeRouter) StartEdgeRouter(ctx context.Context) {
+	fmt.Println("Starting edge router")
+
 	connect := &mmtp.MmtpMessage{
 		MsgType: mmtp.MsgType_PROTOCOL_MESSAGE,
 		Uuid:    uuid.NewString(),
@@ -176,7 +180,7 @@ func (er *EdgeRouter) StartEdgeRouter(ctx context.Context) {
 	// TODO store reconnect token and handle reconnection in case of disconnect
 
 	go func() {
-		fmt.Println("Starting edge router")
+		fmt.Println("Websocket listening on:", er.httpServer.Addr)
 		if err := er.httpServer.ListenAndServe(); err != nil {
 			fmt.Println(err)
 		}
@@ -847,15 +851,20 @@ func main() {
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, os.Interrupt)
 
+	routerAddr := flag.String("raddr", "ws://localhost:8080", "The websocket URL of the Router to connect to")
+	listeningPort := flag.Int("port", 8888, "The port number that this Edge Router should listen on")
+
+	flag.Parse()
+
 	outgoingChannel := make(chan *mmtp.MmtpMessage)
 
-	routerWs, _, err := websocket.Dial(ctx, "ws://localhost:8080", nil)
+	routerWs, _, err := websocket.Dial(ctx, *routerAddr, nil)
 	if err != nil {
 		fmt.Println("Could not connect to MMS Router:", err)
 		return
 	}
 
-	er := NewEdgeRouter("0.0.0.0:8888", "urn:mrn:mcp:device:idp1:org1:er", outgoingChannel, routerWs, ctx)
+	er := NewEdgeRouter("0.0.0.0:"+strconv.Itoa(*listeningPort), "urn:mrn:mcp:device:idp1:org1:er", outgoingChannel, routerWs, ctx)
 	go er.StartEdgeRouter(ctx)
 
 	hst, err := os.Hostname()
@@ -864,7 +873,7 @@ func main() {
 		ch <- os.Interrupt
 	}
 	info := []string{"MMS Edge Router"}
-	mdnsService, err := mdns.NewMDNSService(hst, "_mms-edgerouter._tcp", "", "", 8888, nil, info)
+	mdnsService, err := mdns.NewMDNSService(hst, "_mms-edgerouter._tcp", "", "", *listeningPort, nil, info)
 	if err != nil {
 		fmt.Println("Could not create mDNS service, shutting down", err)
 		ch <- os.Interrupt
