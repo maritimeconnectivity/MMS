@@ -846,10 +846,14 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	listeningPort := flag.Int("port", 8080, "The port number that this Router should listen on")
+	listeningPort := flag.Int("port", 8080, "The port number that this Router should listen on.")
+
+	libp2pPort := flag.Int("libp2p-port", 0, "The port number that this Router should use to "+
+		"open up to the Router Network. If not set, a random port is chosen.")
+
 	flag.Parse()
 
-	node, rd := setupLibP2P(ctx)
+	node, rd := setupLibP2P(ctx, libp2pPort)
 
 	pubSub, err := pubsub.NewGossipSub(ctx, node)
 	if err != nil {
@@ -901,9 +905,19 @@ func main() {
 	}
 }
 
-func setupLibP2P(ctx context.Context) (host.Host, *drouting.RoutingDiscovery) {
+func setupLibP2P(ctx context.Context, libp2pPort *int) (host.Host, *drouting.RoutingDiscovery) {
+	port := *libp2pPort
+	addrStrings := make([]string, 2, 2)
+	if port != 0 {
+		addrStrings[0] = fmt.Sprintf("/ip4/0.0.0.0/udp/%d/quic-v1", port)
+		addrStrings[1] = fmt.Sprintf("/ip6/::/udp/%d/quic-v1", port)
+	} else {
+		addrStrings[0] = "/ip4/0.0.0.0/udp/0/quic-v1"
+		addrStrings[1] = "/ip6/::/udp/0/quic-v1"
+	}
+
 	// start a libp2p node with default settings
-	node, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/0.0.0.0/udp/0/quic-v1", "/ip6/::/udp/0/quic-v1"))
+	node, err := libp2p.New(libp2p.ListenAddrStrings(addrStrings...))
 	if err != nil {
 		panic(err)
 	}
