@@ -421,6 +421,7 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 										interests[len(interests)-1] = ""
 										interests = interests[:len(interests)-1]
 										agent.Interests = interests
+										break
 									}
 								}
 								resp = &mmtp.MmtpMessage{
