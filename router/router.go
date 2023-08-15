@@ -398,6 +398,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 										interests[len(interests)-1] = ""
 										interests = interests[:len(interests)-1]
 										e.Interests = interests
+										break
 									}
 								}
 								resp = &mmtp.MmtpMessage{
