@@ -125,7 +125,7 @@ type MMSRouter struct {
 	ctx             context.Context          // the main Context of the MMSRouter
 }
 
-func NewMMSRouter(p2p *host.Host, pubSub *pubsub.PubSub, listeningAddr string, incomingChannel chan *mmtp.MmtpMessage, outgoingChannel chan *mmtp.MmtpMessage, ctx context.Context) *MMSRouter {
+func NewMMSRouter(p2p *host.Host, pubSub *pubsub.PubSub, listeningAddr string, incomingChannel chan *mmtp.MmtpMessage, outgoingChannel chan *mmtp.MmtpMessage, ctx context.Context, wg *sync.WaitGroup) *MMSRouter {
 	subs := make(map[string]*Subscription)
 	subMu := &sync.RWMutex{}
 	edgeRouters := make(map[string]*EdgeRouter)
@@ -133,7 +133,7 @@ func NewMMSRouter(p2p *host.Host, pubSub *pubsub.PubSub, listeningAddr string, i
 	topicHandles := make(map[string]*pubsub.Topic)
 	httpServer := http.Server{
 		Addr:    listeningAddr,
-		Handler: handleHttpConnection(p2p, pubSub, incomingChannel, outgoingChannel, subs, subMu, edgeRouters, erMu, topicHandles, ctx),
+		Handler: handleHttpConnection(p2p, pubSub, incomingChannel, outgoingChannel, subs, subMu, edgeRouters, erMu, topicHandles, ctx, wg),
 		TLSConfig: &tls.Config{
 			ClientAuth:            tls.RequireAndVerifyClientCert,
 			ClientCAs:             nil, // this should come from a file containing the CAs we trust
@@ -157,27 +157,32 @@ func NewMMSRouter(p2p *host.Host, pubSub *pubsub.PubSub, listeningAddr string, i
 	}
 }
 
-func (r *MMSRouter) StartRouter(ctx context.Context) {
+func (r *MMSRouter) StartRouter(ctx context.Context, wg *sync.WaitGroup) {
+	wg.Add(1)
 	fmt.Println("Starting MMS Router")
 	go func() {
+		wg.Add(1)
 		fmt.Println("Websocket listening on:", r.httpServer.Addr)
 		if err := r.httpServer.ListenAndServe(); err != nil {
 			fmt.Println(err)
 		}
+		wg.Done()
 	}()
-	go handleIncomingMessages(ctx, r)
-	go handleOutgoingMessages(ctx, r)
+	go handleIncomingMessages(ctx, r, wg)
+	go handleOutgoingMessages(ctx, r, wg)
 	<-ctx.Done()
 	fmt.Println("Shutting down MMS router")
 	close(r.incomingChannel)
 	close(r.outgoingChannel)
-	if err := r.httpServer.Shutdown(ctx); err != nil {
-		panic(err)
+	if err := r.httpServer.Shutdown(context.Background()); err != nil {
+		fmt.Println(err)
 	}
+	wg.Done()
 }
 
-func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel chan *mmtp.MmtpMessage, outgoingChannel chan<- *mmtp.MmtpMessage, subs map[string]*Subscription, subMu *sync.RWMutex, edgeRouters map[string]*EdgeRouter, erMu *sync.RWMutex, topicHandles map[string]*pubsub.Topic, ctx context.Context) http.HandlerFunc {
+func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel chan *mmtp.MmtpMessage, outgoingChannel chan<- *mmtp.MmtpMessage, subs map[string]*Subscription, subMu *sync.RWMutex, edgeRouters map[string]*EdgeRouter, erMu *sync.RWMutex, topicHandles map[string]*pubsub.Topic, ctx context.Context, wg *sync.WaitGroup) http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
+		wg.Add(1)
 		c, err := websocket.Accept(writer, request, nil)
 		if err != nil {
 			fmt.Println("Could not establish websocket connection", err)
@@ -188,6 +193,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 			if err != nil {
 				fmt.Println("Could not close connection:", err)
 			}
+			wg.Done()
 		}(c, websocket.StatusInternalError, "PANIC!!!")
 
 		// Set the read limit to 1 MiB instead of 32 KiB
@@ -354,7 +360,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 									if err != nil {
 										panic(err)
 									}
-									go handleSubscription(ctx, subscription, p2p, incomingChannel)
+									go handleSubscription(ctx, subscription, p2p, incomingChannel, wg)
 									subs[subject] = sub
 								} else {
 									sub.AddSubscriber(e)
@@ -687,7 +693,11 @@ func verifyEdgeRouterCertificate() func(rawCerts [][]byte, verifiedChains [][]*x
 	}
 }
 
-func handleSubscription(ctx context.Context, sub *pubsub.Subscription, host *host.Host, incomingChannel chan<- *mmtp.MmtpMessage) {
+func handleSubscription(ctx context.Context, sub *pubsub.Subscription, host *host.Host, incomingChannel chan<- *mmtp.MmtpMessage, wg *sync.WaitGroup) {
+	wg.Add(1)
+	defer func() {
+		wg.Done()
+	}()
 	for {
 		select {
 		case <-ctx.Done():
@@ -727,7 +737,11 @@ func handleSubscription(ctx context.Context, sub *pubsub.Subscription, host *hos
 	}
 }
 
-func handleIncomingMessages(ctx context.Context, router *MMSRouter) {
+func handleIncomingMessages(ctx context.Context, router *MMSRouter, wg *sync.WaitGroup) {
+	wg.Add(1)
+	defer func() {
+		wg.Done()
+	}()
 	for {
 		select {
 		case <-ctx.Done():
@@ -777,7 +791,11 @@ func handleIncomingMessages(ctx context.Context, router *MMSRouter) {
 	}
 }
 
-func handleOutgoingMessages(ctx context.Context, router *MMSRouter) {
+func handleOutgoingMessages(ctx context.Context, router *MMSRouter, wg *sync.WaitGroup) {
+	wg.Add(1)
+	defer func() {
+		wg.Done()
+	}()
 	for {
 		select {
 		case <-ctx.Done():
@@ -845,7 +863,6 @@ func handleOutgoingMessages(ctx context.Context, router *MMSRouter) {
 
 func main() {
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	listeningPort := flag.Int("port", 8080, "The port number that this Router should listen on.")
 
@@ -891,8 +908,10 @@ func main() {
 	incomingChannel := make(chan *mmtp.MmtpMessage)
 	outgoingChannel := make(chan *mmtp.MmtpMessage)
 
-	router := NewMMSRouter(&node, pubSub, "0.0.0.0:"+strconv.Itoa(*listeningPort), incomingChannel, outgoingChannel, ctx)
-	go router.StartRouter(ctx)
+	wg := &sync.WaitGroup{}
+
+	router := NewMMSRouter(&node, pubSub, "0.0.0.0:"+strconv.Itoa(*listeningPort), incomingChannel, outgoingChannel, ctx, wg)
+	go router.StartRouter(ctx, wg)
 
 	// wait for a SIGINT or SIGTERM signal
 	ch := make(chan os.Signal, 1)
@@ -904,6 +923,9 @@ func main() {
 	if err := node.Close(); err != nil {
 		fmt.Println("libp2p node could not be shut down correctly")
 	}
+	cancel()
+	wg.Done()
+	wg.Wait()
 }
 
 func setupLibP2P(ctx context.Context, libp2pPort *int) (host.Host, *drouting.RoutingDiscovery) {
