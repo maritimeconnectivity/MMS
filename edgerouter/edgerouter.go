@@ -116,14 +116,14 @@ type EdgeRouter struct {
 	ctx             context.Context          // the main Context of the EdgeRouter
 }
 
-func NewEdgeRouter(listeningAddr string, mrn string, outgoingChannel chan *mmtp.MmtpMessage, routerWs *websocket.Conn, ctx context.Context) *EdgeRouter {
+func NewEdgeRouter(listeningAddr string, mrn string, outgoingChannel chan *mmtp.MmtpMessage, routerWs *websocket.Conn, ctx context.Context, wg *sync.WaitGroup) *EdgeRouter {
 	subs := make(map[string]*Subscription)
 	subMu := &sync.RWMutex{}
 	agents := make(map[string]*Agent)
 	agentsMu := &sync.RWMutex{}
 	httpServer := http.Server{
 		Addr:    listeningAddr,
-		Handler: handleHttpConnection(outgoingChannel, subs, subMu, agents, agentsMu),
+		Handler: handleHttpConnection(outgoingChannel, subs, subMu, agents, agentsMu, wg),
 		TLSConfig: &tls.Config{
 			ClientAuth:            tls.VerifyClientCertIfGiven,
 			ClientCAs:             nil,
@@ -146,7 +146,12 @@ func NewEdgeRouter(listeningAddr string, mrn string, outgoingChannel chan *mmtp.
 	}
 }
 
-func (er *EdgeRouter) StartEdgeRouter(ctx context.Context) {
+func (er *EdgeRouter) StartEdgeRouter(ctx context.Context, wg *sync.WaitGroup) {
+	wg.Add(1)
+	defer func() {
+		wg.Done()
+	}()
+
 	fmt.Println("Starting edge router")
 
 	connect := &mmtp.MmtpMessage{
@@ -184,23 +189,52 @@ func (er *EdgeRouter) StartEdgeRouter(ctx context.Context) {
 	// TODO store reconnect token and handle reconnection in case of disconnect
 
 	go func() {
+		wg.Add(1)
 		fmt.Println("Websocket listening on:", er.httpServer.Addr)
 		if err := er.httpServer.ListenAndServe(); err != nil {
 			fmt.Println(err)
 		}
+		wg.Done()
 	}()
 
-	go handleIncomingMessages(ctx, er)
-	go handleOutgoingMessages(ctx, er)
+	go handleIncomingMessages(ctx, er, wg)
+	go handleOutgoingMessages(ctx, er, wg)
+
 	<-ctx.Done()
 	fmt.Println("Shutting down edge router")
-	if err := er.httpServer.Shutdown(ctx); err != nil {
-		panic(err)
+
+	disconnectMsg := &mmtp.MmtpMessage{
+		MsgType: mmtp.MsgType_PROTOCOL_MESSAGE,
+		Uuid:    uuid.NewString(),
+		Body: &mmtp.MmtpMessage_ProtocolMessage{
+			ProtocolMessage: &mmtp.ProtocolMessage{
+				ProtocolMsgType: mmtp.ProtocolMessageType_DISCONNECT_MESSAGE,
+				Body: &mmtp.ProtocolMessage_DisconnectMessage{
+					DisconnectMessage: &mmtp.Disconnect{},
+				},
+			},
+		},
 	}
+	er.routerConnMu.Lock()
+	if err = writeMessage(context.Background(), er.routerWs, disconnectMsg); err != nil {
+		fmt.Println("Could not send disconnect to Router:", err)
+		return
+	}
+
+	response, err = readMessage(context.Background(), er.routerWs)
+	if err != nil || response.GetResponseMessage().Response != mmtp.ResponseEnum_GOOD {
+		fmt.Println("Graceful disconnect from Router failed")
+	}
+
+	if err = er.httpServer.Shutdown(ctx); err != nil {
+		fmt.Println(err)
+	}
+	er.routerConnMu.Unlock()
 }
 
-func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[string]*Subscription, subMu *sync.RWMutex, agents map[string]*Agent, agentsMu *sync.RWMutex) http.HandlerFunc {
+func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[string]*Subscription, subMu *sync.RWMutex, agents map[string]*Agent, agentsMu *sync.RWMutex, wg *sync.WaitGroup) http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
+		wg.Add(1)
 		c, err := websocket.Accept(writer, request, &websocket.AcceptOptions{OriginPatterns: []string{"*"}})
 		if err != nil {
 			fmt.Println("Could not establish websocket connection", err)
@@ -211,6 +245,7 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 			if err != nil {
 				fmt.Println("Could not close connection:", err)
 			}
+			wg.Done()
 		}(c, websocket.StatusInternalError, "PANIC!!!")
 
 		// Set the read limit to 1 MiB instead of 32 KiB
@@ -685,7 +720,11 @@ func verifyAgentCertificate() func(rawCerts [][]byte, verifiedChains [][]*x509.C
 	}
 }
 
-func handleIncomingMessages(ctx context.Context, edgeRouter *EdgeRouter) {
+func handleIncomingMessages(ctx context.Context, edgeRouter *EdgeRouter, wg *sync.WaitGroup) {
+	wg.Add(1)
+	defer func() {
+		wg.Done()
+	}()
 	for {
 		select {
 		case <-ctx.Done():
@@ -781,7 +820,11 @@ func handleIncomingMessages(ctx context.Context, edgeRouter *EdgeRouter) {
 	}
 }
 
-func handleOutgoingMessages(ctx context.Context, edgeRouter *EdgeRouter) {
+func handleOutgoingMessages(ctx context.Context, edgeRouter *EdgeRouter, wg *sync.WaitGroup) {
+	wg.Add(1)
+	defer func() {
+		wg.Done()
+	}()
 	for {
 		select {
 		case <-ctx.Done():
@@ -862,7 +905,7 @@ func main() {
 
 	outgoingChannel := make(chan *mmtp.MmtpMessage)
 
-	routerWs, _, err := websocket.Dial(ctx, *routerAddr, nil)
+	routerWs, _, err := websocket.Dial(context.Background(), *routerAddr, nil)
 	if err != nil {
 		fmt.Println("Could not connect to MMS Router:", err)
 		return
@@ -871,8 +914,11 @@ func main() {
 	// Set the read limit to 1 MiB instead of 32 KiB
 	routerWs.SetReadLimit(WsReadLimit)
 
-	er := NewEdgeRouter("0.0.0.0:"+strconv.Itoa(*listeningPort), "urn:mrn:mcp:device:idp1:org1:er", outgoingChannel, routerWs, ctx)
-	go er.StartEdgeRouter(ctx)
+	wg := &sync.WaitGroup{}
+
+	er := NewEdgeRouter("0.0.0.0:"+strconv.Itoa(*listeningPort), "urn:mrn:mcp:device:idp1:org1:er", outgoingChannel, routerWs, ctx, wg)
+
+	go er.StartEdgeRouter(ctx, wg)
 
 	hst, err := os.Hostname()
 	if err != nil {
@@ -900,4 +946,6 @@ func main() {
 	<-ch
 	fmt.Println("Received signal, shutting down...")
 	cancel()
+	wg.Done()
+	wg.Wait()
 }
