@@ -93,10 +93,9 @@ func main() {
 	signal.Notify(ch, os.Interrupt)
 	<-ch
 	fmt.Println("Received signal, shutting down...")
-	cancel()
-
 	// shut the node down
 	if err := node.Close(); err != nil {
-		panic(err)
+		fmt.Println(err)
 	}
+	cancel()
 }
