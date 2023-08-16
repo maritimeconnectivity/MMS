@@ -47,7 +47,7 @@ import (
 )
 
 const (
-	WsReadLimit int64 = 1 << 20
+	WsReadLimit int64 = 1 << 20 // 1 MiB
 )
 
 // EdgeRouter type representing a connected Edge Router
@@ -916,6 +916,7 @@ func setupLibP2P(ctx context.Context, libp2pPort *int) (host.Host, *drouting.Rou
 		addrStrings[0] = "/ip4/0.0.0.0/udp/0/quic-v1"
 		addrStrings[1] = "/ip6/::/udp/0/quic-v1"
 	}
+	// TODO make the router discover its public IP address so it can be published
 
 	// start a libp2p node with default settings
 	node, err := libp2p.New(libp2p.ListenAddrStrings(addrStrings...))

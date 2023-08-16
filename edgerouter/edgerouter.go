@@ -40,7 +40,7 @@ import (
 )
 
 const (
-	WsReadLimit int64 = 1 << 20
+	WsReadLimit int64 = 1 << 20 // 1 MiB
 )
 
 // Agent type representing a connected Edge Router
