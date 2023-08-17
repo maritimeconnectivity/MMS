@@ -128,7 +128,7 @@ func NewEdgeRouter(listeningAddr string, mrn string, outgoingChannel chan *mmtp.
 	mrnToAgentMu := &sync.RWMutex{}
 	httpServer := http.Server{
 		Addr:    listeningAddr,
-		Handler: handleHttpConnection(outgoingChannel, subs, subMu, agents, agentsMu, mrnToAgent, mrnToAgentMu, wg),
+		Handler: handleHttpConnection(outgoingChannel, subs, subMu, agents, agentsMu, mrnToAgent, mrnToAgentMu, ctx, wg),
 		TLSConfig: &tls.Config{
 			ClientAuth:            tls.VerifyClientCertIfGiven,
 			ClientCAs:             nil,
@@ -239,7 +239,7 @@ func (er *EdgeRouter) StartEdgeRouter(ctx context.Context, wg *sync.WaitGroup) {
 	er.routerConnMu.Unlock()
 }
 
-func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[string]*Subscription, subMu *sync.RWMutex, agents map[string]*Agent, agentsMu *sync.RWMutex, mrnToAgent map[string]*Agent, mrnToAgentMu *sync.RWMutex, wg *sync.WaitGroup) http.HandlerFunc {
+func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[string]*Subscription, subMu *sync.RWMutex, agents map[string]*Agent, agentsMu *sync.RWMutex, mrnToAgent map[string]*Agent, mrnToAgentMu *sync.RWMutex, ctx context.Context, wg *sync.WaitGroup) http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
 		wg.Add(1)
 		c, err := websocket.Accept(writer, request, &websocket.AcceptOptions{OriginPatterns: []string{"*"}})
@@ -397,9 +397,9 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 		}
 
 		for {
-			mmtpMessage, err = readMessage(request.Context(), c)
+			mmtpMessage, err = readMessage(ctx, c)
 			if err != nil {
-				fmt.Println("Something went wrong while reading message from Edge Router:", err)
+				fmt.Println("Something went wrong while reading message from Agent:", err)
 				return
 			}
 			switch mmtpMessage.GetMsgType() {

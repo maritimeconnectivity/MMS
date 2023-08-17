@@ -321,7 +321,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 		}
 
 		for {
-			mmtpMessage, err = readMessage(request.Context(), c)
+			mmtpMessage, err = readMessage(ctx, c)
 			if err != nil {
 				fmt.Println("Could not receive message:", err)
 				return
