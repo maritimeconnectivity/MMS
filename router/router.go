@@ -927,7 +927,6 @@ func main() {
 		fmt.Println("libp2p node could not be shut down correctly")
 	}
 	cancel()
-	wg.Done()
 	wg.Wait()
 }
 

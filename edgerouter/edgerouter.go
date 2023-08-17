@@ -237,6 +237,8 @@ func (er *EdgeRouter) StartEdgeRouter(ctx context.Context, wg *sync.WaitGroup) {
 		fmt.Println(err)
 	}
 	er.routerConnMu.Unlock()
+
+	close(er.outgoingChannel)
 }
 
 func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[string]*Subscription, subMu *sync.RWMutex, agents map[string]*Agent, agentsMu *sync.RWMutex, mrnToAgent map[string]*Agent, mrnToAgentMu *sync.RWMutex, ctx context.Context, wg *sync.WaitGroup) http.HandlerFunc {
@@ -959,6 +961,5 @@ func main() {
 	<-ch
 	fmt.Println("Received signal, shutting down...")
 	cancel()
-	wg.Done()
 	wg.Wait()
 }
