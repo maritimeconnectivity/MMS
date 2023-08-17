@@ -234,6 +234,12 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 		// Uncomment the following block when using TLS
 		//uidOid := []int{0, 9, 2342, 19200300, 100, 1, 1}
 		//
+		//if len(request.TLS.PeerCertificates) < 1 {
+		//	if err = c.Close(websocket.StatusPolicyViolation, "A valid client certificate must be provided for authenticated connections"); err != nil {
+		//		fmt.Println(err)
+		//	}
+		//	return
+		//}
 		//// https://stackoverflow.com/a/50640119
 		//for _, n := range request.TLS.PeerCertificates[0].Subject.Names {
 		//	if n.Type.Equal(uidOid) {
