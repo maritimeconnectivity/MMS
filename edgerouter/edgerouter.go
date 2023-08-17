@@ -50,6 +50,7 @@ type Agent struct {
 	Messages       map[string]*mmtp.MmtpMessage // the incoming messages for this Agent
 	msgMu          *sync.RWMutex                // RWMutex for locking the Messages map
 	reconnectToken string                       // token for reconnecting to a previous session
+	agentUuid      string                       // UUID for uniquely identifying this Agent
 }
 
 func (a *Agent) QueueMessage(mmtpMessage *mmtp.MmtpMessage) error {
@@ -92,13 +93,13 @@ func NewSubscription(interest string) *Subscription {
 
 func (sub *Subscription) AddSubscriber(agent *Agent) {
 	sub.subsMu.Lock()
-	sub.Subscribers[agent.Mrn] = agent
+	sub.Subscribers[agent.agentUuid] = agent
 	sub.subsMu.Unlock()
 }
 
 func (sub *Subscription) DeleteSubscriber(agent *Agent) {
 	sub.subsMu.Lock()
-	delete(sub.Subscribers, agent.Mrn)
+	delete(sub.Subscribers, agent.agentUuid)
 	sub.subsMu.Unlock()
 }
 
@@ -109,6 +110,8 @@ type EdgeRouter struct {
 	subMu           *sync.RWMutex            // a Mutex for locking the subscriptions map
 	agents          map[string]*Agent        // a map of connected Agents
 	agentsMu        *sync.RWMutex            // a Mutex for locking the agents map
+	mrnToAgent      map[string]*Agent        // a mapping from an Agent MRN to a UUID
+	mrnToAgentMu    *sync.RWMutex            // a Mutex for locking the mrnToAgent map
 	httpServer      *http.Server             // the http server that is used to bootstrap websocket connections
 	outgoingChannel chan *mmtp.MmtpMessage   // channel for outgoing messages
 	routerWs        *websocket.Conn          // the websocket connection to the MMS Router
@@ -121,9 +124,11 @@ func NewEdgeRouter(listeningAddr string, mrn string, outgoingChannel chan *mmtp.
 	subMu := &sync.RWMutex{}
 	agents := make(map[string]*Agent)
 	agentsMu := &sync.RWMutex{}
+	mrnToAgent := make(map[string]*Agent)
+	mrnToAgentMu := &sync.RWMutex{}
 	httpServer := http.Server{
 		Addr:    listeningAddr,
-		Handler: handleHttpConnection(outgoingChannel, subs, subMu, agents, agentsMu, wg),
+		Handler: handleHttpConnection(outgoingChannel, subs, subMu, agents, agentsMu, mrnToAgent, mrnToAgentMu, wg),
 		TLSConfig: &tls.Config{
 			ClientAuth:            tls.VerifyClientCertIfGiven,
 			ClientCAs:             nil,
@@ -138,6 +143,8 @@ func NewEdgeRouter(listeningAddr string, mrn string, outgoingChannel chan *mmtp.
 		subMu:           subMu,
 		agents:          agents,
 		agentsMu:        agentsMu,
+		mrnToAgent:      mrnToAgent,
+		mrnToAgentMu:    mrnToAgentMu,
 		httpServer:      &httpServer,
 		outgoingChannel: outgoingChannel,
 		routerWs:        routerWs,
@@ -232,7 +239,7 @@ func (er *EdgeRouter) StartEdgeRouter(ctx context.Context, wg *sync.WaitGroup) {
 	er.routerConnMu.Unlock()
 }
 
-func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[string]*Subscription, subMu *sync.RWMutex, agents map[string]*Agent, agentsMu *sync.RWMutex, wg *sync.WaitGroup) http.HandlerFunc {
+func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[string]*Subscription, subMu *sync.RWMutex, agents map[string]*Agent, agentsMu *sync.RWMutex, mrnToAgent map[string]*Agent, mrnToAgentMu *sync.RWMutex, wg *sync.WaitGroup) http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
 		wg.Add(1)
 		c, err := websocket.Accept(writer, request, &websocket.AcceptOptions{OriginPatterns: []string{"*"}})
@@ -274,13 +281,6 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 		}
 
 		agentMrn := connect.GetOwnMrn()
-		// TODO handle anonymous connections
-		if agentMrn == "" {
-			if err = c.Close(websocket.StatusUnsupportedData, "The first message needs to be a Connect message with the MRN of the Agent"); err != nil {
-				fmt.Println(err)
-			}
-			return
-		}
 		agentMrn = strings.ToLower(agentMrn)
 
 		// Uncomment the following block when using TLS
@@ -303,10 +303,10 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 		var agent *Agent
 		if connect.ReconnectToken != nil {
 			agentsMu.RLock()
-			agent = agents[agentMrn]
+			agent = agents[connect.GetReconnectToken()]
 			agentsMu.RUnlock()
 			if agent == nil {
-				errorMsg := "No existing session was found for the given MRN"
+				errorMsg := "No existing session was found for the given reconnect token"
 				resp := &mmtp.MmtpMessage{
 					MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
 					Uuid:    uuid.NewString(),
@@ -339,35 +339,45 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 					return
 				}
 			}
+			agentsMu.Lock()
+			delete(agents, agent.reconnectToken)
+			agentsMu.Unlock()
 		} else {
 			agent = &Agent{
 				Mrn:       agentMrn,
 				Interests: make([]string, 0, 1),
 				Messages:  make(map[string]*mmtp.MmtpMessage),
 				msgMu:     &sync.RWMutex{},
+				agentUuid: uuid.NewString(),
 			}
-			// Subscribe on direct messages to the Agent
-			sub := &mmtp.MmtpMessage{
-				MsgType: mmtp.MsgType_PROTOCOL_MESSAGE,
-				Uuid:    uuid.NewString(),
-				Body: &mmtp.MmtpMessage_ProtocolMessage{
-					ProtocolMessage: &mmtp.ProtocolMessage{
-						ProtocolMsgType: mmtp.ProtocolMessageType_SUBSCRIBE_MESSAGE,
-						Body: &mmtp.ProtocolMessage_SubscribeMessage{
-							SubscribeMessage: &mmtp.Subscribe{
-								Subject: agentMrn,
+			if agentMrn != "" {
+				// Subscribe on direct messages to the Agent
+				sub := &mmtp.MmtpMessage{
+					MsgType: mmtp.MsgType_PROTOCOL_MESSAGE,
+					Uuid:    uuid.NewString(),
+					Body: &mmtp.MmtpMessage_ProtocolMessage{
+						ProtocolMessage: &mmtp.ProtocolMessage{
+							ProtocolMsgType: mmtp.ProtocolMessageType_SUBSCRIBE_MESSAGE,
+							Body: &mmtp.ProtocolMessage_SubscribeMessage{
+								SubscribeMessage: &mmtp.Subscribe{
+									Subject: agentMrn,
+								},
 							},
 						},
 					},
-				},
+				}
+				outgoingChannel <- sub
+
+				mrnToAgentMu.Lock()
+				mrnToAgent[agentMrn] = agent
+				mrnToAgentMu.Unlock()
 			}
-			outgoingChannel <- sub
 		}
 
 		agent.reconnectToken = uuid.NewString()
 
 		agentsMu.Lock()
-		agents[agent.Mrn] = agent
+		agents[agent.reconnectToken] = agent
 		agentsMu.Unlock()
 
 		resp := &mmtp.MmtpMessage{
@@ -791,7 +801,7 @@ func handleIncomingMessages(ctx context.Context, edgeRouter *EdgeRouter, wg *syn
 							{
 								edgeRouter.subMu.RLock()
 								for _, subscriber := range edgeRouter.subscriptions[subjectOrRecipient.Subject].Subscribers {
-									if err := subscriber.QueueMessage(incomingMessage); err != nil {
+									if err = subscriber.QueueMessage(incomingMessage); err != nil {
 										fmt.Println("Could not queue message:", err)
 									}
 								}
@@ -800,14 +810,14 @@ func handleIncomingMessages(ctx context.Context, edgeRouter *EdgeRouter, wg *syn
 							}
 						case *mmtp.ApplicationMessageHeader_Recipients:
 							{
-								edgeRouter.agentsMu.RLock()
+								edgeRouter.mrnToAgentMu.RLock()
 								for _, recipient := range subjectOrRecipient.Recipients.GetRecipients() {
-									err := edgeRouter.agents[recipient].QueueMessage(incomingMessage)
+									err = edgeRouter.mrnToAgent[recipient].QueueMessage(incomingMessage)
 									if err != nil {
 										fmt.Println("Could not queue message for Edge Router:", err)
 									}
 								}
-								edgeRouter.agentsMu.RUnlock()
+								edgeRouter.mrnToAgentMu.RUnlock()
 								break
 							}
 						}
