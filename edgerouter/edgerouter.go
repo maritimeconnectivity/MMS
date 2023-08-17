@@ -502,10 +502,13 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 									agentsMu.RUnlock()
 								} else if header.GetSubject() != "" {
 									subMu.RLock()
-									for _, subscriber := range subs[header.GetSubject()].Subscribers {
-										if subscriber.Mrn != agent.Mrn {
-											if err = subscriber.QueueMessage(mmtpMessage); err != nil {
-												fmt.Println("Could not queue message to agent:", err)
+									sub, exists := subs[header.GetSubject()]
+									if exists {
+										for _, subscriber := range sub.Subscribers {
+											if subscriber.Mrn != agent.Mrn {
+												if err = subscriber.QueueMessage(mmtpMessage); err != nil {
+													fmt.Println("Could not queue message to agent:", err)
+												}
 											}
 										}
 									}
