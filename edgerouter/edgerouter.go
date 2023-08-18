@@ -260,7 +260,7 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 		// Set the read limit to 1 MiB instead of 32 KiB
 		c.SetReadLimit(WsReadLimit)
 
-		mmtpMessage, err := readMessage(request.Context(), c)
+		mmtpMessage, err := readMessage(ctx, c)
 		if err != nil {
 			fmt.Println(err)
 			return

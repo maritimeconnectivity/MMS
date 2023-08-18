@@ -200,7 +200,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 		c.SetReadLimit(WsReadLimit)
 
 		mmtpMessage := &mmtp.MmtpMessage{}
-		mmtpMessage, err = readMessage(request.Context(), c)
+		mmtpMessage, err = readMessage(ctx, c)
 		if err != nil {
 			fmt.Println("Could not read message:", err)
 			return
