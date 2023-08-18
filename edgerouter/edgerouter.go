@@ -920,6 +920,7 @@ func main() {
 
 	routerAddr := flag.String("raddr", "ws://localhost:8080", "The websocket URL of the Router to connect to.")
 	listeningPort := flag.Int("port", 8888, "The port number that this Edge Router should listen on.")
+	ownMrn := flag.String("mrn", "urn:mrn:mcp:device:idp1:org1:er", "The MRN of this Edge Router")
 
 	flag.Parse()
 
@@ -936,7 +937,7 @@ func main() {
 
 	wg := &sync.WaitGroup{}
 
-	er := NewEdgeRouter("0.0.0.0:"+strconv.Itoa(*listeningPort), "urn:mrn:mcp:device:idp1:org1:er", outgoingChannel, routerWs, ctx, wg)
+	er := NewEdgeRouter("0.0.0.0:"+strconv.Itoa(*listeningPort), *ownMrn, outgoingChannel, routerWs, ctx, wg)
 
 	wg.Add(1)
 	go er.StartEdgeRouter(ctx, wg)
