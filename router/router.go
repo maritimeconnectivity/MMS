@@ -436,11 +436,17 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 								if len(header.GetRecipients().GetRecipients()) > 0 {
 									erMu.RLock()
 									for _, recipient := range header.GetRecipients().Recipients {
-										a, exists := edgeRouters[recipient]
+										subMu.RLock()
+										sub, exists := subs[recipient]
+										subMu.RUnlock()
 										if exists {
-											if err = a.QueueMessage(mmtpMessage); err != nil {
-												fmt.Println("Could not queue message to agent:", err)
+											sub.subsMu.RLock()
+											for _, er := range sub.Subscribers {
+												if err = er.QueueMessage(mmtpMessage); err != nil {
+													fmt.Println("Could not queue message to Edge Router:", err)
+												}
 											}
+											sub.subsMu.RUnlock()
 										}
 									}
 									erMu.RUnlock()
@@ -451,7 +457,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 										for _, subscriber := range sub.Subscribers {
 											if subscriber.Mrn != e.Mrn {
 												if err = subscriber.QueueMessage(mmtpMessage); err != nil {
-													fmt.Println("Could not queue message to agent:", err)
+													fmt.Println("Could not queue message to Edge Router:", err)
 												}
 											}
 										}
