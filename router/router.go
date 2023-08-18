@@ -158,10 +158,9 @@ func NewMMSRouter(p2p *host.Host, pubSub *pubsub.PubSub, listeningAddr string, i
 }
 
 func (r *MMSRouter) StartRouter(ctx context.Context, wg *sync.WaitGroup) {
-	wg.Add(1)
 	fmt.Println("Starting MMS Router")
+	wg.Add(3)
 	go func() {
-		wg.Add(1)
 		fmt.Println("Websocket listening on:", r.httpServer.Addr)
 		if err := r.httpServer.ListenAndServe(); err != nil {
 			fmt.Println(err)
@@ -366,6 +365,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 									if err != nil {
 										panic(err)
 									}
+									wg.Add(1)
 									go handleSubscription(ctx, subscription, p2p, incomingChannel, wg)
 									subs[subject] = sub
 								} else {
@@ -703,7 +703,6 @@ func verifyEdgeRouterCertificate() func(rawCerts [][]byte, verifiedChains [][]*x
 }
 
 func handleSubscription(ctx context.Context, sub *pubsub.Subscription, host *host.Host, incomingChannel chan<- *mmtp.MmtpMessage, wg *sync.WaitGroup) {
-	wg.Add(1)
 	defer func() {
 		wg.Done()
 	}()
@@ -747,7 +746,6 @@ func handleSubscription(ctx context.Context, sub *pubsub.Subscription, host *hos
 }
 
 func handleIncomingMessages(ctx context.Context, router *MMSRouter, wg *sync.WaitGroup) {
-	wg.Add(1)
 	defer func() {
 		wg.Done()
 	}()
@@ -801,7 +799,6 @@ func handleIncomingMessages(ctx context.Context, router *MMSRouter, wg *sync.Wai
 }
 
 func handleOutgoingMessages(ctx context.Context, router *MMSRouter, wg *sync.WaitGroup) {
-	wg.Add(1)
 	defer func() {
 		wg.Done()
 	}()
@@ -920,6 +917,7 @@ func main() {
 	wg := &sync.WaitGroup{}
 
 	router := NewMMSRouter(&node, pubSub, "0.0.0.0:"+strconv.Itoa(*listeningPort), incomingChannel, outgoingChannel, ctx, wg)
+	wg.Add(1)
 	go router.StartRouter(ctx, wg)
 
 	// wait for a SIGINT or SIGTERM signal
