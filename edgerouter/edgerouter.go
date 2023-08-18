@@ -501,16 +501,16 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 								outgoingChannel <- mmtpMessage
 								header := send.GetApplicationMessage().GetHeader()
 								if len(header.GetRecipients().GetRecipients()) > 0 {
-									agentsMu.RLock()
+									mrnToAgentMu.RLock()
 									for _, recipient := range header.GetRecipients().Recipients {
-										a, exists := agents[recipient]
+										a, exists := mrnToAgent[recipient]
 										if exists {
 											if err = a.QueueMessage(mmtpMessage); err != nil {
 												fmt.Println("Could not queue message to agent:", err)
 											}
 										}
 									}
-									agentsMu.RUnlock()
+									mrnToAgentMu.RUnlock()
 								} else if header.GetSubject() != "" {
 									subMu.RLock()
 									sub, exists := subs[header.GetSubject()]
