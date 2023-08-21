@@ -20,7 +20,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/ecdsa"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
@@ -944,7 +943,7 @@ func main() {
 	cancel()
 	wg.Wait()
 	// shut the libp2p node down
-	if err := node.Close(); err != nil {
+	if err = node.Close(); err != nil {
 		fmt.Println("libp2p node could not be shut down correctly")
 	}
 }
@@ -968,21 +967,14 @@ func setupLibP2P(ctx context.Context, libp2pPort *int, privKeyFilePath *string) 
 			return nil, nil, fmt.Errorf("could not open the provided private key file: %w", err)
 		}
 		keyData, _ := pem.Decode(privKeyFile)
-		privKey, err := x509.ParsePKCS8PrivateKey(keyData.Bytes)
+		privKey, err := x509.ParseECPrivateKey(keyData.Bytes)
 		if err != nil {
-			return nil, nil, fmt.Errorf("could not parse the provided private key file: %w", err)
+			return nil, nil, fmt.Errorf("could not parse the provided private key file as an ECDSA key: %w", err)
 		}
 
-		var privEc crypto.PrivKey
-
-		switch privKey.(type) {
-		case *ecdsa.PrivateKey:
-			privEc, _, err = crypto.ECDSAKeyPairFromKey(privKey.(*ecdsa.PrivateKey))
-			if err != nil {
-				return nil, nil, fmt.Errorf("could not parse the ECDSA private key from the file: %w", err)
-			}
-		default:
-			return nil, nil, fmt.Errorf("only ECDSA private keys are supported")
+		privEc, _, err := crypto.ECDSAKeyPairFromKey(privKey)
+		if err != nil {
+			return nil, nil, fmt.Errorf("could not parse the ECDSA private key from the file: %w", err)
 		}
 
 		// start a libp2p node with the given private key
