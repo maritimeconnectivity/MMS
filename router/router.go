@@ -719,7 +719,7 @@ func handleSubscription(ctx context.Context, sub *pubsub.Subscription, host *hos
 		select {
 		case <-ctx.Done():
 			sub.Cancel()
-			break
+			return
 		default:
 			m, err := sub.Next(ctx)
 			if err != nil {
@@ -941,17 +941,17 @@ func main() {
 	<-ch
 	fmt.Println("Received signal, shutting down...")
 
-	// shut the node down
+	cancel()
+	wg.Wait()
+	// shut the libp2p node down
 	if err := node.Close(); err != nil {
 		fmt.Println("libp2p node could not be shut down correctly")
 	}
-	cancel()
-	wg.Wait()
 }
 
 func setupLibP2P(ctx context.Context, libp2pPort *int, privKeyFilePath *string) (host.Host, *drouting.RoutingDiscovery, error) {
 	port := *libp2pPort
-	addrStrings := make([]string, 2, 2)
+	addrStrings := make([]string, 2)
 	if port != 0 {
 		addrStrings[0] = fmt.Sprintf("/ip4/0.0.0.0/udp/%d/quic-v1", port)
 		addrStrings[1] = fmt.Sprintf("/ip6/::/udp/%d/quic-v1", port)
