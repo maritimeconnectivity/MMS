@@ -20,14 +20,17 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/ecdsa"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/pem"
 	"flag"
 	"fmt"
 	"github.com/google/uuid"
 	"github.com/libp2p/go-libp2p"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
+	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
 	peerstore "github.com/libp2p/go-libp2p/core/peer"
 	drouting "github.com/libp2p/go-libp2p/p2p/discovery/routing"
@@ -881,9 +884,15 @@ func main() {
 	libp2pPort := flag.Int("libp2p-port", 0, "The port number that this Router should use to "+
 		"open up to the Router Network. If not set, a random port is chosen.")
 
+	privKeyFilePath := flag.String("privkey", "", "Path to a file containing a private key. If none is provided, a new private key will be generated every time the program is run.")
+
 	flag.Parse()
 
-	node, rd := setupLibP2P(ctx, libp2pPort)
+	node, rd, err := setupLibP2P(ctx, libp2pPort, privKeyFilePath)
+	if err != nil {
+		fmt.Println("Could not setup the libp2p backend:", err)
+		return
+	}
 
 	pubSub, err := pubsub.NewGossipSub(ctx, node)
 	if err != nil {
@@ -940,7 +949,7 @@ func main() {
 	wg.Wait()
 }
 
-func setupLibP2P(ctx context.Context, libp2pPort *int) (host.Host, *drouting.RoutingDiscovery) {
+func setupLibP2P(ctx context.Context, libp2pPort *int, privKeyFilePath *string) (host.Host, *drouting.RoutingDiscovery, error) {
 	port := *libp2pPort
 	addrStrings := make([]string, 2, 2)
 	if port != 0 {
@@ -952,10 +961,42 @@ func setupLibP2P(ctx context.Context, libp2pPort *int) (host.Host, *drouting.Rou
 	}
 	// TODO make the router discover its public IP address so it can be published
 
-	// start a libp2p node with default settings
-	node, err := libp2p.New(libp2p.ListenAddrStrings(addrStrings...))
-	if err != nil {
-		panic(err)
+	var node host.Host
+	if *privKeyFilePath != "" {
+		privKeyFile, err := os.ReadFile(*privKeyFilePath)
+		if err != nil {
+			return nil, nil, fmt.Errorf("could not open the provided private key file: %w", err)
+		}
+		keyData, _ := pem.Decode(privKeyFile)
+		privKey, err := x509.ParsePKCS8PrivateKey(keyData.Bytes)
+		if err != nil {
+			return nil, nil, fmt.Errorf("could not parse the provided private key file: %w", err)
+		}
+
+		var privEc crypto.PrivKey
+
+		switch privKey.(type) {
+		case *ecdsa.PrivateKey:
+			privEc, _, err = crypto.ECDSAKeyPairFromKey(privKey.(*ecdsa.PrivateKey))
+			if err != nil {
+				return nil, nil, fmt.Errorf("could not parse the ECDSA private key from the file: %w", err)
+			}
+		default:
+			return nil, nil, fmt.Errorf("only ECDSA private keys are supported")
+		}
+
+		// start a libp2p node with the given private key
+		node, err = libp2p.New(libp2p.ListenAddrStrings(addrStrings...), libp2p.Identity(privEc))
+		if err != nil {
+			return nil, nil, fmt.Errorf("could not create a libp2p node: %w", err)
+		}
+	} else {
+		var err error
+		// start a libp2p node with default settings
+		node, err = libp2p.New(libp2p.ListenAddrStrings(addrStrings...))
+		if err != nil {
+			return nil, nil, fmt.Errorf("could not create a libp2p node: %w", err)
+		}
 	}
 
 	beacons := make([]peerstore.AddrInfo, 0, 1)
@@ -992,5 +1033,5 @@ func setupLibP2P(ctx context.Context, libp2pPort *int) (host.Host, *drouting.Rou
 	}
 	addrs, err := peerstore.AddrInfoToP2pAddrs(&peerInfo)
 	fmt.Println("libp2p node addresses:", addrs)
-	return node, rd
+	return node, rd, nil
 }
