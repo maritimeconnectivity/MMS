@@ -444,8 +444,10 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 										if exists {
 											sub.subsMu.RLock()
 											for _, er := range sub.Subscribers {
-												if err = er.QueueMessage(mmtpMessage); err != nil {
-													fmt.Println("Could not queue message to Edge Router:", err)
+												if er.Mrn != e.Mrn { // Do not send the message back to where it came from
+													if err = er.QueueMessage(mmtpMessage); err != nil {
+														fmt.Println("Could not queue message to Edge Router:", err)
+													}
 												}
 											}
 											sub.subsMu.RUnlock()
