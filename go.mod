@@ -3,7 +3,7 @@ module maritimeconnectivity.net/mms-router
 go 1.21
 
 require (
-	github.com/google/uuid v1.3.0
+	github.com/google/uuid v1.3.1
 	github.com/hashicorp/mdns v1.0.5
 	github.com/libp2p/go-libp2p v0.30.0
 	github.com/libp2p/go-libp2p-kad-dht v0.25.0
