@@ -45,6 +45,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -938,7 +939,7 @@ func main() {
 
 	// wait for a SIGINT or SIGTERM signal
 	ch := make(chan os.Signal, 1)
-	signal.Notify(ch, os.Interrupt)
+	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
 	<-ch
 	fmt.Println("Received signal, shutting down...")
 

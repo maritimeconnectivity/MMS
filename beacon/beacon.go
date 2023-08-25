@@ -28,6 +28,7 @@ import (
 	peerstore "github.com/libp2p/go-libp2p/core/peer"
 	"os"
 	"os/signal"
+	"syscall"
 )
 
 func main() {
@@ -90,7 +91,7 @@ func main() {
 
 	// wait for a SIGINT or SIGTERM signal
 	ch := make(chan os.Signal, 1)
-	signal.Notify(ch, os.Interrupt)
+	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
 	<-ch
 	fmt.Println("Received signal, shutting down...")
 	// shut the node down
