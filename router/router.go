@@ -963,6 +963,20 @@ func setupLibP2P(ctx context.Context, libp2pPort *int, privKeyFilePath *string) 
 	}
 	// TODO make the router discover its public IP address so it can be published
 
+	beacons := make([]peerstore.AddrInfo, 0, 1)
+	beaconsFile, err := os.Open("beacons.txt")
+	if err == nil {
+		fileScanner := bufio.NewScanner(beaconsFile)
+		for fileScanner.Scan() {
+			addrInfo, err := peerstore.AddrInfoFromString(fileScanner.Text())
+			if err != nil {
+				fmt.Println("Failed to parse beacon address:", err)
+				continue
+			}
+			beacons = append(beacons, *addrInfo)
+		}
+	}
+
 	var node host.Host
 	if *privKeyFilePath != "" {
 		privKeyFile, err := os.ReadFile(*privKeyFilePath)
@@ -981,30 +995,29 @@ func setupLibP2P(ctx context.Context, libp2pPort *int, privKeyFilePath *string) 
 		}
 
 		// start a libp2p node with the given private key
-		node, err = libp2p.New(libp2p.ListenAddrStrings(addrStrings...), libp2p.Identity(privEc))
+		node, err = libp2p.New(
+			libp2p.ListenAddrStrings(addrStrings...),
+			libp2p.Identity(privEc),
+			libp2p.EnableNATService(),
+			libp2p.EnableRelayService(),
+			libp2p.EnableAutoRelayWithStaticRelays(beacons),
+			libp2p.EnableHolePunching(),
+		)
 		if err != nil {
 			return nil, nil, fmt.Errorf("could not create a libp2p node: %w", err)
 		}
 	} else {
 		var err error
 		// start a libp2p node with default settings
-		node, err = libp2p.New(libp2p.ListenAddrStrings(addrStrings...))
+		node, err = libp2p.New(
+			libp2p.ListenAddrStrings(addrStrings...),
+			libp2p.EnableNATService(),
+			libp2p.EnableRelayService(),
+			libp2p.EnableAutoRelayWithStaticRelays(beacons),
+			libp2p.EnableHolePunching(),
+		)
 		if err != nil {
 			return nil, nil, fmt.Errorf("could not create a libp2p node: %w", err)
-		}
-	}
-
-	beacons := make([]peerstore.AddrInfo, 0, 1)
-	beaconsFile, err := os.Open("beacons.txt")
-	if err == nil {
-		fileScanner := bufio.NewScanner(beaconsFile)
-		for fileScanner.Scan() {
-			addrInfo, err := peerstore.AddrInfoFromString(fileScanner.Text())
-			if err != nil {
-				fmt.Println("Failed to parse beacon address:", err)
-				continue
-			}
-			beacons = append(beacons, *addrInfo)
 		}
 	}
 

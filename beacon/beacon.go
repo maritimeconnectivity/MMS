@@ -62,7 +62,13 @@ func main() {
 		}
 	}
 
-	node, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/0.0.0.0/tcp/27000", "/ip4/0.0.0.0/udp/27000/quic-v1", "/ip6/::/tcp/27000", "/ip6/::/udp/27000/quic-v1"), libp2p.Identity(privEc))
+	node, err := libp2p.New(
+		libp2p.ListenAddrStrings("/ip4/0.0.0.0/tcp/27000", "/ip4/0.0.0.0/udp/27000/quic-v1", "/ip6/::/tcp/27000", "/ip6/::/udp/27000/quic-v1"),
+		libp2p.Identity(privEc),
+		libp2p.EnableNATService(),
+		libp2p.EnableRelayService(),
+		libp2p.EnableHolePunching(),
+	)
 	if err != nil {
 		panic(err)
 	}
@@ -94,9 +100,9 @@ func main() {
 	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
 	<-ch
 	fmt.Println("Received signal, shutting down...")
+	cancel()
 	// shut the node down
 	if err := node.Close(); err != nil {
 		fmt.Println(err)
 	}
-	cancel()
 }
