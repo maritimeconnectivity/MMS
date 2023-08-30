@@ -700,7 +700,7 @@ func verifyEdgeRouterCertificate() func(rawCerts [][]byte, verifiedChains [][]*x
 				return fmt.Errorf("signature on CRL is not valid: %w", err)
 			}
 			now := time.Now().UTC()
-			for _, rev := range crl.RevokedCertificates {
+			for _, rev := range crl.RevokedCertificateEntries {
 				if (rev.SerialNumber.Cmp(clientCert.SerialNumber) == 0) && (rev.RevocationTime.UTC().Before(now)) {
 					return fmt.Errorf("the given client certificate has been revoked")
 				}
