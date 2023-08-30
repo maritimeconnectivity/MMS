@@ -51,6 +51,7 @@ type Agent struct {
 	msgMu          *sync.RWMutex                // RWMutex for locking the Messages map
 	reconnectToken string                       // token for reconnecting to a previous session
 	agentUuid      string                       // UUID for uniquely identifying this Agent
+	directMessages bool                         // bool indicating whether the Agent is subscribing to direct messages
 }
 
 func (a *Agent) QueueMessage(mmtpMessage *mmtp.MmtpMessage) error {
@@ -359,23 +360,6 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 				agentUuid: uuid.NewString(),
 			}
 			if agentMrn != "" {
-				// Subscribe on direct messages to the Agent
-				sub := &mmtp.MmtpMessage{
-					MsgType: mmtp.MsgType_PROTOCOL_MESSAGE,
-					Uuid:    uuid.NewString(),
-					Body: &mmtp.MmtpMessage_ProtocolMessage{
-						ProtocolMessage: &mmtp.ProtocolMessage{
-							ProtocolMsgType: mmtp.ProtocolMessageType_SUBSCRIBE_MESSAGE,
-							Body: &mmtp.ProtocolMessage_SubscribeMessage{
-								SubscribeMessage: &mmtp.Subscribe{
-									Subject: agentMrn,
-								},
-							},
-						},
-					},
-				}
-				outgoingChannel <- sub
-
 				mrnToAgentMu.Lock()
 				mrnToAgent[agentMrn] = agent
 				mrnToAgentMu.Unlock()
@@ -421,34 +405,112 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 					case mmtp.ProtocolMessageType_SUBSCRIBE_MESSAGE:
 						{
 							if subscribe := protoMessage.GetSubscribeMessage(); subscribe != nil {
-								subject := subscribe.GetSubject()
-								if subject == "" {
-									continue
-								}
-								subMu.Lock()
-								sub, exists := subs[subject]
-								if !exists {
-									sub = NewSubscription(subject)
-									sub.AddSubscriber(agent)
-									subs[subject] = sub
-									outgoingChannel <- mmtpMessage
-								} else {
-									sub.AddSubscriber(agent)
-								}
-								subMu.Unlock()
-								agent.Interests = append(agent.Interests, subject)
+								switch subscribe.GetSubjectOrDirectMessages().(type) {
+								case *mmtp.Subscribe_Subject:
+									{
+										subject := subscribe.GetSubject()
+										if subject == "" {
+											continue
+										}
+										subMu.Lock()
+										sub, exists := subs[subject]
+										if !exists {
+											sub = NewSubscription(subject)
+											sub.AddSubscriber(agent)
+											subs[subject] = sub
+											outgoingChannel <- mmtpMessage
+										} else {
+											sub.AddSubscriber(agent)
+										}
+										subMu.Unlock()
+										agent.Interests = append(agent.Interests, subject)
 
-								resp = &mmtp.MmtpMessage{
-									MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
-									Uuid:    uuid.NewString(),
-									Body: &mmtp.MmtpMessage_ResponseMessage{
-										ResponseMessage: &mmtp.ResponseMessage{
-											ResponseToUuid: mmtpMessage.GetUuid(),
-											Response:       mmtp.ResponseEnum_GOOD,
-										}},
-								}
-								if err = writeMessage(request.Context(), c, resp); err != nil {
-									fmt.Println("Could not send subscribe response to Edge Router:", err)
+										resp = &mmtp.MmtpMessage{
+											MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+											Uuid:    uuid.NewString(),
+											Body: &mmtp.MmtpMessage_ResponseMessage{
+												ResponseMessage: &mmtp.ResponseMessage{
+													ResponseToUuid: mmtpMessage.GetUuid(),
+													Response:       mmtp.ResponseEnum_GOOD,
+												}},
+										}
+										if err = writeMessage(request.Context(), c, resp); err != nil {
+											fmt.Println("Could not send subscribe response to Edge Router:", err)
+										}
+										break
+									}
+								case *mmtp.Subscribe_DirectMessages:
+									{
+										directMessages := subscribe.GetDirectMessages()
+										if !directMessages {
+											reason := "The directMessages flag needs to be true to be able to subscribe to direct messages"
+											resp = &mmtp.MmtpMessage{
+												MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+												Uuid:    uuid.NewString(),
+												Body: &mmtp.MmtpMessage_ResponseMessage{
+													ResponseMessage: &mmtp.ResponseMessage{
+														ResponseToUuid: mmtpMessage.GetUuid(),
+														Response:       mmtp.ResponseEnum_ERROR,
+														ReasonText:     &reason,
+													}},
+											}
+											if err = writeMessage(request.Context(), c, resp); err != nil {
+												fmt.Println("Could not send subscribe response to Edge Router:", err)
+											}
+											break
+										}
+										if agentMrn == "" {
+											reason := "You need to be authenticated to be able to subscribe to direct messages"
+											resp = &mmtp.MmtpMessage{
+												MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+												Uuid:    uuid.NewString(),
+												Body: &mmtp.MmtpMessage_ResponseMessage{
+													ResponseMessage: &mmtp.ResponseMessage{
+														ResponseToUuid: mmtpMessage.GetUuid(),
+														Response:       mmtp.ResponseEnum_ERROR,
+														ReasonText:     &reason,
+													}},
+											}
+											if err = writeMessage(request.Context(), c, resp); err != nil {
+												fmt.Println("Could not send subscribe response to Edge Router:", err)
+											}
+											break
+										}
+										// Subscribe on direct messages to the Agent
+										sub := &mmtp.MmtpMessage{
+											MsgType: mmtp.MsgType_PROTOCOL_MESSAGE,
+											Uuid:    uuid.NewString(),
+											Body: &mmtp.MmtpMessage_ProtocolMessage{
+												ProtocolMessage: &mmtp.ProtocolMessage{
+													ProtocolMsgType: mmtp.ProtocolMessageType_SUBSCRIBE_MESSAGE,
+													Body: &mmtp.ProtocolMessage_SubscribeMessage{
+														SubscribeMessage: &mmtp.Subscribe{
+															SubjectOrDirectMessages: &mmtp.Subscribe_Subject{
+																Subject: agentMrn,
+															},
+														},
+													},
+												},
+											},
+										}
+										outgoingChannel <- sub
+
+										agent.directMessages = true
+
+										resp = &mmtp.MmtpMessage{
+											MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+											Uuid:    uuid.NewString(),
+											Body: &mmtp.MmtpMessage_ResponseMessage{
+												ResponseMessage: &mmtp.ResponseMessage{
+													ResponseToUuid: mmtpMessage.GetUuid(),
+													Response:       mmtp.ResponseEnum_GOOD,
+												}},
+										}
+										if err = writeMessage(request.Context(), c, resp); err != nil {
+											fmt.Println("Could not send subscribe response to Edge Router:", err)
+										}
+										break
+									}
 								}
 							}
 							break
@@ -501,7 +563,7 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 									mrnToAgentMu.RLock()
 									for _, recipient := range header.GetRecipients().Recipients {
 										a, exists := mrnToAgent[recipient]
-										if exists {
+										if exists && a.directMessages {
 											if err = a.QueueMessage(mmtpMessage); err != nil {
 												fmt.Println("Could not queue message to agent:", err)
 											}
@@ -823,9 +885,12 @@ func handleIncomingMessages(ctx context.Context, edgeRouter *EdgeRouter, wg *syn
 							{
 								edgeRouter.mrnToAgentMu.RLock()
 								for _, recipient := range subjectOrRecipient.Recipients.GetRecipients() {
-									err = edgeRouter.mrnToAgent[recipient].QueueMessage(incomingMessage)
-									if err != nil {
-										fmt.Println("Could not queue message for Edge Router:", err)
+									agent := edgeRouter.mrnToAgent[recipient]
+									if agent.directMessages {
+										err = agent.QueueMessage(incomingMessage)
+										if err != nil {
+											fmt.Println("Could not queue message for Edge Router:", err)
+										}
 									}
 								}
 								edgeRouter.mrnToAgentMu.RUnlock()
