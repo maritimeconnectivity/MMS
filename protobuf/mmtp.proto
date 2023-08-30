@@ -52,11 +52,17 @@ message ProtocolMessage {
 }
 
 message Subscribe {
-  string subject = 1;
+  oneof subjectOrDirectMessages {
+    string subject = 1;
+    bool directMessages = 2;
+  }
 }
 
 message Unsubscribe {
-  string subject = 1;
+  oneof subjectOrDirectMessages {
+    string subject = 1;
+    bool directMessages = 2;
+  }
 }
 
 message Send {
