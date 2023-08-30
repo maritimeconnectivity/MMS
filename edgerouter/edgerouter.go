@@ -1065,7 +1065,7 @@ func main() {
 
 	wg := &sync.WaitGroup{}
 
-	er := NewEdgeRouter("0.0.0.0:"+strconv.Itoa(*listeningPort), *ownMrn, outgoingChannel, routerWs, ctx, wg)
+	er := NewEdgeRouter(":"+strconv.Itoa(*listeningPort), *ownMrn, outgoingChannel, routerWs, ctx, wg)
 
 	wg.Add(1)
 	go er.StartEdgeRouter(ctx, wg)

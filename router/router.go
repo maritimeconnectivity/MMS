@@ -933,7 +933,7 @@ func main() {
 
 	wg := &sync.WaitGroup{}
 
-	router := NewMMSRouter(&node, pubSub, "0.0.0.0:"+strconv.Itoa(*listeningPort), incomingChannel, outgoingChannel, ctx, wg)
+	router := NewMMSRouter(&node, pubSub, ":"+strconv.Itoa(*listeningPort), incomingChannel, outgoingChannel, ctx, wg)
 	wg.Add(1)
 	go router.StartRouter(ctx, wg)
 
