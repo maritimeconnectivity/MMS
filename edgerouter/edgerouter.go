@@ -518,39 +518,102 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 					case mmtp.ProtocolMessageType_UNSUBSCRIBE_MESSAGE:
 						{
 							if unsubscribe := protoMessage.GetUnsubscribeMessage(); unsubscribe != nil {
-								subject := unsubscribe.GetSubject()
-								if subject == "" {
-									continue
-								}
-								subMu.Lock()
-								sub, exists := subs[subject]
-								if !exists {
-									continue
-								}
-								sub.DeleteSubscriber(agent)
-								subMu.Unlock()
-								interests := agent.Interests
-								for i := range interests {
-									if strings.EqualFold(subject, interests[i]) {
-										interests[i] = interests[len(interests)-1]
-										interests[len(interests)-1] = ""
-										interests = interests[:len(interests)-1]
-										agent.Interests = interests
+								switch unsubscribe.GetSubjectOrDirectMessages().(type) {
+								case *mmtp.Unsubscribe_Subject:
+									{
+										subject := unsubscribe.GetSubject()
+										if subject == "" {
+											continue
+										}
+										subMu.Lock()
+										sub, exists := subs[subject]
+										if !exists {
+											continue
+										}
+										sub.DeleteSubscriber(agent)
+										subMu.Unlock()
+										interests := agent.Interests
+										for i := range interests {
+											if strings.EqualFold(subject, interests[i]) {
+												interests[i] = interests[len(interests)-1]
+												interests[len(interests)-1] = ""
+												interests = interests[:len(interests)-1]
+												agent.Interests = interests
+												break
+											}
+										}
+										resp = &mmtp.MmtpMessage{
+											MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+											Uuid:    uuid.NewString(),
+											Body: &mmtp.MmtpMessage_ResponseMessage{
+												ResponseMessage: &mmtp.ResponseMessage{
+													ResponseToUuid: mmtpMessage.GetUuid(),
+													Response:       mmtp.ResponseEnum_GOOD,
+												}},
+										}
+										if err = writeMessage(request.Context(), c, resp); err != nil {
+											fmt.Println("Could not write response to unsubscribe message:", err)
+										}
+										break
+									}
+								case *mmtp.Unsubscribe_DirectMessages:
+									{
+										directMessages := unsubscribe.GetDirectMessages()
+										if !directMessages {
+											reason := "The directMessages flag needs to be true to be able to unsubscribe from direct messages"
+											resp = &mmtp.MmtpMessage{
+												MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+												Uuid:    uuid.NewString(),
+												Body: &mmtp.MmtpMessage_ResponseMessage{
+													ResponseMessage: &mmtp.ResponseMessage{
+														ResponseToUuid: mmtpMessage.GetUuid(),
+														Response:       mmtp.ResponseEnum_ERROR,
+														ReasonText:     &reason,
+													}},
+											}
+											if err = writeMessage(request.Context(), c, resp); err != nil {
+												fmt.Println("Could not send unsubscribe response to Edge Router:", err)
+											}
+											break
+										}
+										if agentMrn != "" {
+											unsub := &mmtp.MmtpMessage{
+												MsgType: mmtp.MsgType_PROTOCOL_MESSAGE,
+												Uuid:    uuid.NewString(),
+												Body: &mmtp.MmtpMessage_ProtocolMessage{
+													ProtocolMessage: &mmtp.ProtocolMessage{
+														ProtocolMsgType: mmtp.ProtocolMessageType_UNSUBSCRIBE_MESSAGE,
+														Body: &mmtp.ProtocolMessage_UnsubscribeMessage{
+															UnsubscribeMessage: &mmtp.Unsubscribe{
+																SubjectOrDirectMessages: &mmtp.Unsubscribe_Subject{
+																	Subject: agentMrn,
+																},
+															},
+														},
+													},
+												},
+											}
+											outgoingChannel <- unsub
+
+											agent.directMessages = false
+
+											resp = &mmtp.MmtpMessage{
+												MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+												Uuid:    uuid.NewString(),
+												Body: &mmtp.MmtpMessage_ResponseMessage{
+													ResponseMessage: &mmtp.ResponseMessage{
+														ResponseToUuid: mmtpMessage.GetUuid(),
+														Response:       mmtp.ResponseEnum_GOOD,
+													}},
+											}
+											if err = writeMessage(request.Context(), c, resp); err != nil {
+												fmt.Println("Could not send unsubscribe response to Edge Router:", err)
+											}
+										}
 										break
 									}
 								}
-								resp = &mmtp.MmtpMessage{
-									MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
-									Uuid:    uuid.NewString(),
-									Body: &mmtp.MmtpMessage_ResponseMessage{
-										ResponseMessage: &mmtp.ResponseMessage{
-											ResponseToUuid: mmtpMessage.GetUuid(),
-											Response:       mmtp.ResponseEnum_GOOD,
-										}},
-								}
-								if err = writeMessage(request.Context(), c, resp); err != nil {
-									fmt.Println("Could not write response to unsubscribe message:", err)
-								}
+
 							}
 							break
 						}
