@@ -160,13 +160,19 @@ func NewMMSRouter(p2p *host.Host, pubSub *pubsub.PubSub, listeningAddr string, i
 	}
 }
 
-func (r *MMSRouter) StartRouter(ctx context.Context, wg *sync.WaitGroup) {
+func (r *MMSRouter) StartRouter(ctx context.Context, wg *sync.WaitGroup, certPath *string, certKeyPath *string) {
 	fmt.Println("Starting MMS Router")
 	wg.Add(3)
 	go func() {
 		fmt.Println("Websocket listening on:", r.httpServer.Addr)
-		if err := r.httpServer.ListenAndServe(); err != nil {
-			fmt.Println(err)
+		if *certPath != "" && *certKeyPath != "" {
+			if err := r.httpServer.ListenAndServeTLS(*certPath, *certKeyPath); err != nil {
+				fmt.Println(err)
+			}
+		} else {
+			if err := r.httpServer.ListenAndServe(); err != nil {
+				fmt.Println(err)
+			}
 		}
 		wg.Done()
 	}()
@@ -233,28 +239,30 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 		}
 		erMrn = strings.ToLower(erMrn)
 
-		// Uncomment the following block when using TLS
-		//uidOid := []int{0, 9, 2342, 19200300, 100, 1, 1}
-		//
-		//if len(request.TLS.PeerCertificates) < 1 {
-		//	if err = c.Close(websocket.StatusPolicyViolation, "A valid client certificate must be provided for authenticated connections"); err != nil {
-		//		fmt.Println(err)
-		//	}
-		//	return
-		//}
-		//// https://stackoverflow.com/a/50640119
-		//for _, n := range request.TLS.PeerCertificates[0].Subject.Names {
-		//	if n.Type.Equal(uidOid) {
-		//		if v, ok := n.Value.(string); ok {
-		//			if !strings.EqualFold(v, erMrn) {
-		//				if err = c.Close(websocket.StatusUnsupportedData, "The MRN given in the Connect message does not match the one in the certificate that was used for authentication"); err != nil {
-		//					fmt.Println(err)
-		//				}
-		//				return
-		//			}
-		//		}
-		//	}
-		//}
+		// If TLS is enabled, we should verify the certificate from the Edge Router
+		if request.TLS != nil {
+			uidOid := []int{0, 9, 2342, 19200300, 100, 1, 1}
+
+			if len(request.TLS.PeerCertificates) < 1 {
+				if err = c.Close(websocket.StatusPolicyViolation, "A valid client certificate must be provided for authenticated connections"); err != nil {
+					fmt.Println(err)
+				}
+				return
+			}
+			// https://stackoverflow.com/a/50640119
+			for _, n := range request.TLS.PeerCertificates[0].Subject.Names {
+				if n.Type.Equal(uidOid) {
+					if v, ok := n.Value.(string); ok {
+						if !strings.EqualFold(v, erMrn) {
+							if err = c.Close(websocket.StatusUnsupportedData, "The MRN given in the Connect message does not match the one in the certificate that was used for authentication"); err != nil {
+								fmt.Println(err)
+							}
+							return
+						}
+					}
+				}
+			}
+		}
 
 		var e *EdgeRouter
 		if connect.ReconnectToken != nil {
@@ -275,7 +283,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 				}
 				err = writeMessage(request.Context(), c, resp)
 				if err != nil {
-					fmt.Println("could not send response message:", err)
+					fmt.Println("Could not send response message:", err)
 					return
 				}
 			}
@@ -293,7 +301,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 				}
 				err = writeMessage(request.Context(), c, resp)
 				if err != nil {
-					fmt.Println("could not send response message:", err)
+					fmt.Println("Could not send response message:", err)
 					return
 				}
 			}
@@ -324,7 +332,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 		}
 		err = writeMessage(request.Context(), c, resp)
 		if err != nil {
-			fmt.Println("could not send response message:", err)
+			fmt.Println("Could not send response message:", err)
 			return
 		}
 
@@ -888,6 +896,10 @@ func main() {
 
 	privKeyFilePath := flag.String("privkey", "", "Path to a file containing a private key. If none is provided, a new private key will be generated every time the program is run.")
 
+	certPath := flag.String("cert-path", "", "Path to a TLS certificate file. If none is provided, TLS will be disabled.")
+
+	certKeyPath := flag.String("cert-key-path", "", "Path to a TLS certificate private key. If none is provided, TLS will be disabled.")
+
 	flag.Parse()
 
 	node, rd, err := setupLibP2P(ctx, libp2pPort, privKeyFilePath)
@@ -935,7 +947,7 @@ func main() {
 
 	router := NewMMSRouter(&node, pubSub, ":"+strconv.Itoa(*listeningPort), incomingChannel, outgoingChannel, ctx, wg)
 	wg.Add(1)
-	go router.StartRouter(ctx, wg)
+	go router.StartRouter(ctx, wg, certPath, certKeyPath)
 
 	// wait for a SIGINT or SIGTERM signal
 	ch := make(chan os.Signal, 1)
