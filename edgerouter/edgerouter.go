@@ -1049,12 +1049,33 @@ func main() {
 	routerAddr := flag.String("raddr", "ws://localhost:8080", "The websocket URL of the Router to connect to.")
 	listeningPort := flag.Int("port", 8888, "The port number that this Edge Router should listen on.")
 	ownMrn := flag.String("mrn", "urn:mrn:mcp:device:idp1:org1:er", "The MRN of this Edge Router")
+	clientCertPath := flag.String("client-cert", "", "Path to a client certificate which will be used to authenticate towards Router. If none is provided, mutual TLS will be disabled.")
+	clientCertKeyPath := flag.String("client-cert-key", "", "Path to a client certificate private key which will be used to authenticate towards Router. If none is provided, mutual TLS will be disabled.")
 
 	flag.Parse()
 
 	outgoingChannel := make(chan *mmtp.MmtpMessage)
 
-	routerWs, _, err := websocket.Dial(ctx, *routerAddr, nil)
+	certificates := make([]tls.Certificate, 0, 1)
+
+	if *clientCertPath != "" && *clientCertKeyPath != "" {
+		cert, err := tls.LoadX509KeyPair(*clientCertPath, *clientCertKeyPath)
+		if err != nil {
+			fmt.Println("Could not read the provided client certificate:", err)
+			return
+		}
+		certificates[0] = cert
+	}
+
+	httpClient := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				Certificates: certificates,
+			},
+		},
+	}
+
+	routerWs, _, err := websocket.Dial(ctx, *routerAddr, &websocket.DialOptions{HTTPClient: httpClient})
 	if err != nil {
 		fmt.Println("Could not connect to MMS Router:", err)
 		return
