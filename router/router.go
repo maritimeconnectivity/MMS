@@ -904,16 +904,11 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	listeningPort := flag.Int("port", 8080, "The port number that this Router should listen on.")
-
 	libp2pPort := flag.Int("libp2p-port", 0, "The port number that this Router should use to "+
 		"open up to the Router Network. If not set, a random port is chosen.")
-
 	privKeyFilePath := flag.String("privkey", "", "Path to a file containing a private key. If none is provided, a new private key will be generated every time the program is run.")
-
 	certPath := flag.String("cert-path", "", "Path to a TLS certificate file. If none is provided, TLS will be disabled.")
-
 	certKeyPath := flag.String("cert-key-path", "", "Path to a TLS certificate private key. If none is provided, TLS will be disabled.")
-
 	clientCAs := flag.String("client-ca", "", "Path to a file containing a list of client CAs that can connect to this Router.")
 
 	flag.Parse()
