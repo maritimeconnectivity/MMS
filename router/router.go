@@ -34,6 +34,7 @@ import (
 	peerstore "github.com/libp2p/go-libp2p/core/peer"
 	drouting "github.com/libp2p/go-libp2p/p2p/discovery/routing"
 	dutil "github.com/libp2p/go-libp2p/p2p/discovery/util"
+	"github.com/libp2p/go-libp2p/p2p/protocol/identify"
 	"golang.org/x/crypto/ocsp"
 	"google.golang.org/protobuf/proto"
 	"io"
@@ -988,6 +989,8 @@ func setupLibP2P(ctx context.Context, libp2pPort *int, privKeyFilePath *string) 
 			beacons = append(beacons, *addrInfo)
 		}
 	}
+
+	identify.ActivationThresh = 3
 
 	var node host.Host
 	if *privKeyFilePath != "" {
