@@ -129,18 +129,31 @@ type MMSRouter struct {
 	ctx             context.Context          // the main Context of the MMSRouter
 }
 
-func NewMMSRouter(p2p *host.Host, pubSub *pubsub.PubSub, listeningAddr string, incomingChannel chan *mmtp.MmtpMessage, outgoingChannel chan *mmtp.MmtpMessage, ctx context.Context, wg *sync.WaitGroup) *MMSRouter {
+func NewMMSRouter(p2p *host.Host, pubSub *pubsub.PubSub, listeningAddr string, incomingChannel chan *mmtp.MmtpMessage, outgoingChannel chan *mmtp.MmtpMessage, ctx context.Context, wg *sync.WaitGroup, clientCAs *string) (*MMSRouter, error) {
 	subs := make(map[string]*Subscription)
 	subMu := &sync.RWMutex{}
 	edgeRouters := make(map[string]*EdgeRouter)
 	erMu := &sync.RWMutex{}
 	topicHandles := make(map[string]*pubsub.Topic)
+
+	var certPool *x509.CertPool = nil
+	if *clientCAs != "" {
+		certPool = x509.NewCertPool()
+		certFile, err := os.ReadFile(*clientCAs)
+		if err != nil {
+			return nil, fmt.Errorf("could not read the given client CA file")
+		}
+		if !certPool.AppendCertsFromPEM(certFile) {
+			return nil, fmt.Errorf("could not read the given client CA file")
+		}
+	}
+
 	httpServer := http.Server{
 		Addr:    listeningAddr,
 		Handler: handleHttpConnection(p2p, pubSub, incomingChannel, outgoingChannel, subs, subMu, edgeRouters, erMu, topicHandles, ctx, wg),
 		TLSConfig: &tls.Config{
 			ClientAuth:            tls.RequireAndVerifyClientCert,
-			ClientCAs:             nil, // this should come from a file containing the CAs we trust
+			ClientCAs:             certPool, // this should come from a file containing the CAs we trust
 			MinVersion:            tls.VersionTLS13,
 			VerifyPeerCertificate: verifyEdgeRouterCertificate(),
 		},
@@ -158,7 +171,7 @@ func NewMMSRouter(p2p *host.Host, pubSub *pubsub.PubSub, listeningAddr string, i
 		incomingChannel: incomingChannel,
 		outgoingChannel: outgoingChannel,
 		ctx:             ctx,
-	}
+	}, nil
 }
 
 func (r *MMSRouter) StartRouter(ctx context.Context, wg *sync.WaitGroup, certPath *string, certKeyPath *string) {
@@ -901,6 +914,8 @@ func main() {
 
 	certKeyPath := flag.String("cert-key-path", "", "Path to a TLS certificate private key. If none is provided, TLS will be disabled.")
 
+	clientCAs := flag.String("client-ca", "", "Path to a file containing a list of client CAs that can connect to this Router.")
+
 	flag.Parse()
 
 	node, rd, err := setupLibP2P(ctx, libp2pPort, privKeyFilePath)
@@ -946,7 +961,12 @@ func main() {
 
 	wg := &sync.WaitGroup{}
 
-	router := NewMMSRouter(&node, pubSub, ":"+strconv.Itoa(*listeningPort), incomingChannel, outgoingChannel, ctx, wg)
+	router, err := NewMMSRouter(&node, pubSub, ":"+strconv.Itoa(*listeningPort), incomingChannel, outgoingChannel, ctx, wg, clientCAs)
+	if err != nil {
+		fmt.Println("Could not create MMS Router instance:", err)
+		return
+	}
+
 	wg.Add(1)
 	go router.StartRouter(ctx, wg, certPath, certKeyPath)
 
