@@ -120,19 +120,32 @@ type EdgeRouter struct {
 	ctx             context.Context          // the main Context of the EdgeRouter
 }
 
-func NewEdgeRouter(listeningAddr string, mrn string, outgoingChannel chan *mmtp.MmtpMessage, routerWs *websocket.Conn, ctx context.Context, wg *sync.WaitGroup) *EdgeRouter {
+func NewEdgeRouter(listeningAddr string, mrn string, outgoingChannel chan *mmtp.MmtpMessage, routerWs *websocket.Conn, ctx context.Context, wg *sync.WaitGroup, clientCAs *string) (*EdgeRouter, error) {
 	subs := make(map[string]*Subscription)
 	subMu := &sync.RWMutex{}
 	agents := make(map[string]*Agent)
 	agentsMu := &sync.RWMutex{}
 	mrnToAgent := make(map[string]*Agent)
 	mrnToAgentMu := &sync.RWMutex{}
+
+	var certPool *x509.CertPool = nil
+	if *clientCAs != "" {
+		certPool = x509.NewCertPool()
+		certFile, err := os.ReadFile(*clientCAs)
+		if err != nil {
+			return nil, fmt.Errorf("could not read the given client CA file")
+		}
+		if !certPool.AppendCertsFromPEM(certFile) {
+			return nil, fmt.Errorf("could not read the given client CA file")
+		}
+	}
+
 	httpServer := http.Server{
 		Addr:    listeningAddr,
 		Handler: handleHttpConnection(outgoingChannel, subs, subMu, agents, agentsMu, mrnToAgent, mrnToAgentMu, ctx, wg),
 		TLSConfig: &tls.Config{
 			ClientAuth:            tls.VerifyClientCertIfGiven,
-			ClientCAs:             nil,
+			ClientCAs:             certPool,
 			MinVersion:            tls.VersionTLS13,
 			VerifyPeerCertificate: verifyAgentCertificate(),
 		},
@@ -151,10 +164,10 @@ func NewEdgeRouter(listeningAddr string, mrn string, outgoingChannel chan *mmtp.
 		routerWs:        routerWs,
 		routerConnMu:    &sync.Mutex{},
 		ctx:             ctx,
-	}
+	}, nil
 }
 
-func (er *EdgeRouter) StartEdgeRouter(ctx context.Context, wg *sync.WaitGroup) {
+func (er *EdgeRouter) StartEdgeRouter(ctx context.Context, wg *sync.WaitGroup, certPath *string, certKeyPath *string) {
 	defer func() {
 		close(er.outgoingChannel)
 		wg.Done()
@@ -199,10 +212,16 @@ func (er *EdgeRouter) StartEdgeRouter(ctx context.Context, wg *sync.WaitGroup) {
 	wg.Add(3)
 	go func() {
 		fmt.Println("Websocket listening on:", er.httpServer.Addr)
-		if err := er.httpServer.ListenAndServe(); err != nil {
-			fmt.Println(err)
+		if *certPath != "" && *certKeyPath != "" {
+			if err := er.httpServer.ListenAndServeTLS(*certPath, *certKeyPath); err != nil {
+				fmt.Println(err)
+			}
+		} else {
+			if err := er.httpServer.ListenAndServe(); err != nil {
+				fmt.Println(err)
+			}
+			wg.Done()
 		}
-		wg.Done()
 	}()
 
 	go handleIncomingMessages(ctx, er, wg)
@@ -284,31 +303,33 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 		agentMrn := connect.GetOwnMrn()
 		agentMrn = strings.ToLower(agentMrn)
 
-		// Uncomment the following block when using TLS
-		//uidOid := []int{0, 9, 2342, 19200300, 100, 1, 1}
-		//
-		//if agentMrn != "" {
-		//	if len(request.TLS.PeerCertificates) < 1 {
-		//		if err = c.Close(websocket.StatusPolicyViolation, "A valid client certificate must be provided for authenticated connections"); err != nil {
-		//			fmt.Println(err)
-		//		}
-		//		return
-		//	}
-		//
-		//	// https://stackoverflow.com/a/50640119
-		//	for _, n := range request.TLS.PeerCertificates[0].Subject.Names {
-		//		if n.Type.Equal(uidOid) {
-		//			if v, ok := n.Value.(string); ok {
-		//				if !strings.EqualFold(v, agentMrn) {
-		//					if err = c.Close(websocket.StatusUnsupportedData, "The MRN given in the Connect message does not match the one in the certificate that was used for authentication"); err != nil {
-		//						fmt.Println(err)
-		//					}
-		//					return
-		//				}
-		//			}
-		//		}
-		//	}
-		//}
+		// If TLS is enabled, we should verify the certificate from the Agent
+		if request.TLS != nil {
+			uidOid := []int{0, 9, 2342, 19200300, 100, 1, 1}
+
+			if agentMrn != "" {
+				if len(request.TLS.PeerCertificates) < 1 {
+					if err = c.Close(websocket.StatusPolicyViolation, "A valid client certificate must be provided for authenticated connections"); err != nil {
+						fmt.Println(err)
+					}
+					return
+				}
+
+				// https://stackoverflow.com/a/50640119
+				for _, n := range request.TLS.PeerCertificates[0].Subject.Names {
+					if n.Type.Equal(uidOid) {
+						if v, ok := n.Value.(string); ok {
+							if !strings.EqualFold(v, agentMrn) {
+								if err = c.Close(websocket.StatusUnsupportedData, "The MRN given in the Connect message does not match the one in the certificate that was used for authentication"); err != nil {
+									fmt.Println(err)
+								}
+								return
+							}
+						}
+					}
+				}
+			}
+		}
 
 		var agent *Agent
 		if connect.ReconnectToken != nil {
@@ -1052,6 +1073,9 @@ func main() {
 	ownMrn := flag.String("mrn", "urn:mrn:mcp:device:idp1:org1:er", "The MRN of this Edge Router")
 	clientCertPath := flag.String("client-cert", "", "Path to a client certificate which will be used to authenticate towards Router. If none is provided, mutual TLS will be disabled.")
 	clientCertKeyPath := flag.String("client-cert-key", "", "Path to a client certificate private key which will be used to authenticate towards Router. If none is provided, mutual TLS will be disabled.")
+	certPath := flag.String("cert-path", "", "Path to a TLS certificate file. If none is provided, TLS will be disabled.")
+	certKeyPath := flag.String("cert-key-path", "", "Path to a TLS certificate private key. If none is provided, TLS will be disabled.")
+	clientCAs := flag.String("client-ca", "", "Path to a file containing a list of client CAs that can connect to this Edge Router.")
 
 	flag.Parse()
 
@@ -1087,10 +1111,14 @@ func main() {
 
 	wg := &sync.WaitGroup{}
 
-	er := NewEdgeRouter(":"+strconv.Itoa(*listeningPort), *ownMrn, outgoingChannel, routerWs, ctx, wg)
+	er, err := NewEdgeRouter(":"+strconv.Itoa(*listeningPort), *ownMrn, outgoingChannel, routerWs, ctx, wg, clientCAs)
+	if err != nil {
+		fmt.Println("Could not create MMS Edge Router instance:", err)
+		return
+	}
 
 	wg.Add(1)
-	go er.StartEdgeRouter(ctx, wg)
+	go er.StartEdgeRouter(ctx, wg, certPath, certKeyPath)
 
 	hst, err := os.Hostname()
 	if err != nil {
