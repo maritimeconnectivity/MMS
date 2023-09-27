@@ -304,27 +304,25 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 		agentMrn = strings.ToLower(agentMrn)
 
 		// If TLS is enabled, we should verify the certificate from the Agent
-		if request.TLS != nil {
+		if request.TLS != nil && agentMrn != "" {
 			uidOid := []int{0, 9, 2342, 19200300, 100, 1, 1}
 
-			if agentMrn != "" {
-				if len(request.TLS.PeerCertificates) < 1 {
-					if err = c.Close(websocket.StatusPolicyViolation, "A valid client certificate must be provided for authenticated connections"); err != nil {
-						fmt.Println(err)
-					}
-					return
+			if len(request.TLS.PeerCertificates) < 1 {
+				if err = c.Close(websocket.StatusPolicyViolation, "A valid client certificate must be provided for authenticated connections"); err != nil {
+					fmt.Println(err)
 				}
+				return
+			}
 
-				// https://stackoverflow.com/a/50640119
-				for _, n := range request.TLS.PeerCertificates[0].Subject.Names {
-					if n.Type.Equal(uidOid) {
-						if v, ok := n.Value.(string); ok {
-							if !strings.EqualFold(v, agentMrn) {
-								if err = c.Close(websocket.StatusUnsupportedData, "The MRN given in the Connect message does not match the one in the certificate that was used for authentication"); err != nil {
-									fmt.Println(err)
-								}
-								return
+			// https://stackoverflow.com/a/50640119
+			for _, n := range request.TLS.PeerCertificates[0].Subject.Names {
+				if n.Type.Equal(uidOid) {
+					if v, ok := n.Value.(string); ok {
+						if !strings.EqualFold(v, agentMrn) {
+							if err = c.Close(websocket.StatusUnsupportedData, "The MRN given in the Connect message does not match the one in the certificate that was used for authentication"); err != nil {
+								fmt.Println(err)
 							}
+							return
 						}
 					}
 				}
