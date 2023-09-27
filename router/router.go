@@ -208,6 +208,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 		c, err := websocket.Accept(writer, request, nil)
 		if err != nil {
 			fmt.Println("Could not establish websocket connection", err)
+			wg.Done()
 			return
 		}
 		defer func(c *websocket.Conn, code websocket.StatusCode, reason string) {
