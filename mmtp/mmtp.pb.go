@@ -2,7 +2,7 @@
 // versions:
 // 	protoc-gen-go v1.31.0
 // 	protoc        v4.24.0
-// source: protobuf/mmtp.proto
+// source: mmtp.proto
 
 package mmtp
 
