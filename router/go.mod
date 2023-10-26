@@ -10,7 +10,7 @@ require (
 	github.com/maritimeconnectivity/MMS/mmtp v0.0.0
 	golang.org/x/crypto v0.13.0
 	google.golang.org/protobuf v1.31.0
-	nhooyr.io/websocket v1.8.7
+	nhooyr.io/websocket v1.8.10
 )
 
 require (
