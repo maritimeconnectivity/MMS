@@ -371,7 +371,6 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 							if subscribe := protoMessage.GetSubscribeMessage(); subscribe != nil {
 								subject := subscribe.GetSubject()
 								if subject == "" {
-									continue
 								}
 								subMu.Lock()
 								sub, exists := subs[subject]
@@ -417,191 +416,34 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 						}
 					case mmtp.ProtocolMessageType_UNSUBSCRIBE_MESSAGE:
 						{
-							if unsubscribe := protoMessage.GetUnsubscribeMessage(); unsubscribe != nil {
-								subject := unsubscribe.GetSubject()
-								if subject == "" {
-									continue
-								}
-								subMu.Lock()
-								sub, exists := subs[subject]
-								if !exists {
-									continue
-								}
-								sub.DeleteSubscriber(e)
-								subMu.Unlock()
-								interests := e.Interests
-								for i := range interests {
-									if strings.EqualFold(subject, interests[i]) {
-										interests[i] = interests[len(interests)-1]
-										interests[len(interests)-1] = ""
-										interests = interests[:len(interests)-1]
-										e.Interests = interests
-										break
-									}
-								}
-								resp = &mmtp.MmtpMessage{
-									MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
-									Uuid:    uuid.NewString(),
-									Body: &mmtp.MmtpMessage_ResponseMessage{
-										ResponseMessage: &mmtp.ResponseMessage{
-											ResponseToUuid: mmtpMessage.GetUuid(),
-											Response:       mmtp.ResponseEnum_GOOD,
-										}},
-								}
-								if err = writeMessage(request.Context(), c, resp); err != nil {
-									fmt.Println("Could not write response to unsubscribe message:", err)
-								}
+							if err = handleUnsubscribe(protoMessage, subMu, subs, e, mmtpMessage, request, c); err != nil {
+								fmt.Println("Failed handling Unsubscribe message:", err)
 							}
 							break
 						}
 					case mmtp.ProtocolMessageType_SEND_MESSAGE:
 						{
-							if send := protoMessage.GetSendMessage(); send != nil {
-								outgoingChannel <- mmtpMessage
-								header := send.GetApplicationMessage().GetHeader()
-								if len(header.GetRecipients().GetRecipients()) > 0 {
-									erMu.RLock()
-									for _, recipient := range header.GetRecipients().Recipients {
-										subMu.RLock()
-										sub, exists := subs[recipient]
-										subMu.RUnlock()
-										if exists {
-											sub.subsMu.RLock()
-											for _, er := range sub.Subscribers {
-												if er.Mrn != e.Mrn { // Do not send the message back to where it came from
-													if err = er.QueueMessage(mmtpMessage); err != nil {
-														fmt.Println("Could not queue message to Edge Router:", err)
-													}
-												}
-											}
-											sub.subsMu.RUnlock()
-										}
-									}
-									erMu.RUnlock()
-								} else if header.GetSubject() != "" {
-									subMu.RLock()
-									sub, exists := subs[header.GetSubject()]
-									if exists {
-										for _, subscriber := range sub.Subscribers {
-											if subscriber.Mrn != e.Mrn {
-												if err = subscriber.QueueMessage(mmtpMessage); err != nil {
-													fmt.Println("Could not queue message to Edge Router:", err)
-												}
-											}
-										}
-									}
-									subMu.RUnlock()
-								}
-							}
+							handleSend(protoMessage, outgoingChannel, mmtpMessage, erMu, subMu, subs, e)
 							break
 						}
 					case mmtp.ProtocolMessageType_RECEIVE_MESSAGE:
 						{
-							if receive := protoMessage.GetReceiveMessage(); receive != nil {
-								if msgUuids := receive.GetFilter().GetMessageUuids(); msgUuids != nil {
-									msgsLen := len(msgUuids)
-									mmtpMessages := make([]*mmtp.MmtpMessage, 0, msgsLen)
-									appMsgs := make([]*mmtp.ApplicationMessage, 0, msgsLen)
-									e.msgMu.Lock()
-									for _, msgUuid := range msgUuids {
-										msg := e.Messages[msgUuid].GetProtocolMessage().GetSendMessage().GetApplicationMessage()
-										appMsgs = append(appMsgs, msg)
-										delete(e.Messages, msgUuid)
-									}
-									e.msgMu.Unlock()
-									resp = &mmtp.MmtpMessage{
-										MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
-										Uuid:    uuid.NewString(),
-										Body: &mmtp.MmtpMessage_ResponseMessage{ResponseMessage: &mmtp.ResponseMessage{
-											ResponseToUuid:      mmtpMessage.GetUuid(),
-											Response:            mmtp.ResponseEnum_GOOD,
-											ApplicationMessages: appMsgs,
-										}},
-									}
-									err = writeMessage(request.Context(), c, resp)
-									if err != nil {
-										fmt.Println("Could not send messages to Edge Router:", err)
-										e.BulkQueueMessages(mmtpMessages)
-									}
-								} else { // Receive all messages
-									e.msgMu.Lock()
-									msgsLen := len(e.Messages)
-									appMsgs := make([]*mmtp.ApplicationMessage, 0, msgsLen)
-									for _, mmtpMsg := range e.Messages {
-										msg := mmtpMsg.GetProtocolMessage().GetSendMessage().GetApplicationMessage()
-										appMsgs = append(appMsgs, msg)
-									}
-									resp = &mmtp.MmtpMessage{
-										MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
-										Uuid:    uuid.NewString(),
-										Body: &mmtp.MmtpMessage_ResponseMessage{ResponseMessage: &mmtp.ResponseMessage{
-											ResponseToUuid:      mmtpMessage.GetUuid(),
-											Response:            mmtp.ResponseEnum_GOOD,
-											ApplicationMessages: appMsgs,
-										}},
-									}
-									err = writeMessage(request.Context(), c, resp)
-									if err != nil {
-										fmt.Println("Could not send messages to Edge Router:", err)
-									} else {
-										e.Messages = make(map[string]*mmtp.MmtpMessage)
-									}
-									e.msgMu.Unlock()
-								}
+							if err = handleReceive(protoMessage, e, mmtpMessage, request, c); err != nil {
+								fmt.Println("Failed handling Receive message:", err)
 							}
 							break
 						}
 					case mmtp.ProtocolMessageType_FETCH_MESSAGE:
 						{
-							if fetch := protoMessage.GetFetchMessage(); fetch != nil {
-								e.msgMu.RLock()
-								metadata := make([]*mmtp.MessageMetadata, 0, len(e.Messages))
-								for _, msg := range e.Messages {
-									msgHeader := msg.GetProtocolMessage().GetSendMessage().GetApplicationMessage().GetHeader()
-									msgMetadata := &mmtp.MessageMetadata{
-										Uuid:   msg.GetUuid(),
-										Header: msgHeader,
-									}
-									metadata = append(metadata, msgMetadata)
-								}
-								e.msgMu.RUnlock()
-								resp = &mmtp.MmtpMessage{
-									MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
-									Uuid:    uuid.NewString(),
-									Body: &mmtp.MmtpMessage_ResponseMessage{
-										ResponseMessage: &mmtp.ResponseMessage{
-											ResponseToUuid:  mmtpMessage.GetUuid(),
-											Response:        mmtp.ResponseEnum_GOOD,
-											MessageMetadata: metadata,
-										}},
-								}
-								err = writeMessage(request.Context(), c, resp)
-								if err != nil {
-									fmt.Println("Could not send fetch response to Edge Router:", err)
-								}
+							if err = handleFetch(protoMessage, e, mmtpMessage, request, c); err != nil {
+								fmt.Println("Failed handling Fetch message:", err)
 							}
 							break
 						}
 					case mmtp.ProtocolMessageType_DISCONNECT_MESSAGE:
 						{
-							if disconnect := protoMessage.GetDisconnectMessage(); disconnect != nil {
-								resp = &mmtp.MmtpMessage{
-									MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
-									Uuid:    uuid.NewString(),
-									Body: &mmtp.MmtpMessage_ResponseMessage{
-										ResponseMessage: &mmtp.ResponseMessage{
-											ResponseToUuid: mmtpMessage.GetUuid(),
-											Response:       mmtp.ResponseEnum_GOOD,
-										}},
-								}
-								if err = writeMessage(request.Context(), c, resp); err != nil {
-									fmt.Println("Could not send disconnect response to Edge Router:", err)
-								}
-
-								if err = c.Close(websocket.StatusNormalClosure, "Closed connection after receiving Disconnect message"); err != nil {
-									fmt.Println("Websocket could not be closed cleanly:", err)
-									return
-								}
+							if err = handleDisconnect(protoMessage, mmtpMessage, request, c); err != nil {
+								fmt.Println("Failed handling Disconnect message:", err)
 							}
 							break
 						}
@@ -633,6 +475,210 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 			}
 		}
 	}
+}
+
+func handleUnsubscribe(protoMessage *mmtp.ProtocolMessage, subMu *sync.RWMutex, subs map[string]*Subscription, e *EdgeRouter, mmtpMessage *mmtp.MmtpMessage, request *http.Request, c *websocket.Conn) error {
+	resp := &mmtp.MmtpMessage{
+		MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+		Uuid:    uuid.NewString(),
+		Body: &mmtp.MmtpMessage_ResponseMessage{
+			ResponseMessage: &mmtp.ResponseMessage{
+				ResponseToUuid: mmtpMessage.GetUuid(),
+				Response:       mmtp.ResponseEnum_GOOD,
+			},
+		},
+	}
+	if unsubscribe := protoMessage.GetUnsubscribeMessage(); unsubscribe != nil {
+
+		subject := unsubscribe.GetSubject()
+		if subject == "" {
+			reasonText := "Tried to unsubscribe to empty subject"
+			resp.GetResponseMessage().Response = mmtp.ResponseEnum_ERROR
+			resp.GetResponseMessage().ReasonText = &reasonText
+			err := writeMessage(request.Context(), c, resp)
+			if err != nil {
+				fmt.Printf(reasonText)
+				err = fmt.Errorf("could not write response to unsubscribe message: %w", err)
+			}
+			return err
+		}
+		subMu.Lock()
+		sub, exists := subs[subject]
+		if exists {
+			sub.DeleteSubscriber(e)
+		}
+		subMu.Unlock()
+		interests := e.Interests
+		for i := range interests {
+			if strings.EqualFold(subject, interests[i]) {
+				interests[i] = interests[len(interests)-1]
+				interests[len(interests)-1] = ""
+				interests = interests[:len(interests)-1]
+				e.Interests = interests
+				break
+			}
+		}
+	} else {
+		resp.GetResponseMessage().Response = mmtp.ResponseEnum_ERROR
+		reasonText := "Message does not contain a Unsubscribe message"
+		resp.GetResponseMessage().ReasonText = &reasonText
+	}
+
+	err := writeMessage(request.Context(), c, resp)
+	if err != nil {
+		err = fmt.Errorf("could not write response to unsubscribe message: %w", err)
+	}
+
+	return err
+}
+
+func handleSend(protoMessage *mmtp.ProtocolMessage, outgoingChannel chan<- *mmtp.MmtpMessage, mmtpMessage *mmtp.MmtpMessage, erMu *sync.RWMutex, subMu *sync.RWMutex, subs map[string]*Subscription, e *EdgeRouter) {
+	if send := protoMessage.GetSendMessage(); send != nil {
+		outgoingChannel <- mmtpMessage
+		header := send.GetApplicationMessage().GetHeader()
+		if len(header.GetRecipients().GetRecipients()) > 0 {
+			erMu.RLock()
+			for _, recipient := range header.GetRecipients().Recipients {
+				subMu.RLock()
+				sub, exists := subs[recipient]
+				subMu.RUnlock()
+				if exists {
+					sub.subsMu.RLock()
+					for _, er := range sub.Subscribers {
+						if er.Mrn != e.Mrn { // Do not send the message back to where it came from
+							if err := er.QueueMessage(mmtpMessage); err != nil {
+								fmt.Println("Could not queue message to Edge Router:", err)
+							}
+						}
+					}
+					sub.subsMu.RUnlock()
+				}
+			}
+			erMu.RUnlock()
+		} else if header.GetSubject() != "" {
+			subMu.RLock()
+			sub, exists := subs[header.GetSubject()]
+			if exists {
+				for _, subscriber := range sub.Subscribers {
+					if subscriber.Mrn != e.Mrn {
+						if err := subscriber.QueueMessage(mmtpMessage); err != nil {
+							fmt.Println("Could not queue message to Edge Router:", err)
+						}
+					}
+				}
+			}
+			subMu.RUnlock()
+		}
+	}
+}
+
+func handleReceive(protoMessage *mmtp.ProtocolMessage, e *EdgeRouter, mmtpMessage *mmtp.MmtpMessage, request *http.Request, c *websocket.Conn) error {
+	if receive := protoMessage.GetReceiveMessage(); receive != nil {
+		if msgUuids := receive.GetFilter().GetMessageUuids(); msgUuids != nil {
+			msgsLen := len(msgUuids)
+			mmtpMessages := make([]*mmtp.MmtpMessage, 0, msgsLen)
+			appMsgs := make([]*mmtp.ApplicationMessage, 0, msgsLen)
+			e.msgMu.Lock()
+			for _, msgUuid := range msgUuids {
+				msg := e.Messages[msgUuid].GetProtocolMessage().GetSendMessage().GetApplicationMessage()
+				appMsgs = append(appMsgs, msg)
+				delete(e.Messages, msgUuid)
+			}
+			e.msgMu.Unlock()
+			resp := &mmtp.MmtpMessage{
+				MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+				Uuid:    uuid.NewString(),
+				Body: &mmtp.MmtpMessage_ResponseMessage{ResponseMessage: &mmtp.ResponseMessage{
+					ResponseToUuid:      mmtpMessage.GetUuid(),
+					Response:            mmtp.ResponseEnum_GOOD,
+					ApplicationMessages: appMsgs,
+				}},
+			}
+			err := writeMessage(request.Context(), c, resp)
+			if err != nil {
+				e.BulkQueueMessages(mmtpMessages)
+				return fmt.Errorf("could not send messages to Edge Router: %w", err)
+			}
+		} else { // Receive all messages
+			e.msgMu.Lock()
+			msgsLen := len(e.Messages)
+			appMsgs := make([]*mmtp.ApplicationMessage, 0, msgsLen)
+			for _, mmtpMsg := range e.Messages {
+				msg := mmtpMsg.GetProtocolMessage().GetSendMessage().GetApplicationMessage()
+				appMsgs = append(appMsgs, msg)
+			}
+			resp := &mmtp.MmtpMessage{
+				MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+				Uuid:    uuid.NewString(),
+				Body: &mmtp.MmtpMessage_ResponseMessage{ResponseMessage: &mmtp.ResponseMessage{
+					ResponseToUuid:      mmtpMessage.GetUuid(),
+					Response:            mmtp.ResponseEnum_GOOD,
+					ApplicationMessages: appMsgs,
+				}},
+			}
+			defer e.msgMu.Unlock()
+			err := writeMessage(request.Context(), c, resp)
+			if err != nil {
+				return fmt.Errorf("could not send messages to Edge Router: %w", err)
+			} else {
+				e.Messages = make(map[string]*mmtp.MmtpMessage)
+			}
+		}
+	}
+	return nil
+}
+
+func handleFetch(protoMessage *mmtp.ProtocolMessage, e *EdgeRouter, mmtpMessage *mmtp.MmtpMessage, request *http.Request, c *websocket.Conn) error {
+	if fetch := protoMessage.GetFetchMessage(); fetch != nil {
+		e.msgMu.RLock()
+		metadata := make([]*mmtp.MessageMetadata, 0, len(e.Messages))
+		for _, msg := range e.Messages {
+			msgHeader := msg.GetProtocolMessage().GetSendMessage().GetApplicationMessage().GetHeader()
+			msgMetadata := &mmtp.MessageMetadata{
+				Uuid:   msg.GetUuid(),
+				Header: msgHeader,
+			}
+			metadata = append(metadata, msgMetadata)
+		}
+		e.msgMu.RUnlock()
+		resp := &mmtp.MmtpMessage{
+			MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+			Uuid:    uuid.NewString(),
+			Body: &mmtp.MmtpMessage_ResponseMessage{
+				ResponseMessage: &mmtp.ResponseMessage{
+					ResponseToUuid:  mmtpMessage.GetUuid(),
+					Response:        mmtp.ResponseEnum_GOOD,
+					MessageMetadata: metadata,
+				}},
+		}
+		err := writeMessage(request.Context(), c, resp)
+		if err != nil {
+			return fmt.Errorf("could not send fetch response to Edge Router: %w", err)
+		}
+	}
+	return nil
+}
+
+func handleDisconnect(protoMessage *mmtp.ProtocolMessage, mmtpMessage *mmtp.MmtpMessage, request *http.Request, c *websocket.Conn) error {
+	if disconnect := protoMessage.GetDisconnectMessage(); disconnect != nil {
+		resp := &mmtp.MmtpMessage{
+			MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+			Uuid:    uuid.NewString(),
+			Body: &mmtp.MmtpMessage_ResponseMessage{
+				ResponseMessage: &mmtp.ResponseMessage{
+					ResponseToUuid: mmtpMessage.GetUuid(),
+					Response:       mmtp.ResponseEnum_GOOD,
+				}},
+		}
+		if err := writeMessage(request.Context(), c, resp); err != nil {
+			return fmt.Errorf("could not send disconnect response to Edge Router: %w", err)
+		}
+
+		if err := c.Close(websocket.StatusNormalClosure, "Closed connection after receiving Disconnect message"); err != nil {
+			return fmt.Errorf("websocket could not be closed cleanly: %w", err)
+		}
+	}
+	return nil
 }
 
 func readMessage(ctx context.Context, c *websocket.Conn) (*mmtp.MmtpMessage, error) {
