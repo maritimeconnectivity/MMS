@@ -3,7 +3,7 @@ module github.com/maritimeconnectivity/MMS/edgerouter
 go 1.21
 
 require (
-	github.com/google/uuid v1.3.1
+	github.com/google/uuid v1.4.0
 	github.com/hashicorp/mdns v1.0.5
 	github.com/maritimeconnectivity/MMS/mmtp v0.0.0
 	golang.org/x/crypto v0.14.0
