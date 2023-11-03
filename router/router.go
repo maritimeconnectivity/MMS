@@ -368,48 +368,21 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 					switch protoMessage.ProtocolMsgType {
 					case mmtp.ProtocolMessageType_SUBSCRIBE_MESSAGE:
 						{
-							if subscribe := protoMessage.GetSubscribeMessage(); subscribe != nil {
-								subject := subscribe.GetSubject()
-								if subject == "" {
-								}
-								subMu.Lock()
-								sub, exists := subs[subject]
-								if !exists {
-									sub = NewSubscription(subject)
-									topic, ok := topicHandles[subject]
-									if !ok {
-										topic, err = pubSub.Join(subject)
-										if err != nil {
-											panic(err)
-										}
-										topicHandles[subject] = topic
-									}
-									sub.AddSubscriber(e)
-									sub.Topic = topic
-									subscription, err := topic.Subscribe()
-									if err != nil {
-										panic(err)
-									}
-									wg.Add(1)
-									go handleSubscription(ctx, subscription, p2p, incomingChannel, wg)
-									subs[subject] = sub
-								} else {
-									sub.AddSubscriber(e)
-								}
-								subMu.Unlock()
-								e.Interests = append(e.Interests, subject)
-
+							err, errorText := handleSubscribe(mmtpMessage, subMu, subs, topicHandles, err, pubSub, e, wg, ctx, p2p, incomingChannel, request, c)
+							if err != nil {
+								fmt.Println("Failed handling Subscribe message:", err)
 								resp = &mmtp.MmtpMessage{
 									MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
 									Uuid:    uuid.NewString(),
 									Body: &mmtp.MmtpMessage_ResponseMessage{
 										ResponseMessage: &mmtp.ResponseMessage{
 											ResponseToUuid: mmtpMessage.GetUuid(),
-											Response:       mmtp.ResponseEnum_GOOD,
+											Response:       mmtp.ResponseEnum_ERROR,
+											ReasonText:     &errorText,
 										}},
 								}
 								if err = writeMessage(request.Context(), c, resp); err != nil {
-									fmt.Println("Could not send subscribe response to Edge Router:", err)
+									fmt.Println("Could not send error response:", err)
 								}
 							}
 							break
@@ -475,6 +448,57 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 			}
 		}
 	}
+}
+
+func handleSubscribe(mmtpMessage *mmtp.MmtpMessage, subMu *sync.RWMutex, subs map[string]*Subscription, topicHandles map[string]*pubsub.Topic, err error, pubSub *pubsub.PubSub, e *EdgeRouter, wg *sync.WaitGroup, ctx context.Context, p2p *host.Host, incomingChannel chan *mmtp.MmtpMessage, request *http.Request, c *websocket.Conn) (error, string) {
+	if subscribe := mmtpMessage.GetProtocolMessage().GetSubscribeMessage(); subscribe != nil {
+		subject := subscribe.GetSubject()
+		if subject == "" {
+			return fmt.Errorf("cannot subscribe to empty subject"), "Cannot subscribe to empty subject"
+		}
+		subMu.Lock()
+		sub, exists := subs[subject]
+		if !exists {
+			sub = NewSubscription(subject)
+			topic, ok := topicHandles[subject]
+			if !ok {
+				topic, err = pubSub.Join(subject)
+				if err != nil {
+					subMu.Unlock()
+					return fmt.Errorf("was not able to join topic: %w", err), "Subscription failed"
+				}
+				topicHandles[subject] = topic
+			}
+			sub.AddSubscriber(e)
+			sub.Topic = topic
+			subscription, err := topic.Subscribe()
+			if err != nil {
+				subMu.Unlock()
+				return fmt.Errorf("was not able to subscribe to topic: %w", err), "Subscription failed"
+			}
+			wg.Add(1)
+			go handleSubscription(ctx, subscription, p2p, incomingChannel, wg)
+			subs[subject] = sub
+		} else {
+			sub.AddSubscriber(e)
+		}
+		subMu.Unlock()
+		e.Interests = append(e.Interests, subject)
+
+		resp := &mmtp.MmtpMessage{
+			MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+			Uuid:    uuid.NewString(),
+			Body: &mmtp.MmtpMessage_ResponseMessage{
+				ResponseMessage: &mmtp.ResponseMessage{
+					ResponseToUuid: mmtpMessage.GetUuid(),
+					Response:       mmtp.ResponseEnum_GOOD,
+				}},
+		}
+		if err = writeMessage(request.Context(), c, resp); err != nil {
+			fmt.Println("Could not send subscribe response to Edge Router:", err)
+		}
+	}
+	return err, ""
 }
 
 func handleUnsubscribe(mmtpMessage *mmtp.MmtpMessage, subMu *sync.RWMutex, subs map[string]*Subscription, e *EdgeRouter, request *http.Request, c *websocket.Conn) error {
