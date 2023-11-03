@@ -410,20 +410,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 						}
 					case mmtp.ProtocolMessageType_CONNECT_MESSAGE:
 						{
-							reason := "Already connected"
-							resp = &mmtp.MmtpMessage{
-								MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
-								Uuid:    uuid.NewString(),
-								Body: &mmtp.MmtpMessage_ResponseMessage{
-									ResponseMessage: &mmtp.ResponseMessage{
-										ResponseToUuid: mmtpMessage.GetUuid(),
-										Response:       mmtp.ResponseEnum_ERROR,
-										ReasonText:     &reason,
-									}},
-							}
-							if err = writeMessage(request.Context(), c, resp); err != nil {
-								fmt.Println("Could not send error response:", err)
-							}
+							sendErrorMessage(mmtpMessage.GetUuid(), "Already connected", request.Context(), c)
 							break
 						}
 					default:
