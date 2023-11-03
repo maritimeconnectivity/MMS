@@ -416,33 +416,33 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 						}
 					case mmtp.ProtocolMessageType_UNSUBSCRIBE_MESSAGE:
 						{
-							if err = handleUnsubscribe(protoMessage, subMu, subs, e, mmtpMessage, request, c); err != nil {
+							if err = handleUnsubscribe(mmtpMessage, subMu, subs, e, request, c); err != nil {
 								fmt.Println("Failed handling Unsubscribe message:", err)
 							}
 							break
 						}
 					case mmtp.ProtocolMessageType_SEND_MESSAGE:
 						{
-							handleSend(protoMessage, outgoingChannel, mmtpMessage, erMu, subMu, subs, e)
+							handleSend(mmtpMessage, outgoingChannel, erMu, subMu, subs, e)
 							break
 						}
 					case mmtp.ProtocolMessageType_RECEIVE_MESSAGE:
 						{
-							if err = handleReceive(protoMessage, e, mmtpMessage, request, c); err != nil {
+							if err = handleReceive(mmtpMessage, e, request, c); err != nil {
 								fmt.Println("Failed handling Receive message:", err)
 							}
 							break
 						}
 					case mmtp.ProtocolMessageType_FETCH_MESSAGE:
 						{
-							if err = handleFetch(protoMessage, e, mmtpMessage, request, c); err != nil {
+							if err = handleFetch(mmtpMessage, e, request, c); err != nil {
 								fmt.Println("Failed handling Fetch message:", err)
 							}
 							break
 						}
 					case mmtp.ProtocolMessageType_DISCONNECT_MESSAGE:
 						{
-							if err = handleDisconnect(protoMessage, mmtpMessage, request, c); err != nil {
+							if err = handleDisconnect(mmtpMessage, request, c); err != nil {
 								fmt.Println("Failed handling Disconnect message:", err)
 							}
 							break
@@ -477,7 +477,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 	}
 }
 
-func handleUnsubscribe(protoMessage *mmtp.ProtocolMessage, subMu *sync.RWMutex, subs map[string]*Subscription, e *EdgeRouter, mmtpMessage *mmtp.MmtpMessage, request *http.Request, c *websocket.Conn) error {
+func handleUnsubscribe(mmtpMessage *mmtp.MmtpMessage, subMu *sync.RWMutex, subs map[string]*Subscription, e *EdgeRouter, request *http.Request, c *websocket.Conn) error {
 	resp := &mmtp.MmtpMessage{
 		MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
 		Uuid:    uuid.NewString(),
@@ -488,7 +488,7 @@ func handleUnsubscribe(protoMessage *mmtp.ProtocolMessage, subMu *sync.RWMutex, 
 			},
 		},
 	}
-	if unsubscribe := protoMessage.GetUnsubscribeMessage(); unsubscribe != nil {
+	if unsubscribe := mmtpMessage.GetProtocolMessage().GetUnsubscribeMessage(); unsubscribe != nil {
 
 		subject := unsubscribe.GetSubject()
 		if subject == "" {
@@ -532,8 +532,8 @@ func handleUnsubscribe(protoMessage *mmtp.ProtocolMessage, subMu *sync.RWMutex, 
 	return err
 }
 
-func handleSend(protoMessage *mmtp.ProtocolMessage, outgoingChannel chan<- *mmtp.MmtpMessage, mmtpMessage *mmtp.MmtpMessage, erMu *sync.RWMutex, subMu *sync.RWMutex, subs map[string]*Subscription, e *EdgeRouter) {
-	if send := protoMessage.GetSendMessage(); send != nil {
+func handleSend(mmtpMessage *mmtp.MmtpMessage, outgoingChannel chan<- *mmtp.MmtpMessage, erMu *sync.RWMutex, subMu *sync.RWMutex, subs map[string]*Subscription, e *EdgeRouter) {
+	if send := mmtpMessage.GetProtocolMessage().GetSendMessage(); send != nil {
 		outgoingChannel <- mmtpMessage
 		header := send.GetApplicationMessage().GetHeader()
 		if len(header.GetRecipients().GetRecipients()) > 0 {
@@ -572,8 +572,8 @@ func handleSend(protoMessage *mmtp.ProtocolMessage, outgoingChannel chan<- *mmtp
 	}
 }
 
-func handleReceive(protoMessage *mmtp.ProtocolMessage, e *EdgeRouter, mmtpMessage *mmtp.MmtpMessage, request *http.Request, c *websocket.Conn) error {
-	if receive := protoMessage.GetReceiveMessage(); receive != nil {
+func handleReceive(mmtpMessage *mmtp.MmtpMessage, e *EdgeRouter, request *http.Request, c *websocket.Conn) error {
+	if receive := mmtpMessage.GetProtocolMessage().GetReceiveMessage(); receive != nil {
 		if msgUuids := receive.GetFilter().GetMessageUuids(); msgUuids != nil {
 			msgsLen := len(msgUuids)
 			mmtpMessages := make([]*mmtp.MmtpMessage, 0, msgsLen)
@@ -628,8 +628,8 @@ func handleReceive(protoMessage *mmtp.ProtocolMessage, e *EdgeRouter, mmtpMessag
 	return nil
 }
 
-func handleFetch(protoMessage *mmtp.ProtocolMessage, e *EdgeRouter, mmtpMessage *mmtp.MmtpMessage, request *http.Request, c *websocket.Conn) error {
-	if fetch := protoMessage.GetFetchMessage(); fetch != nil {
+func handleFetch(mmtpMessage *mmtp.MmtpMessage, e *EdgeRouter, request *http.Request, c *websocket.Conn) error {
+	if fetch := mmtpMessage.GetProtocolMessage().GetFetchMessage(); fetch != nil {
 		e.msgMu.RLock()
 		metadata := make([]*mmtp.MessageMetadata, 0, len(e.Messages))
 		for _, msg := range e.Messages {
@@ -659,8 +659,8 @@ func handleFetch(protoMessage *mmtp.ProtocolMessage, e *EdgeRouter, mmtpMessage 
 	return nil
 }
 
-func handleDisconnect(protoMessage *mmtp.ProtocolMessage, mmtpMessage *mmtp.MmtpMessage, request *http.Request, c *websocket.Conn) error {
-	if disconnect := protoMessage.GetDisconnectMessage(); disconnect != nil {
+func handleDisconnect(mmtpMessage *mmtp.MmtpMessage, request *http.Request, c *websocket.Conn) error {
+	if disconnect := mmtpMessage.GetProtocolMessage().GetDisconnectMessage(); disconnect != nil {
 		resp := &mmtp.MmtpMessage{
 			MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
 			Uuid:    uuid.NewString(),
