@@ -371,19 +371,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 							err, errorText := handleSubscribe(mmtpMessage, subMu, subs, topicHandles, err, pubSub, e, wg, ctx, p2p, incomingChannel, request, c)
 							if err != nil {
 								fmt.Println("Failed handling Subscribe message:", err)
-								resp = &mmtp.MmtpMessage{
-									MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
-									Uuid:    uuid.NewString(),
-									Body: &mmtp.MmtpMessage_ResponseMessage{
-										ResponseMessage: &mmtp.ResponseMessage{
-											ResponseToUuid: mmtpMessage.GetUuid(),
-											Response:       mmtp.ResponseEnum_ERROR,
-											ReasonText:     &errorText,
-										}},
-								}
-								if err = writeMessage(request.Context(), c, resp); err != nil {
-									fmt.Println("Could not send error response:", err)
-								}
+								sendErrorMessage(mmtpMessage.GetUuid(), errorText, request.Context(), c)
 							}
 							break
 						}
@@ -447,6 +435,22 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 				continue
 			}
 		}
+	}
+}
+
+func sendErrorMessage(uid string, errorText string, ctx context.Context, c *websocket.Conn) {
+	resp := &mmtp.MmtpMessage{
+		MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+		Uuid:    uuid.NewString(),
+		Body: &mmtp.MmtpMessage_ResponseMessage{
+			ResponseMessage: &mmtp.ResponseMessage{
+				ResponseToUuid: uid,
+				Response:       mmtp.ResponseEnum_ERROR,
+				ReasonText:     &errorText,
+			}},
+	}
+	if err := writeMessage(ctx, c, resp); err != nil {
+		fmt.Println("Could not send error response:", err)
 	}
 }
 
