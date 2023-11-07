@@ -4,7 +4,7 @@ go 1.21
 
 require (
 	github.com/google/uuid v1.4.0
-	github.com/libp2p/go-libp2p v0.32.0
+	github.com/libp2p/go-libp2p v0.32.1
 	github.com/libp2p/go-libp2p-kad-dht v0.25.1
 	github.com/libp2p/go-libp2p-pubsub v0.10.0
 	github.com/maritimeconnectivity/MMS/mmtp v0.0.0
