@@ -864,8 +864,13 @@ func performOCSPCheck(clientCert *x509.Certificate, issuingCert *x509.Certificat
 	if ocspResp.SerialNumber.Cmp(clientCert.SerialNumber) != 0 {
 		return fmt.Errorf("the serial number in the OCSP response does not correspond to the serial number of the certificate being checked")
 	}
-	if err = ocspResp.CheckSignatureFrom(issuingCert); err != nil {
-		return fmt.Errorf("the signature on the OCSP response is not valid: %w", err)
+	if ocspResp.Certificate == nil {
+		if err = ocspResp.CheckSignatureFrom(issuingCert); err != nil {
+			return fmt.Errorf("the signature on the OCSP response is not valid: %w", err)
+		}
+	}
+	if (ocspResp.Certificate != nil) && !ocspResp.Certificate.Equal(issuingCert) {
+		return fmt.Errorf("the certificate embedded in the OCSP response does not match the configured issuing CA")
 	}
 	if ocspResp.Status != ocsp.Good {
 		return fmt.Errorf("the given client certificate has been revoked")

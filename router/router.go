@@ -778,7 +778,7 @@ func performOCSPCheck(clientCert *x509.Certificate, issuingCert *x509.Certificat
 			return fmt.Errorf("the signature on the OCSP response is not valid: %w", err)
 		}
 	}
-	if !ocspResp.Certificate.Equal(issuingCert) {
+	if (ocspResp.Certificate != nil) && !ocspResp.Certificate.Equal(issuingCert) {
 		return fmt.Errorf("the certificate embedded in the OCSP response does not match the configured issuing CA")
 	}
 	if ocspResp.Status != ocsp.Good {
