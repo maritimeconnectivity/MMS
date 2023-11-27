@@ -748,7 +748,7 @@ func verifyEdgeRouterCertificate() func(rawCerts [][]byte, verifiedChains [][]*x
 			if err = resp.Body.Close(); err != nil {
 				return fmt.Errorf("could not close response body: %w", err)
 			}
-			ocspResp, err := ocsp.ParseResponse(respBytes, issuingCert)
+			ocspResp, err := ocsp.ParseResponse(respBytes, nil)
 			if err != nil {
 				return fmt.Errorf("parsing OCSP response failed: %w", err)
 			}
@@ -759,6 +759,9 @@ func verifyEdgeRouterCertificate() func(rawCerts [][]byte, verifiedChains [][]*x
 				if err = ocspResp.CheckSignatureFrom(issuingCert); err != nil {
 					return fmt.Errorf("the signature on the OCSP response is not valid: %w", err)
 				}
+			}
+			if !ocspResp.Certificate.Equal(issuingCert) {
+				return fmt.Errorf("the certificate embedded in the OCSP response does not match the configured issuing CA")
 			}
 			if ocspResp.Status != ocsp.Good {
 				return fmt.Errorf("the given client certificate has been revoked")
