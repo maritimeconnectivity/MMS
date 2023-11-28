@@ -19,8 +19,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"github.com/google/uuid"
@@ -303,12 +305,49 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 		agentMrn := connect.GetOwnMrn()
 		agentMrn = strings.ToLower(agentMrn)
 
+		var signatureAlgorithm x509.SignatureAlgorithm
+
 		// If TLS is enabled, we should verify the certificate from the Agent
 		if request.TLS != nil && agentMrn != "" {
 			uidOid := []int{0, 9, 2342, 19200300, 100, 1, 1}
 
 			if len(request.TLS.PeerCertificates) < 1 {
 				if err = c.Close(websocket.StatusPolicyViolation, "A valid client certificate must be provided for authenticated connections"); err != nil {
+					fmt.Println(err)
+				}
+				return
+			}
+
+			pubKeyLen := 0
+
+			switch pubKey := request.TLS.PeerCertificates[0].PublicKey.(type) {
+			case ecdsa.PublicKey:
+				if pubKeyLen = pubKey.Params().BitSize; pubKeyLen < 256 {
+					if err = c.Close(websocket.StatusPolicyViolation, "The public key length of the provided client certificate cannot be less than 256 bits"); err != nil {
+						fmt.Println(err)
+					}
+					return
+				}
+				break
+			default:
+				if err = c.Close(websocket.StatusPolicyViolation, "The provided client certificate does not use an allowed public key algorithm"); err != nil {
+					fmt.Println(err)
+				}
+				return
+			}
+
+			switch pubKeyLen {
+			case 256:
+				signatureAlgorithm = x509.ECDSAWithSHA256
+				break
+			case 384:
+				signatureAlgorithm = x509.ECDSAWithSHA384
+				break
+			case 512:
+				signatureAlgorithm = x509.ECDSAWithSHA512
+				break
+			default:
+				if err = c.Close(websocket.StatusPolicyViolation, "The public key length of the provided client certificate is not supported"); err != nil {
 					fmt.Println(err)
 				}
 				return
@@ -640,6 +679,45 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 					case mmtp.ProtocolMessageType_SEND_MESSAGE:
 						{
 							if send := protoMessage.GetSendMessage(); send != nil {
+								if (len(request.TLS.PeerCertificates) == 0) || (agentMrn == "") {
+									errorText := "Unauthenticated agents cannot send messages"
+									resp = &mmtp.MmtpMessage{
+										MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+										Uuid:    uuid.NewString(),
+										Body: &mmtp.MmtpMessage_ResponseMessage{
+											ResponseMessage: &mmtp.ResponseMessage{
+												ResponseToUuid: mmtpMessage.GetUuid(),
+												Response:       mmtp.ResponseEnum_ERROR,
+												ReasonText:     &errorText,
+											},
+										},
+									}
+									if err = writeMessage(request.Context(), c, resp); err != nil {
+										fmt.Println("Could not write response to Send message:", err)
+									}
+									break
+								}
+								appMessage := protoMessage.GetSendMessage().GetApplicationMessage()
+
+								// verify signature on message
+								signatureBytes := make([]byte, hex.DecodedLen(len(appMessage.GetSignature())))
+								n, err := hex.Decode(signatureBytes, []byte(appMessage.GetSignature()))
+								if err != nil {
+									// return an error
+									break
+								}
+								signatureBytes = signatureBytes[:n]
+
+								if signatureAlgorithm == x509.UnknownSignatureAlgorithm {
+									// return an error saying that a suitable signature algorithm could not be found
+									break
+								}
+
+								if err = request.TLS.PeerCertificates[0].CheckSignature(signatureAlgorithm, appMessage.GetBody(), signatureBytes); err != nil {
+									// return an error saying that the signature is not valid over the body of the message
+									break
+								}
+
 								outgoingChannel <- mmtpMessage
 								header := send.GetApplicationMessage().GetHeader()
 								if len(header.GetRecipients().GetRecipients()) > 0 {
