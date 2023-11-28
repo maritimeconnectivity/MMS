@@ -806,32 +806,8 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 						}
 					case mmtp.ProtocolMessageType_FETCH_MESSAGE:
 						{
-							if fetch := protoMessage.GetFetchMessage(); fetch != nil {
-								agent.msgMu.RLock()
-								metadata := make([]*mmtp.MessageMetadata, 0, len(agent.Messages))
-								for _, msg := range agent.Messages {
-									msgHeader := msg.GetProtocolMessage().GetSendMessage().GetApplicationMessage().GetHeader()
-									msgMetadata := &mmtp.MessageMetadata{
-										Uuid:   msg.GetUuid(),
-										Header: msgHeader,
-									}
-									metadata = append(metadata, msgMetadata)
-								}
-								agent.msgMu.RUnlock()
-								resp = &mmtp.MmtpMessage{
-									MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
-									Uuid:    uuid.NewString(),
-									Body: &mmtp.MmtpMessage_ResponseMessage{
-										ResponseMessage: &mmtp.ResponseMessage{
-											ResponseToUuid:  mmtpMessage.GetUuid(),
-											Response:        mmtp.ResponseEnum_GOOD,
-											MessageMetadata: metadata,
-										}},
-								}
-								err = writeMessage(request.Context(), c, resp)
-								if err != nil {
-									fmt.Println("Could not send fetch response to Edge Router:", err)
-								}
+							if err = handleFetch(mmtpMessage, agent, request, c); err != nil {
+								fmt.Println("Failed handling Fetch message:", err)
 							}
 							break
 						}
@@ -858,6 +834,37 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 		}
 
 	}
+}
+
+func handleFetch(mmtpMessage *mmtp.MmtpMessage, agent *Agent, request *http.Request, c *websocket.Conn) error {
+	if fetch := mmtpMessage.GetProtocolMessage().GetFetchMessage(); fetch != nil {
+		agent.msgMu.RLock()
+		metadata := make([]*mmtp.MessageMetadata, 0, len(agent.Messages))
+		for _, msg := range agent.Messages {
+			msgHeader := msg.GetProtocolMessage().GetSendMessage().GetApplicationMessage().GetHeader()
+			msgMetadata := &mmtp.MessageMetadata{
+				Uuid:   msg.GetUuid(),
+				Header: msgHeader,
+			}
+			metadata = append(metadata, msgMetadata)
+		}
+		agent.msgMu.RUnlock()
+		resp := &mmtp.MmtpMessage{
+			MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+			Uuid:    uuid.NewString(),
+			Body: &mmtp.MmtpMessage_ResponseMessage{
+				ResponseMessage: &mmtp.ResponseMessage{
+					ResponseToUuid:  mmtpMessage.GetUuid(),
+					Response:        mmtp.ResponseEnum_GOOD,
+					MessageMetadata: metadata,
+				}},
+		}
+		err := writeMessage(request.Context(), c, resp)
+		if err != nil {
+			return fmt.Errorf("could not send fetch response to Edge Router: %w", err)
+		}
+	}
+	return nil
 }
 
 func handleDisconnect(mmtpMessage *mmtp.MmtpMessage, request *http.Request, c *websocket.Conn) error {
