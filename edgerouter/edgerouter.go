@@ -837,43 +837,14 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 						}
 					case mmtp.ProtocolMessageType_DISCONNECT_MESSAGE:
 						{
-							if disconnect := protoMessage.GetDisconnectMessage(); disconnect != nil {
-								resp = &mmtp.MmtpMessage{
-									MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
-									Uuid:    uuid.NewString(),
-									Body: &mmtp.MmtpMessage_ResponseMessage{
-										ResponseMessage: &mmtp.ResponseMessage{
-											ResponseToUuid: mmtpMessage.GetUuid(),
-											Response:       mmtp.ResponseEnum_GOOD,
-										}},
-								}
-								if err = writeMessage(request.Context(), c, resp); err != nil {
-									fmt.Println("Could not send disconnect response to Edge Router:", err)
-								}
-
-								if err = c.Close(websocket.StatusNormalClosure, "Closed connection after receiving Disconnect message"); err != nil {
-									fmt.Println("Websocket could not be closed cleanly:", err)
-									return
-								}
+							if err = handleDisconnect(mmtpMessage, request, c); err != nil {
+								fmt.Println("Failed handling Disconnect message:", err)
 							}
 							break
 						}
 					case mmtp.ProtocolMessageType_CONNECT_MESSAGE:
 						{
-							reason := "Already connected"
-							resp = &mmtp.MmtpMessage{
-								MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
-								Uuid:    uuid.NewString(),
-								Body: &mmtp.MmtpMessage_ResponseMessage{
-									ResponseMessage: &mmtp.ResponseMessage{
-										ResponseToUuid: mmtpMessage.GetUuid(),
-										Response:       mmtp.ResponseEnum_ERROR,
-										ReasonText:     &reason,
-									}},
-							}
-							if err = writeMessage(request.Context(), c, resp); err != nil {
-								fmt.Println("Could not send error response:", err)
-							}
+							sendErrorMessage(mmtpMessage.GetUuid(), "Already connected", request.Context(), c)
 							break
 						}
 					default:
@@ -886,6 +857,44 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 			}
 		}
 
+	}
+}
+
+func handleDisconnect(mmtpMessage *mmtp.MmtpMessage, request *http.Request, c *websocket.Conn) error {
+	if disconnect := mmtpMessage.GetProtocolMessage().GetDisconnectMessage(); disconnect != nil {
+		resp := &mmtp.MmtpMessage{
+			MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+			Uuid:    uuid.NewString(),
+			Body: &mmtp.MmtpMessage_ResponseMessage{
+				ResponseMessage: &mmtp.ResponseMessage{
+					ResponseToUuid: mmtpMessage.GetUuid(),
+					Response:       mmtp.ResponseEnum_GOOD,
+				}},
+		}
+		if err := writeMessage(request.Context(), c, resp); err != nil {
+			return fmt.Errorf("could not send disconnect response to Edge Router: %w", err)
+		}
+
+		if err := c.Close(websocket.StatusNormalClosure, "Closed connection after receiving Disconnect message"); err != nil {
+			return fmt.Errorf("websocket could not be closed cleanly: %w", err)
+		}
+	}
+	return nil
+}
+
+func sendErrorMessage(uid string, errorText string, ctx context.Context, c *websocket.Conn) {
+	resp := &mmtp.MmtpMessage{
+		MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+		Uuid:    uuid.NewString(),
+		Body: &mmtp.MmtpMessage_ResponseMessage{
+			ResponseMessage: &mmtp.ResponseMessage{
+				ResponseToUuid: uid,
+				Response:       mmtp.ResponseEnum_ERROR,
+				ReasonText:     &errorText,
+			}},
+	}
+	if err := writeMessage(ctx, c, resp); err != nil {
+		fmt.Println("Could not send error response:", err)
 	}
 }
 
