@@ -1191,7 +1191,7 @@ func main() {
 			fmt.Println("Could not read the provided client certificate:", err)
 			return
 		}
-		certificates[0] = cert
+		certificates = append(certificates, cert)
 	}
 
 	httpClient := &http.Client{
