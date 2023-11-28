@@ -750,57 +750,8 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 						}
 					case mmtp.ProtocolMessageType_RECEIVE_MESSAGE:
 						{
-							if receive := protoMessage.GetReceiveMessage(); receive != nil {
-								if msgUuids := receive.GetFilter().GetMessageUuids(); msgUuids != nil {
-									msgsLen := len(msgUuids)
-									mmtpMessages := make([]*mmtp.MmtpMessage, 0, msgsLen)
-									appMsgs := make([]*mmtp.ApplicationMessage, 0, msgsLen)
-									agent.msgMu.Lock()
-									for _, msgUuid := range msgUuids {
-										msg := agent.Messages[msgUuid].GetProtocolMessage().GetSendMessage().GetApplicationMessage()
-										appMsgs = append(appMsgs, msg)
-										delete(agent.Messages, msgUuid)
-									}
-									agent.msgMu.Unlock()
-									resp = &mmtp.MmtpMessage{
-										MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
-										Uuid:    uuid.NewString(),
-										Body: &mmtp.MmtpMessage_ResponseMessage{ResponseMessage: &mmtp.ResponseMessage{
-											ResponseToUuid:      mmtpMessage.GetUuid(),
-											Response:            mmtp.ResponseEnum_GOOD,
-											ApplicationMessages: appMsgs,
-										}},
-									}
-									err = writeMessage(request.Context(), c, resp)
-									if err != nil {
-										fmt.Println("Could not send messages to Edge Router:", err)
-										agent.BulkQueueMessages(mmtpMessages)
-									}
-								} else { // Receive all messages
-									agent.msgMu.Lock()
-									msgsLen := len(agent.Messages)
-									appMsgs := make([]*mmtp.ApplicationMessage, 0, msgsLen)
-									for _, mmtpMsg := range agent.Messages {
-										msg := mmtpMsg.GetProtocolMessage().GetSendMessage().GetApplicationMessage()
-										appMsgs = append(appMsgs, msg)
-									}
-									resp = &mmtp.MmtpMessage{
-										MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
-										Uuid:    uuid.NewString(),
-										Body: &mmtp.MmtpMessage_ResponseMessage{ResponseMessage: &mmtp.ResponseMessage{
-											ResponseToUuid:      mmtpMessage.GetUuid(),
-											Response:            mmtp.ResponseEnum_GOOD,
-											ApplicationMessages: appMsgs,
-										}},
-									}
-									err = writeMessage(request.Context(), c, resp)
-									if err != nil {
-										fmt.Println("Could not send messages to Edge Router:", err)
-									} else {
-										agent.Messages = make(map[string]*mmtp.MmtpMessage)
-									}
-									agent.msgMu.Unlock()
-								}
+							if err = handleReceive(mmtpMessage, agent, request, c); err != nil {
+								fmt.Println("Failed handling Receive message:", err)
 							}
 							break
 						}
@@ -834,6 +785,62 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 		}
 
 	}
+}
+
+func handleReceive(mmtpMessage *mmtp.MmtpMessage, agent *Agent, request *http.Request, c *websocket.Conn) error {
+	if receive := mmtpMessage.GetProtocolMessage().GetReceiveMessage(); receive != nil {
+		if msgUuids := receive.GetFilter().GetMessageUuids(); msgUuids != nil {
+			msgsLen := len(msgUuids)
+			mmtpMessages := make([]*mmtp.MmtpMessage, 0, msgsLen)
+			appMsgs := make([]*mmtp.ApplicationMessage, 0, msgsLen)
+			agent.msgMu.Lock()
+			for _, msgUuid := range msgUuids {
+				msg := agent.Messages[msgUuid].GetProtocolMessage().GetSendMessage().GetApplicationMessage()
+				appMsgs = append(appMsgs, msg)
+				delete(agent.Messages, msgUuid)
+			}
+			agent.msgMu.Unlock()
+			resp := &mmtp.MmtpMessage{
+				MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+				Uuid:    uuid.NewString(),
+				Body: &mmtp.MmtpMessage_ResponseMessage{ResponseMessage: &mmtp.ResponseMessage{
+					ResponseToUuid:      mmtpMessage.GetUuid(),
+					Response:            mmtp.ResponseEnum_GOOD,
+					ApplicationMessages: appMsgs,
+				}},
+			}
+			err := writeMessage(request.Context(), c, resp)
+			if err != nil {
+				agent.BulkQueueMessages(mmtpMessages)
+				return fmt.Errorf("could not send messages to Agent: %w", err)
+			}
+		} else { // Receive all messages
+			agent.msgMu.Lock()
+			msgsLen := len(agent.Messages)
+			appMsgs := make([]*mmtp.ApplicationMessage, 0, msgsLen)
+			for _, mmtpMsg := range agent.Messages {
+				msg := mmtpMsg.GetProtocolMessage().GetSendMessage().GetApplicationMessage()
+				appMsgs = append(appMsgs, msg)
+			}
+			resp := &mmtp.MmtpMessage{
+				MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+				Uuid:    uuid.NewString(),
+				Body: &mmtp.MmtpMessage_ResponseMessage{ResponseMessage: &mmtp.ResponseMessage{
+					ResponseToUuid:      mmtpMessage.GetUuid(),
+					Response:            mmtp.ResponseEnum_GOOD,
+					ApplicationMessages: appMsgs,
+				}},
+			}
+			defer agent.msgMu.Unlock()
+			err := writeMessage(request.Context(), c, resp)
+			if err != nil {
+				return fmt.Errorf("could not send messages to Agent: %w", err)
+			} else {
+				agent.Messages = make(map[string]*mmtp.MmtpMessage)
+			}
+		}
+	}
+	return nil
 }
 
 func handleFetch(mmtpMessage *mmtp.MmtpMessage, agent *Agent, request *http.Request, c *websocket.Conn) error {
