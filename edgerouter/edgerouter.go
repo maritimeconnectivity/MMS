@@ -678,74 +678,7 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 						}
 					case mmtp.ProtocolMessageType_SEND_MESSAGE:
 						{
-							if send := protoMessage.GetSendMessage(); send != nil {
-								if (len(request.TLS.PeerCertificates) == 0) || (agentMrn == "") {
-									errorText := "Unauthenticated agents cannot send messages"
-									resp = &mmtp.MmtpMessage{
-										MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
-										Uuid:    uuid.NewString(),
-										Body: &mmtp.MmtpMessage_ResponseMessage{
-											ResponseMessage: &mmtp.ResponseMessage{
-												ResponseToUuid: mmtpMessage.GetUuid(),
-												Response:       mmtp.ResponseEnum_ERROR,
-												ReasonText:     &errorText,
-											},
-										},
-									}
-									if err = writeMessage(request.Context(), c, resp); err != nil {
-										fmt.Println("Could not write response to Send message:", err)
-									}
-									break
-								}
-								appMessage := protoMessage.GetSendMessage().GetApplicationMessage()
-
-								// verify signature on message
-								signatureBytes := make([]byte, hex.DecodedLen(len(appMessage.GetSignature())))
-								n, err := hex.Decode(signatureBytes, []byte(appMessage.GetSignature()))
-								if err != nil {
-									// return an error
-									break
-								}
-								signatureBytes = signatureBytes[:n]
-
-								if signatureAlgorithm == x509.UnknownSignatureAlgorithm {
-									// return an error saying that a suitable signature algorithm could not be found
-									break
-								}
-
-								if err = request.TLS.PeerCertificates[0].CheckSignature(signatureAlgorithm, appMessage.GetBody(), signatureBytes); err != nil {
-									// return an error saying that the signature is not valid over the body of the message
-									break
-								}
-
-								outgoingChannel <- mmtpMessage
-								header := send.GetApplicationMessage().GetHeader()
-								if len(header.GetRecipients().GetRecipients()) > 0 {
-									mrnToAgentMu.RLock()
-									for _, recipient := range header.GetRecipients().Recipients {
-										a, exists := mrnToAgent[recipient]
-										if exists && a.directMessages {
-											if err = a.QueueMessage(mmtpMessage); err != nil {
-												fmt.Println("Could not queue message to agent:", err)
-											}
-										}
-									}
-									mrnToAgentMu.RUnlock()
-								} else if header.GetSubject() != "" {
-									subMu.RLock()
-									sub, exists := subs[header.GetSubject()]
-									if exists {
-										for _, subscriber := range sub.Subscribers {
-											if subscriber.Mrn != agent.Mrn {
-												if err = subscriber.QueueMessage(mmtpMessage); err != nil {
-													fmt.Println("Could not queue message to agent:", err)
-												}
-											}
-										}
-									}
-									subMu.RUnlock()
-								}
-							}
+							handleSend(mmtpMessage, outgoingChannel, request, agentMrn, c, signatureAlgorithm, mrnToAgent, mrnToAgentMu, subMu, subs, agent)
 							break
 						}
 					case mmtp.ProtocolMessageType_RECEIVE_MESSAGE:
@@ -785,6 +718,70 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 		}
 
 	}
+}
+
+func handleSend(mmtpMessage *mmtp.MmtpMessage, outgoingChannel chan<- *mmtp.MmtpMessage, request *http.Request, agentMrn string, c *websocket.Conn, signatureAlgorithm x509.SignatureAlgorithm, mrnToAgent map[string]*Agent, mrnToAgentMu *sync.RWMutex, subMu *sync.RWMutex, subs map[string]*Subscription, agent *Agent) {
+	if send := mmtpMessage.GetProtocolMessage().GetSendMessage(); send != nil {
+		if (len(request.TLS.PeerCertificates) == 0) || (agentMrn == "") {
+			sendErrorMessage(mmtpMessage.GetUuid(), "Unauthenticated agents cannot send messages", request.Context(), c)
+			return
+		}
+		err := verifySignatureOnMessage(mmtpMessage, signatureAlgorithm, request)
+		if err != nil {
+			fmt.Println("Verification of signature on message failed:", err)
+			return
+		}
+
+		outgoingChannel <- mmtpMessage
+		header := send.GetApplicationMessage().GetHeader()
+		if len(header.GetRecipients().GetRecipients()) > 0 {
+			mrnToAgentMu.RLock()
+			for _, recipient := range header.GetRecipients().Recipients {
+				a, exists := mrnToAgent[recipient]
+				if exists && a.directMessages {
+					if err = a.QueueMessage(mmtpMessage); err != nil {
+						fmt.Println("Could not queue message to agent:", err)
+					}
+				}
+			}
+			mrnToAgentMu.RUnlock()
+		} else if header.GetSubject() != "" {
+			subMu.RLock()
+			sub, exists := subs[header.GetSubject()]
+			if exists {
+				for _, subscriber := range sub.Subscribers {
+					if subscriber.Mrn != agent.Mrn {
+						if err = subscriber.QueueMessage(mmtpMessage); err != nil {
+							fmt.Println("Could not queue message to agent:", err)
+						}
+					}
+				}
+			}
+			subMu.RUnlock()
+		}
+	}
+}
+
+func verifySignatureOnMessage(mmtpMessage *mmtp.MmtpMessage, signatureAlgorithm x509.SignatureAlgorithm, request *http.Request) error {
+	appMessage := mmtpMessage.GetProtocolMessage().GetSendMessage().GetApplicationMessage()
+
+	// verify signature on message
+	signatureBytes := make([]byte, hex.DecodedLen(len(appMessage.GetSignature())))
+	n, err := hex.Decode(signatureBytes, []byte(appMessage.GetSignature()))
+	if err != nil {
+		return fmt.Errorf("signature on message could not be decoded: %w", err)
+	}
+	signatureBytes = signatureBytes[:n]
+
+	if signatureAlgorithm == x509.UnknownSignatureAlgorithm {
+		return fmt.Errorf("a suitable signature algorithm could not be found for verifying signature on message: %w")
+	}
+
+	if err = request.TLS.PeerCertificates[0].CheckSignature(signatureAlgorithm, appMessage.GetBody(), signatureBytes); err != nil {
+		// return an error saying that the signature is not valid over the body of the message
+		return fmt.Errorf("the signature on the message could not be verified: %w", err)
+	}
+	return nil
 }
 
 func handleReceive(mmtpMessage *mmtp.MmtpMessage, agent *Agent, request *http.Request, c *websocket.Conn) error {
