@@ -470,7 +470,7 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 						}
 					case mmtp.ProtocolMessageType_UNSUBSCRIBE_MESSAGE:
 						{
-							if err = handleUnsubscribe(mmtpMessage, subMu, subs, agent, request, c, agentMrn, outgoingChannel); err != nil {
+							if err = handleUnsubscribe(mmtpMessage, subMu, subs, agent, request, c, outgoingChannel); err != nil {
 								fmt.Println("Failed handling Unsubscribe message:", err)
 							}
 							break
@@ -611,13 +611,13 @@ func handleSubscribeDirect(mmtpMessage *mmtp.MmtpMessage, agent *Agent, subscrib
 	return nil
 }
 
-func handleUnsubscribe(mmtpMessage *mmtp.MmtpMessage, subMu *sync.RWMutex, subs map[string]*Subscription, agent *Agent, request *http.Request, c *websocket.Conn, agentMrn string, outgoingChannel chan<- *mmtp.MmtpMessage) error {
+func handleUnsubscribe(mmtpMessage *mmtp.MmtpMessage, subMu *sync.RWMutex, subs map[string]*Subscription, agent *Agent, request *http.Request, c *websocket.Conn, outgoingChannel chan<- *mmtp.MmtpMessage) error {
 	if unsubscribe := mmtpMessage.GetProtocolMessage().GetUnsubscribeMessage(); unsubscribe != nil {
 		switch unsubscribe.GetSubjectOrDirectMessages().(type) {
 		case *mmtp.Unsubscribe_Subject:
 			return handleUnsubscribeSubject(mmtpMessage, subMu, subs, agent, request, c, unsubscribe)
 		case *mmtp.Unsubscribe_DirectMessages:
-			return handleUnsubscribeDirect(mmtpMessage, unsubscribe, request, c, agentMrn, outgoingChannel, agent)
+			return handleUnsubscribeDirect(mmtpMessage, unsubscribe, request, c, outgoingChannel, agent)
 		}
 	}
 	return fmt.Errorf("something went wrong while handling unsubscribe message")
@@ -661,14 +661,14 @@ func handleUnsubscribeSubject(mmtpMessage *mmtp.MmtpMessage, subMu *sync.RWMutex
 	return nil
 }
 
-func handleUnsubscribeDirect(mmtpMessage *mmtp.MmtpMessage, unsubscribe *mmtp.Unsubscribe, request *http.Request, c *websocket.Conn, agentMrn string, outgoingChannel chan<- *mmtp.MmtpMessage, agent *Agent) error {
+func handleUnsubscribeDirect(mmtpMessage *mmtp.MmtpMessage, unsubscribe *mmtp.Unsubscribe, request *http.Request, c *websocket.Conn, outgoingChannel chan<- *mmtp.MmtpMessage, agent *Agent) error {
 	directMessages := unsubscribe.GetDirectMessages()
 	if !directMessages {
 		reason := "The directMessages flag needs to be true to be able to unsubscribe from direct messages"
 		sendErrorMessage(mmtpMessage.GetUuid(), reason, request.Context(), c)
 		return nil
 	}
-	if agentMrn != "" {
+	if agent.Mrn != "" {
 		unsub := &mmtp.MmtpMessage{
 			MsgType: mmtp.MsgType_PROTOCOL_MESSAGE,
 			Uuid:    uuid.NewString(),
@@ -678,7 +678,7 @@ func handleUnsubscribeDirect(mmtpMessage *mmtp.MmtpMessage, unsubscribe *mmtp.Un
 					Body: &mmtp.ProtocolMessage_UnsubscribeMessage{
 						UnsubscribeMessage: &mmtp.Unsubscribe{
 							SubjectOrDirectMessages: &mmtp.Unsubscribe_Subject{
-								Subject: agentMrn,
+								Subject: agent.Mrn,
 							},
 						},
 					},
