@@ -205,7 +205,7 @@ func (r *MMSRouter) StartRouter(ctx context.Context, wg *sync.WaitGroup, certPat
 func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel chan *mmtp.MmtpMessage, outgoingChannel chan<- *mmtp.MmtpMessage, subs map[string]*Subscription, subMu *sync.RWMutex, edgeRouters map[string]*EdgeRouter, erMu *sync.RWMutex, topicHandles map[string]*pubsub.Topic, ctx context.Context, wg *sync.WaitGroup) http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
 		wg.Add(1)
-		c, err := websocket.Accept(writer, request, nil)
+		c, err := websocket.Accept(writer, request, &websocket.AcceptOptions{CompressionMode: websocket.CompressionContextTakeover})
 		if err != nil {
 			fmt.Println("Could not establish websocket connection", err)
 			wg.Done()
