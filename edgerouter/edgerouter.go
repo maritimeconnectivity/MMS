@@ -759,7 +759,7 @@ func verifySignatureOnMessage(mmtpMessage *mmtp.MmtpMessage, signatureAlgorithm 
 	signatureBytes = signatureBytes[:n]
 
 	if signatureAlgorithm == x509.UnknownSignatureAlgorithm {
-		return fmt.Errorf("a suitable signature algorithm could not be found for verifying signature on message: %w")
+		return fmt.Errorf("a suitable signature algorithm could not be found for verifying signature on message")
 	}
 
 	if err = request.TLS.PeerCertificates[0].CheckSignature(signatureAlgorithm, appMessage.GetBody(), signatureBytes); err != nil {
