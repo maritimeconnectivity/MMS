@@ -19,8 +19,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"github.com/google/uuid"
@@ -261,7 +263,7 @@ func (er *EdgeRouter) StartEdgeRouter(ctx context.Context, wg *sync.WaitGroup, c
 func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[string]*Subscription, subMu *sync.RWMutex, agents map[string]*Agent, agentsMu *sync.RWMutex, mrnToAgent map[string]*Agent, mrnToAgentMu *sync.RWMutex, ctx context.Context, wg *sync.WaitGroup) http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
 		wg.Add(1)
-		c, err := websocket.Accept(writer, request, &websocket.AcceptOptions{OriginPatterns: []string{"*"}})
+		c, err := websocket.Accept(writer, request, &websocket.AcceptOptions{OriginPatterns: []string{"*"}, CompressionMode: websocket.CompressionContextTakeover})
 		if err != nil {
 			fmt.Println("Could not establish websocket connection", err)
 			wg.Done()
@@ -303,12 +305,49 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 		agentMrn := connect.GetOwnMrn()
 		agentMrn = strings.ToLower(agentMrn)
 
+		var signatureAlgorithm x509.SignatureAlgorithm
+
 		// If TLS is enabled, we should verify the certificate from the Agent
 		if request.TLS != nil && agentMrn != "" {
 			uidOid := []int{0, 9, 2342, 19200300, 100, 1, 1}
 
 			if len(request.TLS.PeerCertificates) < 1 {
 				if err = c.Close(websocket.StatusPolicyViolation, "A valid client certificate must be provided for authenticated connections"); err != nil {
+					fmt.Println(err)
+				}
+				return
+			}
+
+			pubKeyLen := 0
+
+			switch pubKey := request.TLS.PeerCertificates[0].PublicKey.(type) {
+			case ecdsa.PublicKey:
+				if pubKeyLen = pubKey.Params().BitSize; pubKeyLen < 256 {
+					if err = c.Close(websocket.StatusPolicyViolation, "The public key length of the provided client certificate cannot be less than 256 bits"); err != nil {
+						fmt.Println(err)
+					}
+					return
+				}
+				break
+			default:
+				if err = c.Close(websocket.StatusPolicyViolation, "The provided client certificate does not use an allowed public key algorithm"); err != nil {
+					fmt.Println(err)
+				}
+				return
+			}
+
+			switch pubKeyLen {
+			case 256:
+				signatureAlgorithm = x509.ECDSAWithSHA256
+				break
+			case 384:
+				signatureAlgorithm = x509.ECDSAWithSHA384
+				break
+			case 512:
+				signatureAlgorithm = x509.ECDSAWithSHA512
+				break
+			default:
+				if err = c.Close(websocket.StatusPolicyViolation, "The public key length of the provided client certificate is not supported"); err != nil {
 					fmt.Println(err)
 				}
 				return
@@ -424,378 +463,47 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 					switch protoMessage.ProtocolMsgType {
 					case mmtp.ProtocolMessageType_SUBSCRIBE_MESSAGE:
 						{
-							if subscribe := protoMessage.GetSubscribeMessage(); subscribe != nil {
-								switch subscribe.GetSubjectOrDirectMessages().(type) {
-								case *mmtp.Subscribe_Subject:
-									{
-										subject := subscribe.GetSubject()
-										if subject == "" {
-											continue
-										}
-										subMu.Lock()
-										sub, exists := subs[subject]
-										if !exists {
-											sub = NewSubscription(subject)
-											sub.AddSubscriber(agent)
-											subs[subject] = sub
-											outgoingChannel <- mmtpMessage
-										} else {
-											sub.AddSubscriber(agent)
-										}
-										subMu.Unlock()
-										agent.Interests = append(agent.Interests, subject)
-
-										resp = &mmtp.MmtpMessage{
-											MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
-											Uuid:    uuid.NewString(),
-											Body: &mmtp.MmtpMessage_ResponseMessage{
-												ResponseMessage: &mmtp.ResponseMessage{
-													ResponseToUuid: mmtpMessage.GetUuid(),
-													Response:       mmtp.ResponseEnum_GOOD,
-												}},
-										}
-										if err = writeMessage(request.Context(), c, resp); err != nil {
-											fmt.Println("Could not send subscribe response to Edge Router:", err)
-										}
-										break
-									}
-								case *mmtp.Subscribe_DirectMessages:
-									{
-										directMessages := subscribe.GetDirectMessages()
-										if !directMessages {
-											reason := "The directMessages flag needs to be true to be able to subscribe to direct messages"
-											resp = &mmtp.MmtpMessage{
-												MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
-												Uuid:    uuid.NewString(),
-												Body: &mmtp.MmtpMessage_ResponseMessage{
-													ResponseMessage: &mmtp.ResponseMessage{
-														ResponseToUuid: mmtpMessage.GetUuid(),
-														Response:       mmtp.ResponseEnum_ERROR,
-														ReasonText:     &reason,
-													}},
-											}
-											if err = writeMessage(request.Context(), c, resp); err != nil {
-												fmt.Println("Could not send subscribe response to Edge Router:", err)
-											}
-											break
-										}
-										if agentMrn == "" {
-											reason := "You need to be authenticated to be able to subscribe to direct messages"
-											resp = &mmtp.MmtpMessage{
-												MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
-												Uuid:    uuid.NewString(),
-												Body: &mmtp.MmtpMessage_ResponseMessage{
-													ResponseMessage: &mmtp.ResponseMessage{
-														ResponseToUuid: mmtpMessage.GetUuid(),
-														Response:       mmtp.ResponseEnum_ERROR,
-														ReasonText:     &reason,
-													}},
-											}
-											if err = writeMessage(request.Context(), c, resp); err != nil {
-												fmt.Println("Could not send subscribe response to Edge Router:", err)
-											}
-											break
-										}
-										// Subscribe on direct messages to the Agent
-										sub := &mmtp.MmtpMessage{
-											MsgType: mmtp.MsgType_PROTOCOL_MESSAGE,
-											Uuid:    uuid.NewString(),
-											Body: &mmtp.MmtpMessage_ProtocolMessage{
-												ProtocolMessage: &mmtp.ProtocolMessage{
-													ProtocolMsgType: mmtp.ProtocolMessageType_SUBSCRIBE_MESSAGE,
-													Body: &mmtp.ProtocolMessage_SubscribeMessage{
-														SubscribeMessage: &mmtp.Subscribe{
-															SubjectOrDirectMessages: &mmtp.Subscribe_Subject{
-																Subject: agentMrn,
-															},
-														},
-													},
-												},
-											},
-										}
-										outgoingChannel <- sub
-
-										agent.directMessages = true
-
-										resp = &mmtp.MmtpMessage{
-											MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
-											Uuid:    uuid.NewString(),
-											Body: &mmtp.MmtpMessage_ResponseMessage{
-												ResponseMessage: &mmtp.ResponseMessage{
-													ResponseToUuid: mmtpMessage.GetUuid(),
-													Response:       mmtp.ResponseEnum_GOOD,
-												}},
-										}
-										if err = writeMessage(request.Context(), c, resp); err != nil {
-											fmt.Println("Could not send subscribe response to Edge Router:", err)
-										}
-										break
-									}
-								}
+							if err = handleSubscribe(mmtpMessage, agent, subMu, subs, outgoingChannel, request, c); err != nil {
+								fmt.Println("Failed handling Subscribe message:", err)
 							}
 							break
 						}
 					case mmtp.ProtocolMessageType_UNSUBSCRIBE_MESSAGE:
 						{
-							if unsubscribe := protoMessage.GetUnsubscribeMessage(); unsubscribe != nil {
-								switch unsubscribe.GetSubjectOrDirectMessages().(type) {
-								case *mmtp.Unsubscribe_Subject:
-									{
-										subject := unsubscribe.GetSubject()
-										if subject == "" {
-											continue
-										}
-										subMu.Lock()
-										sub, exists := subs[subject]
-										if !exists {
-											continue
-										}
-										sub.DeleteSubscriber(agent)
-										subMu.Unlock()
-										interests := agent.Interests
-										for i := range interests {
-											if strings.EqualFold(subject, interests[i]) {
-												interests[i] = interests[len(interests)-1]
-												interests[len(interests)-1] = ""
-												interests = interests[:len(interests)-1]
-												agent.Interests = interests
-												break
-											}
-										}
-										resp = &mmtp.MmtpMessage{
-											MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
-											Uuid:    uuid.NewString(),
-											Body: &mmtp.MmtpMessage_ResponseMessage{
-												ResponseMessage: &mmtp.ResponseMessage{
-													ResponseToUuid: mmtpMessage.GetUuid(),
-													Response:       mmtp.ResponseEnum_GOOD,
-												}},
-										}
-										if err = writeMessage(request.Context(), c, resp); err != nil {
-											fmt.Println("Could not write response to unsubscribe message:", err)
-										}
-										break
-									}
-								case *mmtp.Unsubscribe_DirectMessages:
-									{
-										directMessages := unsubscribe.GetDirectMessages()
-										if !directMessages {
-											reason := "The directMessages flag needs to be true to be able to unsubscribe from direct messages"
-											resp = &mmtp.MmtpMessage{
-												MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
-												Uuid:    uuid.NewString(),
-												Body: &mmtp.MmtpMessage_ResponseMessage{
-													ResponseMessage: &mmtp.ResponseMessage{
-														ResponseToUuid: mmtpMessage.GetUuid(),
-														Response:       mmtp.ResponseEnum_ERROR,
-														ReasonText:     &reason,
-													}},
-											}
-											if err = writeMessage(request.Context(), c, resp); err != nil {
-												fmt.Println("Could not send unsubscribe response to Edge Router:", err)
-											}
-											break
-										}
-										if agentMrn != "" {
-											unsub := &mmtp.MmtpMessage{
-												MsgType: mmtp.MsgType_PROTOCOL_MESSAGE,
-												Uuid:    uuid.NewString(),
-												Body: &mmtp.MmtpMessage_ProtocolMessage{
-													ProtocolMessage: &mmtp.ProtocolMessage{
-														ProtocolMsgType: mmtp.ProtocolMessageType_UNSUBSCRIBE_MESSAGE,
-														Body: &mmtp.ProtocolMessage_UnsubscribeMessage{
-															UnsubscribeMessage: &mmtp.Unsubscribe{
-																SubjectOrDirectMessages: &mmtp.Unsubscribe_Subject{
-																	Subject: agentMrn,
-																},
-															},
-														},
-													},
-												},
-											}
-											outgoingChannel <- unsub
-
-											agent.directMessages = false
-
-											resp = &mmtp.MmtpMessage{
-												MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
-												Uuid:    uuid.NewString(),
-												Body: &mmtp.MmtpMessage_ResponseMessage{
-													ResponseMessage: &mmtp.ResponseMessage{
-														ResponseToUuid: mmtpMessage.GetUuid(),
-														Response:       mmtp.ResponseEnum_GOOD,
-													}},
-											}
-											if err = writeMessage(request.Context(), c, resp); err != nil {
-												fmt.Println("Could not send unsubscribe response to Edge Router:", err)
-											}
-										}
-										break
-									}
-								}
-
+							if err = handleUnsubscribe(mmtpMessage, subMu, subs, agent, request, c, outgoingChannel); err != nil {
+								fmt.Println("Failed handling Unsubscribe message:", err)
 							}
 							break
 						}
 					case mmtp.ProtocolMessageType_SEND_MESSAGE:
 						{
-							if send := protoMessage.GetSendMessage(); send != nil {
-								outgoingChannel <- mmtpMessage
-								header := send.GetApplicationMessage().GetHeader()
-								if len(header.GetRecipients().GetRecipients()) > 0 {
-									mrnToAgentMu.RLock()
-									for _, recipient := range header.GetRecipients().Recipients {
-										a, exists := mrnToAgent[recipient]
-										if exists && a.directMessages {
-											if err = a.QueueMessage(mmtpMessage); err != nil {
-												fmt.Println("Could not queue message to agent:", err)
-											}
-										}
-									}
-									mrnToAgentMu.RUnlock()
-								} else if header.GetSubject() != "" {
-									subMu.RLock()
-									sub, exists := subs[header.GetSubject()]
-									if exists {
-										for _, subscriber := range sub.Subscribers {
-											if subscriber.Mrn != agent.Mrn {
-												if err = subscriber.QueueMessage(mmtpMessage); err != nil {
-													fmt.Println("Could not queue message to agent:", err)
-												}
-											}
-										}
-									}
-									subMu.RUnlock()
-								}
-							}
+							handleSend(mmtpMessage, outgoingChannel, request, c, signatureAlgorithm, mrnToAgent, mrnToAgentMu, subMu, subs, agent)
 							break
 						}
 					case mmtp.ProtocolMessageType_RECEIVE_MESSAGE:
 						{
-							if receive := protoMessage.GetReceiveMessage(); receive != nil {
-								if msgUuids := receive.GetFilter().GetMessageUuids(); msgUuids != nil {
-									msgsLen := len(msgUuids)
-									mmtpMessages := make([]*mmtp.MmtpMessage, 0, msgsLen)
-									appMsgs := make([]*mmtp.ApplicationMessage, 0, msgsLen)
-									agent.msgMu.Lock()
-									for _, msgUuid := range msgUuids {
-										msg := agent.Messages[msgUuid].GetProtocolMessage().GetSendMessage().GetApplicationMessage()
-										appMsgs = append(appMsgs, msg)
-										delete(agent.Messages, msgUuid)
-									}
-									agent.msgMu.Unlock()
-									resp = &mmtp.MmtpMessage{
-										MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
-										Uuid:    uuid.NewString(),
-										Body: &mmtp.MmtpMessage_ResponseMessage{ResponseMessage: &mmtp.ResponseMessage{
-											ResponseToUuid:      mmtpMessage.GetUuid(),
-											Response:            mmtp.ResponseEnum_GOOD,
-											ApplicationMessages: appMsgs,
-										}},
-									}
-									err = writeMessage(request.Context(), c, resp)
-									if err != nil {
-										fmt.Println("Could not send messages to Edge Router:", err)
-										agent.BulkQueueMessages(mmtpMessages)
-									}
-								} else { // Receive all messages
-									agent.msgMu.Lock()
-									msgsLen := len(agent.Messages)
-									appMsgs := make([]*mmtp.ApplicationMessage, 0, msgsLen)
-									for _, mmtpMsg := range agent.Messages {
-										msg := mmtpMsg.GetProtocolMessage().GetSendMessage().GetApplicationMessage()
-										appMsgs = append(appMsgs, msg)
-									}
-									resp = &mmtp.MmtpMessage{
-										MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
-										Uuid:    uuid.NewString(),
-										Body: &mmtp.MmtpMessage_ResponseMessage{ResponseMessage: &mmtp.ResponseMessage{
-											ResponseToUuid:      mmtpMessage.GetUuid(),
-											Response:            mmtp.ResponseEnum_GOOD,
-											ApplicationMessages: appMsgs,
-										}},
-									}
-									err = writeMessage(request.Context(), c, resp)
-									if err != nil {
-										fmt.Println("Could not send messages to Edge Router:", err)
-									} else {
-										agent.Messages = make(map[string]*mmtp.MmtpMessage)
-									}
-									agent.msgMu.Unlock()
-								}
+							if err = handleReceive(mmtpMessage, agent, request, c); err != nil {
+								fmt.Println("Failed handling Receive message:", err)
 							}
 							break
 						}
 					case mmtp.ProtocolMessageType_FETCH_MESSAGE:
 						{
-							if fetch := protoMessage.GetFetchMessage(); fetch != nil {
-								agent.msgMu.RLock()
-								metadata := make([]*mmtp.MessageMetadata, 0, len(agent.Messages))
-								for _, msg := range agent.Messages {
-									msgHeader := msg.GetProtocolMessage().GetSendMessage().GetApplicationMessage().GetHeader()
-									msgMetadata := &mmtp.MessageMetadata{
-										Uuid:   msg.GetUuid(),
-										Header: msgHeader,
-									}
-									metadata = append(metadata, msgMetadata)
-								}
-								agent.msgMu.RUnlock()
-								resp = &mmtp.MmtpMessage{
-									MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
-									Uuid:    uuid.NewString(),
-									Body: &mmtp.MmtpMessage_ResponseMessage{
-										ResponseMessage: &mmtp.ResponseMessage{
-											ResponseToUuid:  mmtpMessage.GetUuid(),
-											Response:        mmtp.ResponseEnum_GOOD,
-											MessageMetadata: metadata,
-										}},
-								}
-								err = writeMessage(request.Context(), c, resp)
-								if err != nil {
-									fmt.Println("Could not send fetch response to Edge Router:", err)
-								}
+							if err = handleFetch(mmtpMessage, agent, request, c); err != nil {
+								fmt.Println("Failed handling Fetch message:", err)
 							}
 							break
 						}
 					case mmtp.ProtocolMessageType_DISCONNECT_MESSAGE:
 						{
-							if disconnect := protoMessage.GetDisconnectMessage(); disconnect != nil {
-								resp = &mmtp.MmtpMessage{
-									MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
-									Uuid:    uuid.NewString(),
-									Body: &mmtp.MmtpMessage_ResponseMessage{
-										ResponseMessage: &mmtp.ResponseMessage{
-											ResponseToUuid: mmtpMessage.GetUuid(),
-											Response:       mmtp.ResponseEnum_GOOD,
-										}},
-								}
-								if err = writeMessage(request.Context(), c, resp); err != nil {
-									fmt.Println("Could not send disconnect response to Edge Router:", err)
-								}
-
-								if err = c.Close(websocket.StatusNormalClosure, "Closed connection after receiving Disconnect message"); err != nil {
-									fmt.Println("Websocket could not be closed cleanly:", err)
-									return
-								}
+							if err = handleDisconnect(mmtpMessage, request, c); err != nil {
+								fmt.Println("Failed handling Disconnect message:", err)
 							}
 							break
 						}
 					case mmtp.ProtocolMessageType_CONNECT_MESSAGE:
 						{
-							reason := "Already connected"
-							resp = &mmtp.MmtpMessage{
-								MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
-								Uuid:    uuid.NewString(),
-								Body: &mmtp.MmtpMessage_ResponseMessage{
-									ResponseMessage: &mmtp.ResponseMessage{
-										ResponseToUuid: mmtpMessage.GetUuid(),
-										Response:       mmtp.ResponseEnum_ERROR,
-										ReasonText:     &reason,
-									}},
-							}
-							if err = writeMessage(request.Context(), c, resp); err != nil {
-								fmt.Println("Could not send error response:", err)
-							}
+							sendErrorMessage(mmtpMessage.GetUuid(), "Already connected", request.Context(), c)
 							break
 						}
 					default:
@@ -811,6 +519,381 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 	}
 }
 
+func handleSubscribe(mmtpMessage *mmtp.MmtpMessage, agent *Agent, subMu *sync.RWMutex, subs map[string]*Subscription, outgoingChannel chan<- *mmtp.MmtpMessage, request *http.Request, c *websocket.Conn) error {
+	if subscribe := mmtpMessage.GetProtocolMessage().GetSubscribeMessage(); subscribe != nil {
+		switch subscribe.GetSubjectOrDirectMessages().(type) {
+		case *mmtp.Subscribe_Subject:
+			return handleSubscribeSubject(mmtpMessage, agent, subMu, subs, outgoingChannel, request, c)
+		case *mmtp.Subscribe_DirectMessages:
+			return handleSubscribeDirect(mmtpMessage, agent, subscribe, request, c, outgoingChannel)
+		}
+	}
+	return fmt.Errorf("something went wrong while handling subscribe message")
+}
+
+func handleSubscribeSubject(mmtpMessage *mmtp.MmtpMessage, agent *Agent, subMu *sync.RWMutex, subs map[string]*Subscription, outgoingChannel chan<- *mmtp.MmtpMessage, request *http.Request, c *websocket.Conn) error {
+	subject := mmtpMessage.GetProtocolMessage().GetSubscribeMessage().GetSubject()
+	if subject == "" {
+		sendErrorMessage(mmtpMessage.GetUuid(), "Cannot subscribe to empty subject", request.Context(), c)
+		return nil
+	}
+	subMu.Lock()
+	sub, exists := subs[subject]
+	if !exists {
+		sub = NewSubscription(subject)
+		sub.AddSubscriber(agent)
+		subs[subject] = sub
+		outgoingChannel <- mmtpMessage
+	} else {
+		sub.AddSubscriber(agent)
+	}
+	subMu.Unlock()
+	agent.Interests = append(agent.Interests, subject)
+
+	resp := &mmtp.MmtpMessage{
+		MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+		Uuid:    uuid.NewString(),
+		Body: &mmtp.MmtpMessage_ResponseMessage{
+			ResponseMessage: &mmtp.ResponseMessage{
+				ResponseToUuid: mmtpMessage.GetUuid(),
+				Response:       mmtp.ResponseEnum_GOOD,
+			}},
+	}
+	if err := writeMessage(request.Context(), c, resp); err != nil {
+		return fmt.Errorf("could not send subscribe response to Edge Router: %w", err)
+	}
+	return nil
+}
+
+func handleSubscribeDirect(mmtpMessage *mmtp.MmtpMessage, agent *Agent, subscribe *mmtp.Subscribe, request *http.Request, c *websocket.Conn, outgoingChannel chan<- *mmtp.MmtpMessage) error {
+	directMessages := subscribe.GetDirectMessages()
+	if !directMessages {
+		sendErrorMessage(mmtpMessage.GetUuid(), "The directMessages flag needs to be true to be able to subscribe to direct messages", request.Context(), c)
+		return nil
+	}
+	if (agent.Mrn == "") || (len(request.TLS.PeerCertificates) == 0) {
+		sendErrorMessage(mmtpMessage.GetUuid(), "You need to be authenticated to be able to subscribe to direct messages", request.Context(), c)
+		return nil
+	}
+	// Subscribe on direct messages to the Agent
+	sub := &mmtp.MmtpMessage{
+		MsgType: mmtp.MsgType_PROTOCOL_MESSAGE,
+		Uuid:    uuid.NewString(),
+		Body: &mmtp.MmtpMessage_ProtocolMessage{
+			ProtocolMessage: &mmtp.ProtocolMessage{
+				ProtocolMsgType: mmtp.ProtocolMessageType_SUBSCRIBE_MESSAGE,
+				Body: &mmtp.ProtocolMessage_SubscribeMessage{
+					SubscribeMessage: &mmtp.Subscribe{
+						SubjectOrDirectMessages: &mmtp.Subscribe_Subject{
+							Subject: agent.Mrn,
+						},
+					},
+				},
+			},
+		},
+	}
+	outgoingChannel <- sub
+
+	agent.directMessages = true
+
+	resp := &mmtp.MmtpMessage{
+		MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+		Uuid:    uuid.NewString(),
+		Body: &mmtp.MmtpMessage_ResponseMessage{
+			ResponseMessage: &mmtp.ResponseMessage{
+				ResponseToUuid: mmtpMessage.GetUuid(),
+				Response:       mmtp.ResponseEnum_GOOD,
+			}},
+	}
+	if err := writeMessage(request.Context(), c, resp); err != nil {
+		return fmt.Errorf("could not send subscribe response to Edge Router: %w", err)
+	}
+	return nil
+}
+
+func handleUnsubscribe(mmtpMessage *mmtp.MmtpMessage, subMu *sync.RWMutex, subs map[string]*Subscription, agent *Agent, request *http.Request, c *websocket.Conn, outgoingChannel chan<- *mmtp.MmtpMessage) error {
+	if unsubscribe := mmtpMessage.GetProtocolMessage().GetUnsubscribeMessage(); unsubscribe != nil {
+		switch unsubscribe.GetSubjectOrDirectMessages().(type) {
+		case *mmtp.Unsubscribe_Subject:
+			return handleUnsubscribeSubject(mmtpMessage, subMu, subs, agent, request, c, unsubscribe)
+		case *mmtp.Unsubscribe_DirectMessages:
+			return handleUnsubscribeDirect(mmtpMessage, unsubscribe, request, c, outgoingChannel, agent)
+		}
+	}
+	return fmt.Errorf("something went wrong while handling unsubscribe message")
+}
+
+func handleUnsubscribeSubject(mmtpMessage *mmtp.MmtpMessage, subMu *sync.RWMutex, subs map[string]*Subscription, agent *Agent, request *http.Request, c *websocket.Conn, unsubscribe *mmtp.Unsubscribe) error {
+	subject := unsubscribe.GetSubject()
+	if subject == "" {
+		reasonText := "Tried to unsubscribe to empty subject"
+		sendErrorMessage(mmtpMessage.GetUuid(), reasonText, request.Context(), c)
+		return nil
+	}
+	subMu.Lock()
+	sub, exists := subs[subject]
+	if exists {
+		sub.DeleteSubscriber(agent)
+	}
+	subMu.Unlock()
+	interests := agent.Interests
+	for i := range interests {
+		if strings.EqualFold(subject, interests[i]) {
+			interests[i] = interests[len(interests)-1]
+			interests[len(interests)-1] = ""
+			interests = interests[:len(interests)-1]
+			agent.Interests = interests
+			break
+		}
+	}
+	resp := &mmtp.MmtpMessage{
+		MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+		Uuid:    uuid.NewString(),
+		Body: &mmtp.MmtpMessage_ResponseMessage{
+			ResponseMessage: &mmtp.ResponseMessage{
+				ResponseToUuid: mmtpMessage.GetUuid(),
+				Response:       mmtp.ResponseEnum_GOOD,
+			}},
+	}
+	if err := writeMessage(request.Context(), c, resp); err != nil {
+		return fmt.Errorf("could not write response to unsubscribe message: %w", err)
+	}
+	return nil
+}
+
+func handleUnsubscribeDirect(mmtpMessage *mmtp.MmtpMessage, unsubscribe *mmtp.Unsubscribe, request *http.Request, c *websocket.Conn, outgoingChannel chan<- *mmtp.MmtpMessage, agent *Agent) error {
+	directMessages := unsubscribe.GetDirectMessages()
+	if !directMessages {
+		reason := "The directMessages flag needs to be true to be able to unsubscribe from direct messages"
+		sendErrorMessage(mmtpMessage.GetUuid(), reason, request.Context(), c)
+		return nil
+	}
+	if agent.Mrn != "" {
+		unsub := &mmtp.MmtpMessage{
+			MsgType: mmtp.MsgType_PROTOCOL_MESSAGE,
+			Uuid:    uuid.NewString(),
+			Body: &mmtp.MmtpMessage_ProtocolMessage{
+				ProtocolMessage: &mmtp.ProtocolMessage{
+					ProtocolMsgType: mmtp.ProtocolMessageType_UNSUBSCRIBE_MESSAGE,
+					Body: &mmtp.ProtocolMessage_UnsubscribeMessage{
+						UnsubscribeMessage: &mmtp.Unsubscribe{
+							SubjectOrDirectMessages: &mmtp.Unsubscribe_Subject{
+								Subject: agent.Mrn,
+							},
+						},
+					},
+				},
+			},
+		}
+		outgoingChannel <- unsub
+
+		agent.directMessages = false
+
+		resp := &mmtp.MmtpMessage{
+			MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+			Uuid:    uuid.NewString(),
+			Body: &mmtp.MmtpMessage_ResponseMessage{
+				ResponseMessage: &mmtp.ResponseMessage{
+					ResponseToUuid: mmtpMessage.GetUuid(),
+					Response:       mmtp.ResponseEnum_GOOD,
+				}},
+		}
+		if err := writeMessage(request.Context(), c, resp); err != nil {
+			return fmt.Errorf("could not send unsubscribe response to Agent: %w", err)
+		}
+	}
+	return nil
+}
+
+func handleSend(mmtpMessage *mmtp.MmtpMessage, outgoingChannel chan<- *mmtp.MmtpMessage, request *http.Request, c *websocket.Conn, signatureAlgorithm x509.SignatureAlgorithm, mrnToAgent map[string]*Agent, mrnToAgentMu *sync.RWMutex, subMu *sync.RWMutex, subs map[string]*Subscription, agent *Agent) {
+	if send := mmtpMessage.GetProtocolMessage().GetSendMessage(); send != nil {
+		if (len(request.TLS.PeerCertificates) == 0) || (agent.Mrn == "") {
+			sendErrorMessage(mmtpMessage.GetUuid(), "Unauthenticated agents cannot send messages", request.Context(), c)
+			return
+		}
+		err := verifySignatureOnMessage(mmtpMessage, signatureAlgorithm, request)
+		if err != nil {
+			fmt.Println("Verification of signature on message failed:", err)
+			return
+		}
+
+		outgoingChannel <- mmtpMessage
+		header := send.GetApplicationMessage().GetHeader()
+		if len(header.GetRecipients().GetRecipients()) > 0 {
+			mrnToAgentMu.RLock()
+			for _, recipient := range header.GetRecipients().Recipients {
+				a, exists := mrnToAgent[recipient]
+				if exists && a.directMessages {
+					if err = a.QueueMessage(mmtpMessage); err != nil {
+						fmt.Println("Could not queue message to agent:", err)
+					}
+				}
+			}
+			mrnToAgentMu.RUnlock()
+		} else if header.GetSubject() != "" {
+			subMu.RLock()
+			sub, exists := subs[header.GetSubject()]
+			if exists {
+				for _, subscriber := range sub.Subscribers {
+					if subscriber.Mrn != agent.Mrn {
+						if err = subscriber.QueueMessage(mmtpMessage); err != nil {
+							fmt.Println("Could not queue message to agent:", err)
+						}
+					}
+				}
+			}
+			subMu.RUnlock()
+		}
+	}
+}
+
+func verifySignatureOnMessage(mmtpMessage *mmtp.MmtpMessage, signatureAlgorithm x509.SignatureAlgorithm, request *http.Request) error {
+	appMessage := mmtpMessage.GetProtocolMessage().GetSendMessage().GetApplicationMessage()
+
+	// verify signature on message
+	signatureBytes := make([]byte, hex.DecodedLen(len(appMessage.GetSignature())))
+	n, err := hex.Decode(signatureBytes, []byte(appMessage.GetSignature()))
+	if err != nil {
+		return fmt.Errorf("signature on message could not be decoded: %w", err)
+	}
+	signatureBytes = signatureBytes[:n]
+
+	if signatureAlgorithm == x509.UnknownSignatureAlgorithm {
+		return fmt.Errorf("a suitable signature algorithm could not be found for verifying signature on message")
+	}
+
+	if err = request.TLS.PeerCertificates[0].CheckSignature(signatureAlgorithm, appMessage.GetBody(), signatureBytes); err != nil {
+		// return an error saying that the signature is not valid over the body of the message
+		return fmt.Errorf("the signature on the message could not be verified: %w", err)
+	}
+	return nil
+}
+
+func handleReceive(mmtpMessage *mmtp.MmtpMessage, agent *Agent, request *http.Request, c *websocket.Conn) error {
+	if receive := mmtpMessage.GetProtocolMessage().GetReceiveMessage(); receive != nil {
+		if msgUuids := receive.GetFilter().GetMessageUuids(); msgUuids != nil {
+			msgsLen := len(msgUuids)
+			mmtpMessages := make([]*mmtp.MmtpMessage, 0, msgsLen)
+			appMsgs := make([]*mmtp.ApplicationMessage, 0, msgsLen)
+			agent.msgMu.Lock()
+			for _, msgUuid := range msgUuids {
+				msg := agent.Messages[msgUuid].GetProtocolMessage().GetSendMessage().GetApplicationMessage()
+				appMsgs = append(appMsgs, msg)
+				delete(agent.Messages, msgUuid)
+			}
+			agent.msgMu.Unlock()
+			resp := &mmtp.MmtpMessage{
+				MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+				Uuid:    uuid.NewString(),
+				Body: &mmtp.MmtpMessage_ResponseMessage{ResponseMessage: &mmtp.ResponseMessage{
+					ResponseToUuid:      mmtpMessage.GetUuid(),
+					Response:            mmtp.ResponseEnum_GOOD,
+					ApplicationMessages: appMsgs,
+				}},
+			}
+			err := writeMessage(request.Context(), c, resp)
+			if err != nil {
+				agent.BulkQueueMessages(mmtpMessages)
+				return fmt.Errorf("could not send messages to Agent: %w", err)
+			}
+		} else { // Receive all messages
+			agent.msgMu.Lock()
+			msgsLen := len(agent.Messages)
+			appMsgs := make([]*mmtp.ApplicationMessage, 0, msgsLen)
+			for _, mmtpMsg := range agent.Messages {
+				msg := mmtpMsg.GetProtocolMessage().GetSendMessage().GetApplicationMessage()
+				appMsgs = append(appMsgs, msg)
+			}
+			resp := &mmtp.MmtpMessage{
+				MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+				Uuid:    uuid.NewString(),
+				Body: &mmtp.MmtpMessage_ResponseMessage{ResponseMessage: &mmtp.ResponseMessage{
+					ResponseToUuid:      mmtpMessage.GetUuid(),
+					Response:            mmtp.ResponseEnum_GOOD,
+					ApplicationMessages: appMsgs,
+				}},
+			}
+			defer agent.msgMu.Unlock()
+			err := writeMessage(request.Context(), c, resp)
+			if err != nil {
+				return fmt.Errorf("could not send messages to Agent: %w", err)
+			} else {
+				agent.Messages = make(map[string]*mmtp.MmtpMessage)
+			}
+		}
+	}
+	return nil
+}
+
+func handleFetch(mmtpMessage *mmtp.MmtpMessage, agent *Agent, request *http.Request, c *websocket.Conn) error {
+	if fetch := mmtpMessage.GetProtocolMessage().GetFetchMessage(); fetch != nil {
+		agent.msgMu.RLock()
+		metadata := make([]*mmtp.MessageMetadata, 0, len(agent.Messages))
+		for _, msg := range agent.Messages {
+			msgHeader := msg.GetProtocolMessage().GetSendMessage().GetApplicationMessage().GetHeader()
+			msgMetadata := &mmtp.MessageMetadata{
+				Uuid:   msg.GetUuid(),
+				Header: msgHeader,
+			}
+			metadata = append(metadata, msgMetadata)
+		}
+		agent.msgMu.RUnlock()
+		resp := &mmtp.MmtpMessage{
+			MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+			Uuid:    uuid.NewString(),
+			Body: &mmtp.MmtpMessage_ResponseMessage{
+				ResponseMessage: &mmtp.ResponseMessage{
+					ResponseToUuid:  mmtpMessage.GetUuid(),
+					Response:        mmtp.ResponseEnum_GOOD,
+					MessageMetadata: metadata,
+				}},
+		}
+		err := writeMessage(request.Context(), c, resp)
+		if err != nil {
+			return fmt.Errorf("could not send fetch response to Edge Router: %w", err)
+		}
+	}
+	return nil
+}
+
+func handleDisconnect(mmtpMessage *mmtp.MmtpMessage, request *http.Request, c *websocket.Conn) error {
+	if disconnect := mmtpMessage.GetProtocolMessage().GetDisconnectMessage(); disconnect != nil {
+		resp := &mmtp.MmtpMessage{
+			MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+			Uuid:    uuid.NewString(),
+			Body: &mmtp.MmtpMessage_ResponseMessage{
+				ResponseMessage: &mmtp.ResponseMessage{
+					ResponseToUuid: mmtpMessage.GetUuid(),
+					Response:       mmtp.ResponseEnum_GOOD,
+				}},
+		}
+		if err := writeMessage(request.Context(), c, resp); err != nil {
+			return fmt.Errorf("could not send disconnect response to Edge Router: %w", err)
+		}
+
+		if err := c.Close(websocket.StatusNormalClosure, "Closed connection after receiving Disconnect message"); err != nil {
+			return fmt.Errorf("websocket could not be closed cleanly: %w", err)
+		}
+	}
+	return nil
+}
+
+func sendErrorMessage(uid string, errorText string, ctx context.Context, c *websocket.Conn) {
+	resp := &mmtp.MmtpMessage{
+		MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+		Uuid:    uuid.NewString(),
+		Body: &mmtp.MmtpMessage_ResponseMessage{
+			ResponseMessage: &mmtp.ResponseMessage{
+				ResponseToUuid: uid,
+				Response:       mmtp.ResponseEnum_ERROR,
+				ReasonText:     &errorText,
+			}},
+	}
+	if err := writeMessage(ctx, c, resp); err != nil {
+		fmt.Println("Could not send error response:", err)
+	}
+}
+
 func verifyAgentCertificate() func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
 	return func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
 		// we did not receive a certificate from the client, so we just return early
@@ -823,60 +906,14 @@ func verifyAgentCertificate() func(rawCerts [][]byte, verifiedChains [][]*x509.C
 
 		httpClient := http.DefaultClient
 		if len(clientCert.OCSPServer) > 0 {
-			ocspUrl := clientCert.OCSPServer[0]
-			ocspReq, err := ocsp.CreateRequest(clientCert, issuingCert, nil)
+			err := performOCSPCheck(clientCert, issuingCert, httpClient)
 			if err != nil {
-				return fmt.Errorf("could not create OCSP request for the given client cert: %w", err)
-			}
-			resp, err := httpClient.Post(ocspUrl, "application/ocsp-request", bytes.NewBuffer(ocspReq))
-			if err != nil {
-				return fmt.Errorf("could not send OCSP request: %w", err)
-			}
-			respBytes, err := io.ReadAll(resp.Body)
-			if err != nil {
-				return fmt.Errorf("getting OCSP response failed: %w", err)
-			}
-			if err = resp.Body.Close(); err != nil {
-				return fmt.Errorf("could not close response body: %w", err)
-			}
-			ocspResp, err := ocsp.ParseResponse(respBytes, nil)
-			if err != nil {
-				return fmt.Errorf("parsing OCSP response failed: %w", err)
-			}
-			if ocspResp.SerialNumber.Cmp(clientCert.SerialNumber) != 0 {
-				return fmt.Errorf("the serial number in the OCSP response does not correspond to the serial number of the certificate being checked")
-			}
-			if err = ocspResp.CheckSignatureFrom(issuingCert); err != nil {
-				return fmt.Errorf("the signature on the OCSP response is not valid: %w", err)
-			}
-			if ocspResp.Status != ocsp.Good {
-				return fmt.Errorf("the given client certificate has been revoked")
+				return err
 			}
 		} else if len(clientCert.CRLDistributionPoints) > 0 {
-			crlURL := clientCert.CRLDistributionPoints[0]
-			resp, err := httpClient.Get(crlURL)
+			err := performCRLCheck(clientCert, httpClient, issuingCert)
 			if err != nil {
-				return fmt.Errorf("could not send CRL request: %w", err)
-			}
-			respBody, err := io.ReadAll(resp.Body)
-			if err != nil {
-				return fmt.Errorf("getting CRL response body failed: %w", err)
-			}
-			if err = resp.Body.Close(); err != nil {
-				return fmt.Errorf("failed to close CRL response: %w body", err)
-			}
-			crl, err := x509.ParseRevocationList(respBody)
-			if err != nil {
-				return fmt.Errorf("could not parse received CRL: %w", err)
-			}
-			if err = crl.CheckSignatureFrom(issuingCert); err != nil {
-				return fmt.Errorf("signature on CRL is not valid: %w", err)
-			}
-			now := time.Now().UTC()
-			for _, rev := range crl.RevokedCertificateEntries {
-				if (rev.SerialNumber.Cmp(clientCert.SerialNumber) == 0) && (rev.RevocationTime.UTC().Before(now)) {
-					return fmt.Errorf("the given client certificate has been revoked")
-				}
+				return err
 			}
 		} else {
 			return fmt.Errorf("was not able to check revocation status of client certificate")
@@ -884,6 +921,73 @@ func verifyAgentCertificate() func(rawCerts [][]byte, verifiedChains [][]*x509.C
 
 		return nil
 	}
+}
+
+func performOCSPCheck(clientCert *x509.Certificate, issuingCert *x509.Certificate, httpClient *http.Client) error {
+	ocspUrl := clientCert.OCSPServer[0]
+	ocspReq, err := ocsp.CreateRequest(clientCert, issuingCert, nil)
+	if err != nil {
+		return fmt.Errorf("could not create OCSP request for the given client cert: %w", err)
+	}
+	resp, err := httpClient.Post(ocspUrl, "application/ocsp-request", bytes.NewBuffer(ocspReq))
+	if err != nil {
+		return fmt.Errorf("could not send OCSP request: %w", err)
+	}
+	respBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("getting OCSP response failed: %w", err)
+	}
+	if err = resp.Body.Close(); err != nil {
+		return fmt.Errorf("could not close response body: %w", err)
+	}
+	ocspResp, err := ocsp.ParseResponse(respBytes, nil)
+	if err != nil {
+		return fmt.Errorf("parsing OCSP response failed: %w", err)
+	}
+	if ocspResp.SerialNumber.Cmp(clientCert.SerialNumber) != 0 {
+		return fmt.Errorf("the serial number in the OCSP response does not correspond to the serial number of the certificate being checked")
+	}
+	if ocspResp.Certificate == nil {
+		if err = ocspResp.CheckSignatureFrom(issuingCert); err != nil {
+			return fmt.Errorf("the signature on the OCSP response is not valid: %w", err)
+		}
+	}
+	if (ocspResp.Certificate != nil) && !ocspResp.Certificate.Equal(issuingCert) {
+		return fmt.Errorf("the certificate embedded in the OCSP response does not match the configured issuing CA")
+	}
+	if ocspResp.Status != ocsp.Good {
+		return fmt.Errorf("the given client certificate has been revoked")
+	}
+	return nil
+}
+
+func performCRLCheck(clientCert *x509.Certificate, httpClient *http.Client, issuingCert *x509.Certificate) error {
+	crlURL := clientCert.CRLDistributionPoints[0]
+	resp, err := httpClient.Get(crlURL)
+	if err != nil {
+		return fmt.Errorf("could not send CRL request: %w", err)
+	}
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("getting CRL response body failed: %w", err)
+	}
+	if err = resp.Body.Close(); err != nil {
+		return fmt.Errorf("failed to close CRL response: %w body", err)
+	}
+	crl, err := x509.ParseRevocationList(respBody)
+	if err != nil {
+		return fmt.Errorf("could not parse received CRL: %w", err)
+	}
+	if err = crl.CheckSignatureFrom(issuingCert); err != nil {
+		return fmt.Errorf("signature on CRL is not valid: %w", err)
+	}
+	now := time.Now().UTC()
+	for _, rev := range crl.RevokedCertificateEntries {
+		if (rev.SerialNumber.Cmp(clientCert.SerialNumber) == 0) && (rev.RevocationTime.UTC().Before(now)) {
+			return fmt.Errorf("the given client certificate has been revoked")
+		}
+	}
+	return nil
 }
 
 func handleIncomingMessages(ctx context.Context, edgeRouter *EdgeRouter, wg *sync.WaitGroup) {
@@ -1087,7 +1191,7 @@ func main() {
 			fmt.Println("Could not read the provided client certificate:", err)
 			return
 		}
-		certificates[0] = cert
+		certificates = append(certificates, cert)
 	}
 
 	httpClient := &http.Client{
@@ -1098,7 +1202,7 @@ func main() {
 		},
 	}
 
-	routerWs, _, err := websocket.Dial(ctx, *routerAddr, &websocket.DialOptions{HTTPClient: httpClient})
+	routerWs, _, err := websocket.Dial(ctx, *routerAddr, &websocket.DialOptions{HTTPClient: httpClient, CompressionMode: websocket.CompressionContextTakeover})
 	if err != nil {
 		fmt.Println("Could not connect to MMS Router:", err)
 		return
