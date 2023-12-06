@@ -222,8 +222,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 		// Set the read limit to 1 MiB instead of 32 KiB
 		c.SetReadLimit(WsReadLimit)
 
-		mmtpMessage := &mmtp.MmtpMessage{}
-		mmtpMessage, err = readMessage(ctx, c)
+		mmtpMessage, err := readMessage(ctx, c)
 		if err != nil {
 			fmt.Println("Could not read message:", err)
 			return
@@ -368,7 +367,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 					switch protoMessage.ProtocolMsgType {
 					case mmtp.ProtocolMessageType_SUBSCRIBE_MESSAGE:
 						{
-							err, errorText := handleSubscribe(mmtpMessage, subMu, subs, topicHandles, err, pubSub, e, wg, ctx, p2p, incomingChannel, request, c)
+							err, errorText := handleSubscribe(mmtpMessage, subMu, subs, topicHandles, pubSub, e, wg, ctx, p2p, incomingChannel, request, c)
 							if err != nil {
 								fmt.Println("Failed handling Subscribe message:", err)
 								sendErrorMessage(mmtpMessage.GetUuid(), errorText, request.Context(), c)
@@ -441,7 +440,7 @@ func sendErrorMessage(uid string, errorText string, ctx context.Context, c *webs
 	}
 }
 
-func handleSubscribe(mmtpMessage *mmtp.MmtpMessage, subMu *sync.RWMutex, subs map[string]*Subscription, topicHandles map[string]*pubsub.Topic, err error, pubSub *pubsub.PubSub, e *EdgeRouter, wg *sync.WaitGroup, ctx context.Context, p2p *host.Host, incomingChannel chan *mmtp.MmtpMessage, request *http.Request, c *websocket.Conn) (error, string) {
+func handleSubscribe(mmtpMessage *mmtp.MmtpMessage, subMu *sync.RWMutex, subs map[string]*Subscription, topicHandles map[string]*pubsub.Topic, pubSub *pubsub.PubSub, e *EdgeRouter, wg *sync.WaitGroup, ctx context.Context, p2p *host.Host, incomingChannel chan *mmtp.MmtpMessage, request *http.Request, c *websocket.Conn) (error, string) {
 	if subscribe := mmtpMessage.GetProtocolMessage().GetSubscribeMessage(); subscribe != nil {
 		subject := subscribe.GetSubject()
 		if subject == "" {
@@ -453,11 +452,12 @@ func handleSubscribe(mmtpMessage *mmtp.MmtpMessage, subMu *sync.RWMutex, subs ma
 			sub = NewSubscription(subject)
 			topic, ok := topicHandles[subject]
 			if !ok {
-				topic, err = pubSub.Join(subject)
+				t, err := pubSub.Join(subject)
 				if err != nil {
 					subMu.Unlock()
 					return fmt.Errorf("was not able to join topic: %w", err), "Subscription failed"
 				}
+				topic = t
 				topicHandles[subject] = topic
 			}
 			sub.AddSubscriber(e)
@@ -485,11 +485,11 @@ func handleSubscribe(mmtpMessage *mmtp.MmtpMessage, subMu *sync.RWMutex, subs ma
 					Response:       mmtp.ResponseEnum_GOOD,
 				}},
 		}
-		if err = writeMessage(request.Context(), c, resp); err != nil {
+		if err := writeMessage(request.Context(), c, resp); err != nil {
 			fmt.Println("Could not send subscribe response to Edge Router:", err)
 		}
 	}
-	return err, ""
+	return nil, ""
 }
 
 func handleUnsubscribe(mmtpMessage *mmtp.MmtpMessage, subMu *sync.RWMutex, subs map[string]*Subscription, e *EdgeRouter, request *http.Request, c *websocket.Conn) error {
