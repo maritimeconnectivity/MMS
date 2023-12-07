@@ -26,7 +26,7 @@ import (
 	"flag"
 	"fmt"
 	"github.com/google/uuid"
-	"github.com/hashicorp/mdns"
+	"github.com/libp2p/zeroconf/v2"
 	"github.com/maritimeconnectivity/MMS/mmtp"
 	"golang.org/x/crypto/ocsp"
 	"google.golang.org/protobuf/proto"
@@ -1222,28 +1222,12 @@ func main() {
 	wg.Add(1)
 	go er.StartEdgeRouter(ctx, wg, certPath, certKeyPath)
 
-	hst, err := os.Hostname()
-	if err != nil {
-		fmt.Println("Could not get hostname, shutting down", err)
-		ch <- os.Interrupt
-	}
-	info := []string{"MMS Edge Router"}
-	mdnsService, err := mdns.NewMDNSService(hst, "_mms-edgerouter._tcp", "", "", *listeningPort, nil, info)
+	mdnsServer, err := zeroconf.Register("MMS Edge Router", "_mms-edgerouter._tcp", "local.", *listeningPort, nil, nil)
 	if err != nil {
 		fmt.Println("Could not create mDNS service, shutting down", err)
 		ch <- os.Interrupt
 	}
-	mdnsServer, err := mdns.NewServer(&mdns.Config{Zone: mdnsService})
-	if err != nil {
-		fmt.Println("Could not create mDNS server, shutting down", err)
-		ch <- os.Interrupt
-	}
-	defer func(mdnsServer *mdns.Server) {
-		err := mdnsServer.Shutdown()
-		if err != nil {
-			fmt.Println("Shutting down mDNS server failed", err)
-		}
-	}(mdnsServer)
+	defer mdnsServer.Shutdown()
 
 	<-ch
 	fmt.Println("Received signal, shutting down...")
