@@ -176,7 +176,7 @@ func NewMMSRouter(p2p *host.Host, pubSub *pubsub.PubSub, listeningAddr string, i
 
 func (r *MMSRouter) StartRouter(ctx context.Context, wg *sync.WaitGroup, certPath *string, certKeyPath *string) {
 	fmt.Println("Starting MMS Router")
-	wg.Add(3)
+	wg.Add(4)
 	go func() {
 		fmt.Println("Websocket listening on:", r.httpServer.Addr)
 		if *certPath != "" && *certKeyPath != "" {
@@ -192,6 +192,7 @@ func (r *MMSRouter) StartRouter(ctx context.Context, wg *sync.WaitGroup, certPat
 	}()
 	go handleIncomingMessages(ctx, r, wg)
 	go handleOutgoingMessages(ctx, r, wg)
+	go r.messageGC(ctx, wg)
 	<-ctx.Done()
 	fmt.Println("Shutting down MMS router")
 	close(r.incomingChannel)
@@ -200,6 +201,31 @@ func (r *MMSRouter) StartRouter(ctx context.Context, wg *sync.WaitGroup, certPat
 		fmt.Println(err)
 	}
 	wg.Done()
+}
+
+// Function for garbage collection of expired messages
+func (r *MMSRouter) messageGC(ctx context.Context, wg *sync.WaitGroup) {
+	defer wg.Done()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(10 * time.Minute): // run every 10 minutes
+			r.erMu.RLock()
+			now := time.Now().UTC()
+			for _, er := range r.edgeRouters {
+				er.msgMu.Lock()
+				for _, m := range er.Messages {
+					expires := m.GetProtocolMessage().GetSendMessage().GetApplicationMessage().GetHeader().GetExpires()
+					if (expires <= 0) || now.After(time.UnixMilli(expires)) {
+						delete(er.Messages, m.Uuid)
+					}
+				}
+				er.msgMu.Unlock()
+			}
+			r.erMu.RUnlock()
+		}
+	}
 }
 
 func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel chan *mmtp.MmtpMessage, outgoingChannel chan<- *mmtp.MmtpMessage, subs map[string]*Subscription, subMu *sync.RWMutex, edgeRouters map[string]*EdgeRouter, erMu *sync.RWMutex, topicHandles map[string]*pubsub.Topic, ctx context.Context, wg *sync.WaitGroup) http.HandlerFunc {

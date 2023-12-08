@@ -211,7 +211,7 @@ func (er *EdgeRouter) StartEdgeRouter(ctx context.Context, wg *sync.WaitGroup, c
 
 	// TODO store reconnect token and handle reconnection in case of disconnect
 
-	wg.Add(3)
+	wg.Add(4)
 	go func() {
 		fmt.Println("Websocket listening on:", er.httpServer.Addr)
 		if *certPath != "" && *certKeyPath != "" {
@@ -228,6 +228,7 @@ func (er *EdgeRouter) StartEdgeRouter(ctx context.Context, wg *sync.WaitGroup, c
 
 	go handleIncomingMessages(ctx, er, wg)
 	go handleOutgoingMessages(ctx, er, wg)
+	go er.messageGC(ctx, wg)
 
 	<-ctx.Done()
 	fmt.Println("Shutting down edge router")
@@ -258,6 +259,31 @@ func (er *EdgeRouter) StartEdgeRouter(ctx context.Context, wg *sync.WaitGroup, c
 		fmt.Println(err)
 	}
 	er.routerConnMu.Unlock()
+}
+
+// Function for garbage collection of expired messages
+func (er *EdgeRouter) messageGC(ctx context.Context, wg *sync.WaitGroup) {
+	defer wg.Done()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(10 * time.Minute): // run every 10 minutes
+			er.agentsMu.RLock()
+			now := time.Now().UTC()
+			for _, a := range er.agents {
+				a.msgMu.Lock()
+				for _, m := range a.Messages {
+					expires := m.GetProtocolMessage().GetSendMessage().GetApplicationMessage().GetHeader().GetExpires()
+					if (expires <= 0) || now.After(time.UnixMilli(expires)) {
+						delete(a.Messages, m.Uuid)
+					}
+				}
+				a.msgMu.Unlock()
+			}
+			er.agentsMu.RUnlock()
+		}
+	}
 }
 
 func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[string]*Subscription, subMu *sync.RWMutex, agents map[string]*Agent, agentsMu *sync.RWMutex, mrnToAgent map[string]*Agent, mrnToAgentMu *sync.RWMutex, ctx context.Context, wg *sync.WaitGroup) http.HandlerFunc {
@@ -991,9 +1017,7 @@ func performCRLCheck(clientCert *x509.Certificate, httpClient *http.Client, issu
 }
 
 func handleIncomingMessages(ctx context.Context, edgeRouter *EdgeRouter, wg *sync.WaitGroup) {
-	defer func() {
-		wg.Done()
-	}()
+	defer wg.Done()
 	for {
 		select {
 		case <-ctx.Done():
