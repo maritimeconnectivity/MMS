@@ -998,7 +998,7 @@ func performCRLCheck(clientCert *x509.Certificate, httpClient *http.Client, issu
 		return fmt.Errorf("getting CRL response body failed: %w", err)
 	}
 	if err = resp.Body.Close(); err != nil {
-		return fmt.Errorf("failed to close CRL response: %w body", err)
+		return fmt.Errorf("failed to close CRL response body: %w", err)
 	}
 	crl, err := x509.ParseRevocationList(respBody)
 	if err != nil {
