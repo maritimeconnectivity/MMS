@@ -119,7 +119,6 @@ type EdgeRouter struct {
 	outgoingChannel chan *mmtp.MmtpMessage   // channel for outgoing messages
 	routerWs        *websocket.Conn          // the websocket connection to the MMS Router
 	routerConnMu    *sync.Mutex              // a Mutex for taking a hold on the connection to the router
-	ctx             context.Context          // the main Context of the EdgeRouter
 }
 
 func NewEdgeRouter(listeningAddr string, mrn string, outgoingChannel chan *mmtp.MmtpMessage, routerWs *websocket.Conn, ctx context.Context, wg *sync.WaitGroup, clientCAs *string) (*EdgeRouter, error) {
@@ -165,7 +164,6 @@ func NewEdgeRouter(listeningAddr string, mrn string, outgoingChannel chan *mmtp.
 		outgoingChannel: outgoingChannel,
 		routerWs:        routerWs,
 		routerConnMu:    &sync.Mutex{},
-		ctx:             ctx,
 	}, nil
 }
 

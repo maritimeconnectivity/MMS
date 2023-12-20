@@ -126,7 +126,6 @@ type MMSRouter struct {
 	topicHandles    map[string]*pubsub.Topic // a map of Topic handles
 	incomingChannel chan *mmtp.MmtpMessage   // channel for incoming messages
 	outgoingChannel chan *mmtp.MmtpMessage   // channel for outgoing messages
-	ctx             context.Context          // the main Context of the MMSRouter
 }
 
 func NewMMSRouter(p2p *host.Host, pubSub *pubsub.PubSub, listeningAddr string, incomingChannel chan *mmtp.MmtpMessage, outgoingChannel chan *mmtp.MmtpMessage, ctx context.Context, wg *sync.WaitGroup, clientCAs *string) (*MMSRouter, error) {
@@ -170,7 +169,6 @@ func NewMMSRouter(p2p *host.Host, pubSub *pubsub.PubSub, listeningAddr string, i
 		topicHandles:    topicHandles,
 		incomingChannel: incomingChannel,
 		outgoingChannel: outgoingChannel,
-		ctx:             ctx,
 	}, nil
 }
 
