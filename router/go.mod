@@ -9,7 +9,7 @@ require (
 	github.com/libp2p/go-libp2p-pubsub v0.10.0
 	github.com/maritimeconnectivity/MMS/mmtp v0.0.0
 	golang.org/x/crypto v0.17.0
-	google.golang.org/protobuf v1.31.0
+	google.golang.org/protobuf v1.32.0
 	nhooyr.io/websocket v1.8.10
 )
 
