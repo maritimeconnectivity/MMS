@@ -51,7 +51,8 @@ import (
 )
 
 const (
-	WsReadLimit int64 = 1 << 20 // 1 MiB
+	WsReadLimit      int64 = 1 << 20        // 1 MiB = 1048576 B
+	MessageSizeLimit int   = 50 * (1 << 10) // 50 KiB = 51200 B
 )
 
 // EdgeRouter type representing a connected Edge Router
@@ -246,7 +247,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 		// Set the read limit to 1 MiB instead of 32 KiB
 		c.SetReadLimit(WsReadLimit)
 
-		mmtpMessage, err := readMessage(ctx, c)
+		mmtpMessage, _, err := readMessage(ctx, c)
 		if err != nil {
 			fmt.Println("Could not read message:", err)
 			return
@@ -375,7 +376,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 		}
 
 		for {
-			mmtpMessage, err = readMessage(ctx, c)
+			mmtpMessage, n, err := readMessage(ctx, c)
 			if err != nil {
 				fmt.Println("Could not receive message:", err)
 				return
@@ -407,6 +408,10 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 						}
 					case mmtp.ProtocolMessageType_SEND_MESSAGE:
 						{
+							if n > MessageSizeLimit {
+								sendErrorMessage(mmtpMessage.GetUuid(), "The message size exceeds the allowed 50 KiB", request.Context(), c)
+								break
+							}
 							handleSend(mmtpMessage, outgoingChannel, erMu, subMu, subs, e)
 							break
 						}
@@ -720,16 +725,16 @@ func handleDisconnect(mmtpMessage *mmtp.MmtpMessage, request *http.Request, c *w
 	return nil
 }
 
-func readMessage(ctx context.Context, c *websocket.Conn) (*mmtp.MmtpMessage, error) {
+func readMessage(ctx context.Context, c *websocket.Conn) (*mmtp.MmtpMessage, int, error) {
 	_, b, err := c.Read(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("could not read message from edge router: %w", err)
+		return nil, -1, fmt.Errorf("could not read message from edge router: %w", err)
 	}
 	mmtpMessage := &mmtp.MmtpMessage{}
 	if err = proto.Unmarshal(b, mmtpMessage); err != nil {
-		return nil, fmt.Errorf("could not unmarshal message: %w", err)
+		return nil, -1, fmt.Errorf("could not unmarshal message: %w", err)
 	}
-	return mmtpMessage, nil
+	return mmtpMessage, len(b), nil
 }
 
 func writeMessage(ctx context.Context, c *websocket.Conn, mmtpMessage *mmtp.MmtpMessage) error {

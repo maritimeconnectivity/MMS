@@ -42,7 +42,8 @@ import (
 )
 
 const (
-	WsReadLimit int64 = 1 << 20 // 1 MiB
+	WsReadLimit      int64 = 1 << 20        // 1 MiB = 1048576 B
+	MessageSizeLimit int   = 50 * (1 << 10) // 50 KiB = 51200 B
 )
 
 // Agent type representing a connected Edge Router
@@ -195,7 +196,7 @@ func (er *EdgeRouter) StartEdgeRouter(ctx context.Context, wg *sync.WaitGroup, c
 		return
 	}
 
-	response, err := readMessage(ctx, er.routerWs)
+	response, _, err := readMessage(ctx, er.routerWs)
 	if err != nil {
 		fmt.Println("Something went wrong while receiving response from MMS Router:", err)
 		return
@@ -248,7 +249,7 @@ func (er *EdgeRouter) StartEdgeRouter(ctx context.Context, wg *sync.WaitGroup, c
 		fmt.Println("Could not send disconnect to Router:", err)
 	}
 
-	response, err = readMessage(context.Background(), er.routerWs)
+	response, _, err = readMessage(context.Background(), er.routerWs)
 	if err != nil || response.GetResponseMessage().Response != mmtp.ResponseEnum_GOOD {
 		fmt.Println("Graceful disconnect from Router failed")
 	}
@@ -304,7 +305,7 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 		// Set the read limit to 1 MiB instead of 32 KiB
 		c.SetReadLimit(WsReadLimit)
 
-		mmtpMessage, err := readMessage(ctx, c)
+		mmtpMessage, _, err := readMessage(ctx, c)
 		if err != nil {
 			fmt.Println(err)
 			return
@@ -472,7 +473,7 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 		}
 
 		for {
-			mmtpMessage, err = readMessage(ctx, c)
+			mmtpMessage, n, err := readMessage(ctx, c)
 			if err != nil {
 				fmt.Println("Something went wrong while reading message from Agent:", err)
 				return
@@ -501,6 +502,10 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 						}
 					case mmtp.ProtocolMessageType_SEND_MESSAGE:
 						{
+							if n > MessageSizeLimit {
+								sendErrorMessage(mmtpMessage.GetUuid(), "The message size exceeds the allowed 50 KiB", request.Context(), c)
+								break
+							}
 							handleSend(mmtpMessage, outgoingChannel, request, c, signatureAlgorithm, mrnToAgent, mrnToAgentMu, subMu, subs, agent)
 							break
 						}
@@ -1040,7 +1045,7 @@ func handleIncomingMessages(ctx context.Context, edgeRouter *EdgeRouter, wg *syn
 				continue
 			}
 
-			response, err := readMessage(ctx, edgeRouter.routerWs)
+			response, _, err := readMessage(ctx, edgeRouter.routerWs)
 			edgeRouter.routerConnMu.Unlock()
 			if err != nil {
 				fmt.Println("Could not receive response from MMS Router:", err)
@@ -1138,7 +1143,7 @@ func handleOutgoingMessages(ctx context.Context, edgeRouter *EdgeRouter, wg *syn
 						protoMsgType := outgoingMessage.GetProtocolMessage().GetProtocolMsgType()
 						if protoMsgType == mmtp.ProtocolMessageType_SUBSCRIBE_MESSAGE ||
 							protoMsgType == mmtp.ProtocolMessageType_UNSUBSCRIBE_MESSAGE {
-							resp, err := readMessage(ctx, edgeRouter.routerWs)
+							resp, _, err := readMessage(ctx, edgeRouter.routerWs)
 							if err != nil {
 								fmt.Println("Could not get response from router:", err)
 								edgeRouter.outgoingChannel <- outgoingMessage
@@ -1161,16 +1166,16 @@ func handleOutgoingMessages(ctx context.Context, edgeRouter *EdgeRouter, wg *syn
 	}
 }
 
-func readMessage(ctx context.Context, c *websocket.Conn) (*mmtp.MmtpMessage, error) {
+func readMessage(ctx context.Context, c *websocket.Conn) (*mmtp.MmtpMessage, int, error) {
 	_, b, err := c.Read(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("could not read message from edge router: %w", err)
+		return nil, -1, fmt.Errorf("could not read message from edge router: %w", err)
 	}
 	mmtpMessage := &mmtp.MmtpMessage{}
 	if err = proto.Unmarshal(b, mmtpMessage); err != nil {
-		return nil, fmt.Errorf("could not unmarshal message: %w", err)
+		return nil, -1, fmt.Errorf("could not unmarshal message: %w", err)
 	}
-	return mmtpMessage, nil
+	return mmtpMessage, len(b), nil
 }
 
 func writeMessage(ctx context.Context, c *websocket.Conn, mmtpMessage *mmtp.MmtpMessage) error {
