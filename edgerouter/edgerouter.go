@@ -19,7 +19,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/ecdsa"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
@@ -148,7 +147,7 @@ func NewEdgeRouter(listeningAddr string, mrn string, outgoingChannel chan *mmtp.
 		TLSConfig: &tls.Config{
 			ClientAuth:            tls.VerifyClientCertIfGiven,
 			ClientCAs:             certPool,
-			MinVersion:            tls.VersionTLS13,
+			MinVersion:            tls.VersionTLS12,
 			VerifyPeerCertificate: verifyAgentCertificate(),
 		},
 	}

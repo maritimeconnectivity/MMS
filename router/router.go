@@ -154,7 +154,7 @@ func NewMMSRouter(p2p *host.Host, pubSub *pubsub.PubSub, listeningAddr string, i
 		TLSConfig: &tls.Config{
 			ClientAuth:            tls.RequireAndVerifyClientCert,
 			ClientCAs:             certPool, // this should come from a file containing the CAs we trust
-			MinVersion:            tls.VersionTLS13,
+			MinVersion:            tls.VersionTLS12,
 			VerifyPeerCertificate: verifyEdgeRouterCertificate(),
 		},
 	}
