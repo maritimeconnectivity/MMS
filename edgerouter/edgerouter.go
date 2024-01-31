@@ -342,40 +342,40 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 				return
 			}
 
-			pubKeyLen := 0
-
-			switch pubKey := request.TLS.PeerCertificates[0].PublicKey.(type) {
-			case ecdsa.PublicKey:
-				if pubKeyLen = pubKey.Params().BitSize; pubKeyLen < 256 {
-					if err = c.Close(websocket.StatusPolicyViolation, "The public key length of the provided client certificate cannot be less than 256 bits"); err != nil {
-						fmt.Println(err)
-					}
-					return
-				}
-				break
-			default:
-				if err = c.Close(websocket.StatusPolicyViolation, "The provided client certificate does not use an allowed public key algorithm"); err != nil {
-					fmt.Println(err)
-				}
-				return
-			}
-
-			switch pubKeyLen {
-			case 256:
-				signatureAlgorithm = x509.ECDSAWithSHA256
-				break
-			case 384:
-				signatureAlgorithm = x509.ECDSAWithSHA384
-				break
-			case 512:
-				signatureAlgorithm = x509.ECDSAWithSHA512
-				break
-			default:
-				if err = c.Close(websocket.StatusPolicyViolation, "The public key length of the provided client certificate is not supported"); err != nil {
-					fmt.Println(err)
-				}
-				return
-			}
+			//pubKeyLen := 0
+			//
+			//switch pubKey := request.TLS.PeerCertificates[0].PublicKey.(type) {
+			//case ecdsa.PublicKey:
+			//	if pubKeyLen = pubKey.Params().BitSize; pubKeyLen < 256 {
+			//		if err = c.Close(websocket.StatusPolicyViolation, "The public key length of the provided client certificate cannot be less than 256 bits"); err != nil {
+			//			fmt.Println(err)
+			//		}
+			//		return
+			//	}
+			//	break
+			//default:
+			//	if err = c.Close(websocket.StatusPolicyViolation, "The provided client certificate does not use an allowed public key algorithm"); err != nil {
+			//		fmt.Println(err)
+			//	}
+			//	return
+			//}
+			//
+			//switch pubKeyLen {
+			//case 256:
+			//	signatureAlgorithm = x509.ECDSAWithSHA256
+			//	break
+			//case 384:
+			//	signatureAlgorithm = x509.ECDSAWithSHA384
+			//	break
+			//case 512:
+			//	signatureAlgorithm = x509.ECDSAWithSHA512
+			//	break
+			//default:
+			//	if err = c.Close(websocket.StatusPolicyViolation, "The public key length of the provided client certificate is not supported"); err != nil {
+			//		fmt.Println(err)
+			//	}
+			//	return
+			//}
 
 			// https://stackoverflow.com/a/50640119
 			for _, n := range request.TLS.PeerCertificates[0].Subject.Names {
