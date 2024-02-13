@@ -22,7 +22,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/hex"
+	"encoding/base64"
 	"flag"
 	"fmt"
 	"github.com/google/uuid"
@@ -780,18 +780,36 @@ func verifySignatureOnMessage(mmtpMessage *mmtp.MmtpMessage, signatureAlgorithm 
 	appMessage := mmtpMessage.GetProtocolMessage().GetSendMessage().GetApplicationMessage()
 
 	// verify signature on message
-	signatureBytes := make([]byte, hex.DecodedLen(len(appMessage.GetSignature())))
-	n, err := hex.Decode(signatureBytes, []byte(appMessage.GetSignature()))
+	signatureBytes, err := base64.StdEncoding.DecodeString(appMessage.GetSignature())
 	if err != nil {
-		return fmt.Errorf("signature on message could not be decoded: %w", err)
+		return fmt.Errorf("signature could be not decoded from base64: %w", err)
 	}
-	signatureBytes = signatureBytes[:n]
+
+	toBeVerified := make([]byte, 0)
+	switch content := appMessage.GetHeader().GetSubjectOrRecipient().(type) {
+	case *mmtp.ApplicationMessageHeader_Subject:
+		toBeVerified = append(toBeVerified, content.Subject...)
+	case *mmtp.ApplicationMessageHeader_Recipients:
+		for _, r := range content.Recipients.GetRecipients() {
+			toBeVerified = append(toBeVerified, r...)
+		}
+	}
+
+	toBeVerified = append(toBeVerified, strconv.FormatInt(appMessage.GetHeader().GetExpires(), 10)...)
+	toBeVerified = append(toBeVerified, appMessage.GetHeader().GetSender()...)
+
+	if appMessage.GetHeader().GetQosProfile() != "" {
+		toBeVerified = append(toBeVerified, appMessage.Header.GetQosProfile()...)
+	}
+
+	toBeVerified = append(toBeVerified, strconv.Itoa(int(appMessage.GetHeader().GetBodySizeNumBytes()))...)
+	toBeVerified = append(toBeVerified, appMessage.GetBody()...)
 
 	if signatureAlgorithm == x509.UnknownSignatureAlgorithm {
 		return fmt.Errorf("a suitable signature algorithm could not be found for verifying signature on message")
 	}
 
-	if err = request.TLS.PeerCertificates[0].CheckSignature(signatureAlgorithm, appMessage.GetBody(), signatureBytes); err != nil {
+	if err = request.TLS.PeerCertificates[0].CheckSignature(signatureAlgorithm, toBeVerified, signatureBytes); err != nil {
 		// return an error saying that the signature is not valid over the body of the message
 		return fmt.Errorf("the signature on the message could not be verified: %w", err)
 	}
