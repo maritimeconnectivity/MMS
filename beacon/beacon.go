@@ -21,11 +21,11 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/pem"
-	"fmt"
 	"github.com/libp2p/go-libp2p"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	peerstore "github.com/libp2p/go-libp2p/core/peer"
+	"log"
 	"os"
 	"os/signal"
 	"syscall"
@@ -55,7 +55,7 @@ func main() {
 		for fileScanner.Scan() {
 			addrInfo, err := peerstore.AddrInfoFromString(fileScanner.Text())
 			if err != nil {
-				fmt.Println("Failed to parse beacon address:", err)
+				log.Println("Failed to parse beacon address:", err)
 				continue
 			}
 			beacons = append(beacons, *addrInfo)
@@ -76,7 +76,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	// print the node's listening addresses
-	fmt.Println("Listen addresses:", node.Addrs())
+	log.Println("Listen addresses:", node.Addrs())
 
 	// print the node's PeerInfo in multiaddr format
 	peerInfo := peerstore.AddrInfo{
@@ -84,7 +84,7 @@ func main() {
 		Addrs: node.Addrs(),
 	}
 	addrs, err := peerstore.AddrInfoToP2pAddrs(&peerInfo)
-	fmt.Println("libp2p node addresses:", addrs)
+	log.Println("libp2p node addresses:", addrs)
 
 	kademlia, err := dht.New(ctx, node, dht.Mode(dht.ModeAutoServer), dht.BootstrapPeers(beacons...))
 	if err != nil {
@@ -99,10 +99,10 @@ func main() {
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
 	<-ch
-	fmt.Println("Received signal, shutting down...")
+	log.Println("Received signal, shutting down...")
 	cancel()
 	// shut the node down
 	if err := node.Close(); err != nil {
-		fmt.Println(err)
+		log.Println(err)
 	}
 }
