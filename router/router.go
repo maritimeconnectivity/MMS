@@ -978,7 +978,7 @@ func handleOutgoingMessages(ctx context.Context, router *MMSRouter, wg *sync.Wai
 								}
 								err = topic.Publish(ctx, msgBytes)
 								if err != nil {
-									log.Println("Could not public message to topic:", err)
+									log.Println("Could not publish message to topic:", err)
 									continue
 								}
 							}
@@ -996,7 +996,7 @@ func handleOutgoingMessages(ctx context.Context, router *MMSRouter, wg *sync.Wai
 									}
 									err = topic.Publish(ctx, msgBytes)
 									if err != nil {
-										log.Println("Could not public message to topic:", err)
+										log.Println("Could not publish message to topic:", err)
 										continue
 									}
 								}
