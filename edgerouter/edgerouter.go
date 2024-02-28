@@ -25,21 +25,22 @@ import (
 	"encoding/base64"
 	"flag"
 	"fmt"
-	"github.com/google/uuid"
-	"github.com/libp2p/zeroconf/v2"
-	"github.com/maritimeconnectivity/MMS/mmtp"
-	"golang.org/x/crypto/ocsp"
-	"google.golang.org/protobuf/proto"
 	"io"
 	"log"
 	"net/http"
-	"nhooyr.io/websocket"
 	"os"
 	"os/signal"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/google/uuid"
+	"github.com/libp2p/zeroconf/v2"
+	"github.com/maritimeconnectivity/MMS/mmtp"
+	"golang.org/x/crypto/ocsp"
+	"google.golang.org/protobuf/proto"
+	"nhooyr.io/websocket"
 )
 
 const (
@@ -737,7 +738,7 @@ func handleUnsubscribeDirect(mmtpMessage *mmtp.MmtpMessage, unsubscribe *mmtp.Un
 
 func handleSend(mmtpMessage *mmtp.MmtpMessage, outgoingChannel chan<- *mmtp.MmtpMessage, request *http.Request, c *websocket.Conn, signatureAlgorithm x509.SignatureAlgorithm, mrnToAgent map[string]*Agent, mrnToAgentMu *sync.RWMutex, subMu *sync.RWMutex, subs map[string]*Subscription, agent *Agent) {
 	if send := mmtpMessage.GetProtocolMessage().GetSendMessage(); send != nil {
-		if (len(request.TLS.PeerCertificates) == 0) || (agent.Mrn == "") {
+		if agent.Mrn == "" || request.TLS == nil || len(request.TLS.PeerCertificates) == 0 {
 			sendErrorMessage(mmtpMessage.GetUuid(), "Unauthenticated agents cannot send messages", request.Context(), c)
 			return
 		}
