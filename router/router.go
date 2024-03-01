@@ -380,6 +380,22 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 			mmtpMessage, n, err := readMessage(ctx, c)
 			if err != nil {
 				log.Println("Could not receive message:", err)
+				reasonText := "Message could not be correctly parsed"
+				resp = &mmtp.MmtpMessage{
+					MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+					Uuid:    uuid.NewString(),
+					Body: &mmtp.MmtpMessage_ResponseMessage{
+						ResponseMessage: &mmtp.ResponseMessage{
+							ResponseToUuid: mmtpMessage.GetUuid(),
+							Response:       mmtp.ResponseEnum_ERROR,
+							ReasonText:     &reasonText,
+						},
+					},
+				}
+				if err = writeMessage(request.Context(), c, resp); err != nil {
+					return
+				}
+				_ = c.Close(websocket.StatusUnsupportedData, reasonText)
 				return
 			}
 

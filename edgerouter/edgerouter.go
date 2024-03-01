@@ -478,6 +478,22 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 			mmtpMessage, n, err := readMessage(ctx, c)
 			if err != nil {
 				log.Println("Something went wrong while reading message from Agent:", err)
+				reasonText := "Message could not be correctly parsed"
+				resp = &mmtp.MmtpMessage{
+					MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+					Uuid:    uuid.NewString(),
+					Body: &mmtp.MmtpMessage_ResponseMessage{
+						ResponseMessage: &mmtp.ResponseMessage{
+							ResponseToUuid: mmtpMessage.GetUuid(),
+							Response:       mmtp.ResponseEnum_ERROR,
+							ReasonText:     &reasonText,
+						},
+					},
+				}
+				if err = writeMessage(request.Context(), c, resp); err != nil {
+					return
+				}
+				_ = c.Close(websocket.StatusUnsupportedData, reasonText)
 				return
 			}
 			switch mmtpMessage.GetMsgType() {
