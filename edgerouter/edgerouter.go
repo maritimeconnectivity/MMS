@@ -493,7 +493,9 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 				if err = writeMessage(request.Context(), c, resp); err != nil {
 					return
 				}
-				_ = c.Close(websocket.StatusUnsupportedData, reasonText)
+				if err = c.Close(websocket.StatusUnsupportedData, reasonText); err != nil {
+					log.Println("Closing websocket failed after sending error response:", err)
+				}
 				return
 			}
 			switch mmtpMessage.GetMsgType() {

@@ -395,7 +395,9 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 				if err = writeMessage(request.Context(), c, resp); err != nil {
 					return
 				}
-				_ = c.Close(websocket.StatusUnsupportedData, reasonText)
+				if err = c.Close(websocket.StatusUnsupportedData, reasonText); err != nil {
+					log.Println("Closing websocket failed after sending error response:", err)
+				}
 				return
 			}
 
