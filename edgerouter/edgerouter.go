@@ -309,7 +309,10 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 
 		mmtpMessage, _, err := readMessage(ctx, c)
 		if err != nil {
-			log.Println(err)
+			log.Println("Could not read message:", err)
+			if err = c.Close(websocket.StatusUnsupportedData, "The first message could not be parsed as an MMTP message"); err != nil {
+				log.Println(err)
+			}
 			return
 		}
 

@@ -251,6 +251,9 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 		mmtpMessage, _, err := readMessage(ctx, c)
 		if err != nil {
 			log.Println("Could not read message:", err)
+			if err = c.Close(websocket.StatusUnsupportedData, "The first message could not be parsed as an MMTP message"); err != nil {
+				log.Println(err)
+			}
 			return
 		}
 
