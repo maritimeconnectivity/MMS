@@ -563,6 +563,28 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 					}
 				}
 			case mmtp.MsgType_RESPONSE_MESSAGE:
+
+			case mmtp.MsgType_UNSPECIFIED_MESSAGE:
+				{
+					reasonText := "Message type was unspecified"
+					resp = &mmtp.MmtpMessage{
+						MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+						Uuid:    uuid.NewString(),
+						Body: &mmtp.MmtpMessage_ResponseMessage{
+							ResponseMessage: &mmtp.ResponseMessage{
+								ResponseToUuid: mmtpMessage.GetUuid(),
+								Response:       mmtp.ResponseEnum_ERROR,
+								ReasonText:     &reasonText,
+							},
+						},
+					}
+					if err = writeMessage(request.Context(), c, resp); err != nil {
+						log.Println("Could not send error message:", err)
+						return
+					}
+				}
+				break
+
 			default:
 				continue
 			}
