@@ -744,7 +744,8 @@ func handleDisconnect(mmtpMessage *mmtp.MmtpMessage, request *http.Request, c *w
 			return fmt.Errorf("websocket could not be closed cleanly: %w", err)
 		}
 	}
-	return nil
+	sendErrorMessage(mmtpMessage.GetUuid(), "Mismatch between protocol message type and message body", request.Context(), c)
+	return fmt.Errorf("message did not contain a Disconnect message in the body")
 }
 
 func readMessage(ctx context.Context, c *websocket.Conn) (*mmtp.MmtpMessage, int, error) {
