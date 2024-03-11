@@ -109,7 +109,7 @@ func (sub *Subscription) DeleteSubscriber(agent *Agent) {
 	sub.subsMu.Unlock()
 }
 
-// EdgeRouter type representing an MMS edge router
+// EdgeRouter type representing an MMS Edge Router
 type EdgeRouter struct {
 	ownMrn          string                   // The MRN of this EdgeRouter
 	subscriptions   map[string]*Subscription // a mapping from Interest names to Subscription slices
@@ -176,7 +176,7 @@ func (er *EdgeRouter) StartEdgeRouter(ctx context.Context, wg *sync.WaitGroup, c
 		wg.Done()
 	}()
 
-	log.Println("Starting edge router")
+	log.Println("Starting Edge Router")
 
 	connect := &mmtp.MmtpMessage{
 		MsgType: mmtp.MsgType_PROTOCOL_MESSAGE,
@@ -232,7 +232,7 @@ func (er *EdgeRouter) StartEdgeRouter(ctx context.Context, wg *sync.WaitGroup, c
 	go er.messageGC(ctx, wg)
 
 	<-ctx.Done()
-	log.Println("Shutting down edge router")
+	log.Println("Shutting down Edge Router")
 
 	disconnectMsg := &mmtp.MmtpMessage{
 		MsgType: mmtp.MsgType_PROTOCOL_MESSAGE,
@@ -634,7 +634,7 @@ func handleSubscribeSubject(mmtpMessage *mmtp.MmtpMessage, agent *Agent, subMu *
 			}},
 	}
 	if err := writeMessage(request.Context(), c, resp); err != nil {
-		return fmt.Errorf("could not send subscribe response to Edge Router: %w", err)
+		return fmt.Errorf("could not send subscribe response to Agent: %w", err)
 	}
 	return nil
 }
@@ -680,7 +680,7 @@ func handleSubscribeDirect(mmtpMessage *mmtp.MmtpMessage, agent *Agent, subscrib
 			}},
 	}
 	if err := writeMessage(request.Context(), c, resp); err != nil {
-		return fmt.Errorf("could not send subscribe response to Edge Router: %w", err)
+		return fmt.Errorf("could not send subscribe response to Agent: %w", err)
 	}
 	return nil
 }
@@ -942,7 +942,7 @@ func handleFetch(mmtpMessage *mmtp.MmtpMessage, agent *Agent, request *http.Requ
 		}
 		err := writeMessage(request.Context(), c, resp)
 		if err != nil {
-			return fmt.Errorf("could not send fetch response to Edge Router: %w", err)
+			return fmt.Errorf("could not send fetch response to Agent: %w", err)
 		}
 	}
 	return nil
@@ -960,7 +960,7 @@ func handleDisconnect(mmtpMessage *mmtp.MmtpMessage, request *http.Request, c *w
 				}},
 		}
 		if err := writeMessage(request.Context(), c, resp); err != nil {
-			return fmt.Errorf("could not send disconnect response to Edge Router: %w", err)
+			return fmt.Errorf("could not send disconnect response to Agent: %w", err)
 		}
 
 		if err := c.Close(websocket.StatusNormalClosure, "Closed connection after receiving Disconnect message"); err != nil {
@@ -1168,7 +1168,7 @@ func handleIncomingMessages(ctx context.Context, edgeRouter *EdgeRouter, wg *syn
 									if agent.directMessages {
 										err = agent.QueueMessage(incomingMessage)
 										if err != nil {
-											log.Println("Could not queue message for Edge Router:", err)
+											log.Println("Could not queue message for Agent:", err)
 										}
 									}
 								}
@@ -1234,7 +1234,7 @@ func handleOutgoingMessages(ctx context.Context, edgeRouter *EdgeRouter, wg *syn
 func readMessage(ctx context.Context, c *websocket.Conn) (*mmtp.MmtpMessage, int, error) {
 	_, b, err := c.Read(ctx)
 	if err != nil {
-		return nil, -1, fmt.Errorf("could not read message from edge router: %w", err)
+		return nil, -1, fmt.Errorf("could not read message from Agent: %w", err)
 	}
 	mmtpMessage := &mmtp.MmtpMessage{}
 	if err = proto.Unmarshal(b, mmtpMessage); err != nil {
