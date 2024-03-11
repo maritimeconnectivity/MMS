@@ -551,7 +551,7 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 							if err = handleDisconnect(mmtpMessage, request, c); err != nil {
 								log.Println("Failed handling Disconnect message:", err)
 							}
-							break
+							return
 						}
 					case mmtp.ProtocolMessageType_CONNECT_MESSAGE:
 						{

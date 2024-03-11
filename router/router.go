@@ -456,7 +456,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 							if err = handleDisconnect(mmtpMessage, request, c); err != nil {
 								log.Println("Failed handling Disconnect message:", err)
 							}
-							break
+							return
 						}
 					case mmtp.ProtocolMessageType_CONNECT_MESSAGE:
 						{
