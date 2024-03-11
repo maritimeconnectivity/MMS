@@ -256,6 +256,8 @@ func (er *EdgeRouter) StartEdgeRouter(ctx context.Context, wg *sync.WaitGroup, c
 		log.Println("Graceful disconnect from Router failed")
 	}
 
+	<-er.routerWs.CloseRead(context.Background()).Done()
+
 	if err = er.httpServer.Shutdown(context.Background()); err != nil {
 		log.Println(err)
 	}
