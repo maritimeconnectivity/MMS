@@ -743,6 +743,7 @@ func handleDisconnect(mmtpMessage *mmtp.MmtpMessage, request *http.Request, c *w
 		if err := c.Close(websocket.StatusNormalClosure, "Closed connection after receiving Disconnect message"); err != nil {
 			return fmt.Errorf("websocket could not be closed cleanly: %w", err)
 		}
+		return nil
 	}
 	sendErrorMessage(mmtpMessage.GetUuid(), "Mismatch between protocol message type and message body", request.Context(), c)
 	return fmt.Errorf("message did not contain a Disconnect message in the body")
