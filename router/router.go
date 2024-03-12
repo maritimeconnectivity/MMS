@@ -870,9 +870,7 @@ func performCRLCheck(clientCert *x509.Certificate, httpClient *http.Client, issu
 }
 
 func handleSubscription(ctx context.Context, sub *pubsub.Subscription, host *host.Host, incomingChannel chan<- *mmtp.MmtpMessage, wg *sync.WaitGroup) {
-	defer func() {
-		wg.Done()
-	}()
+	defer wg.Done()
 	for {
 		select {
 		case <-ctx.Done():
@@ -913,9 +911,7 @@ func handleSubscription(ctx context.Context, sub *pubsub.Subscription, host *hos
 }
 
 func handleIncomingMessages(ctx context.Context, router *MMSRouter, wg *sync.WaitGroup) {
-	defer func() {
-		wg.Done()
-	}()
+	defer wg.Done()
 	for {
 		select {
 		case <-ctx.Done():
@@ -966,9 +962,7 @@ func handleIncomingMessages(ctx context.Context, router *MMSRouter, wg *sync.Wai
 }
 
 func handleOutgoingMessages(ctx context.Context, router *MMSRouter, wg *sync.WaitGroup) {
-	defer func() {
-		wg.Done()
-	}()
+	defer wg.Done()
 	for {
 		select {
 		case <-ctx.Done():
