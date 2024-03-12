@@ -1109,13 +1109,17 @@ func main() {
 
 func setupLibP2P(ctx context.Context, libp2pPort *int, privKeyFilePath *string) (host.Host, *drouting.RoutingDiscovery, error) {
 	port := *libp2pPort
-	addrStrings := make([]string, 2)
+	var addrStrings []string
 	if port != 0 {
-		addrStrings[0] = fmt.Sprintf("/ip4/0.0.0.0/udp/%d/quic-v1", port)
-		addrStrings[1] = fmt.Sprintf("/ip6/::/udp/%d/quic-v1", port)
+		addrStrings = []string{
+			fmt.Sprintf("/ip4/0.0.0.0/udp/%d/quic-v1", port),
+			fmt.Sprintf("/ip6/::/udp/%d/quic-v1", port),
+		}
 	} else {
-		addrStrings[0] = "/ip4/0.0.0.0/udp/0/quic-v1"
-		addrStrings[1] = "/ip6/::/udp/0/quic-v1"
+		addrStrings = []string{
+			"/ip4/0.0.0.0/udp/0/quic-v1",
+			"/ip6/::/udp/0/quic-v1",
+		}
 	}
 	// TODO make the router discover its public IP address so it can be published
 
