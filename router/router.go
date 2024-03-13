@@ -643,14 +643,17 @@ func handleSend(mmtpMessage *mmtp.MmtpMessage, outgoingChannel chan<- *mmtp.Mmtp
 func handleReceive(mmtpMessage *mmtp.MmtpMessage, e *EdgeRouter, request *http.Request, c *websocket.Conn) error {
 	if receive := mmtpMessage.GetProtocolMessage().GetReceiveMessage(); receive != nil {
 		if msgUuids := receive.GetFilter().GetMessageUuids(); msgUuids != nil {
-			msgsLen := len(msgUuids)
-			mmtpMessages := make([]*mmtp.MmtpMessage, 0, msgsLen)
-			appMsgs := make([]*mmtp.ApplicationMessage, 0, msgsLen)
+			var mmtpMessages []*mmtp.MmtpMessage
+			var appMsgs []*mmtp.ApplicationMessage
 			e.msgMu.Lock()
 			for _, msgUuid := range msgUuids {
-				msg := e.Messages[msgUuid].GetProtocolMessage().GetSendMessage().GetApplicationMessage()
-				appMsgs = append(appMsgs, msg)
-				delete(e.Messages, msgUuid)
+				mmtpMsg, exists := e.Messages[msgUuid]
+				if exists {
+					msg := mmtpMsg.GetProtocolMessage().GetSendMessage().GetApplicationMessage()
+					mmtpMessages = append(mmtpMessages, mmtpMsg)
+					appMsgs = append(appMsgs, msg)
+					delete(e.Messages, msgUuid)
+				}
 			}
 			e.msgMu.Unlock()
 			resp := &mmtp.MmtpMessage{

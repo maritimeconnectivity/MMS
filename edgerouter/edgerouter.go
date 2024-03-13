@@ -869,14 +869,17 @@ func verifySignatureOnMessage(mmtpMessage *mmtp.MmtpMessage, signatureAlgorithm 
 func handleReceive(mmtpMessage *mmtp.MmtpMessage, agent *Agent, request *http.Request, c *websocket.Conn) error {
 	if receive := mmtpMessage.GetProtocolMessage().GetReceiveMessage(); receive != nil {
 		if msgUuids := receive.GetFilter().GetMessageUuids(); msgUuids != nil {
-			msgsLen := len(msgUuids)
-			mmtpMessages := make([]*mmtp.MmtpMessage, 0, msgsLen)
-			appMsgs := make([]*mmtp.ApplicationMessage, 0, msgsLen)
+			var mmtpMessages []*mmtp.MmtpMessage
+			var appMsgs []*mmtp.ApplicationMessage
 			agent.msgMu.Lock()
 			for _, msgUuid := range msgUuids {
-				msg := agent.Messages[msgUuid].GetProtocolMessage().GetSendMessage().GetApplicationMessage()
-				appMsgs = append(appMsgs, msg)
-				delete(agent.Messages, msgUuid)
+				mmtpMsg, exists := agent.Messages[msgUuid]
+				if exists {
+					msg := mmtpMsg.GetProtocolMessage().GetSendMessage().GetApplicationMessage()
+					mmtpMessages = append(mmtpMessages, mmtpMsg)
+					appMsgs = append(appMsgs, msg)
+					delete(agent.Messages, msgUuid)
+				}
 			}
 			agent.msgMu.Unlock()
 			resp := &mmtp.MmtpMessage{
