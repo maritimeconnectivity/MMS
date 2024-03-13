@@ -913,7 +913,7 @@ func handleReceive(mmtpMessage *mmtp.MmtpMessage, agent *Agent, request *http.Re
 			if err != nil {
 				return fmt.Errorf("could not send messages to Agent: %w", err)
 			} else {
-				agent.Messages = make(map[string]*mmtp.MmtpMessage)
+				clear(agent.Messages)
 			}
 		}
 	}

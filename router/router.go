@@ -687,7 +687,7 @@ func handleReceive(mmtpMessage *mmtp.MmtpMessage, e *EdgeRouter, request *http.R
 			if err != nil {
 				return fmt.Errorf("could not send messages to Edge Router: %w", err)
 			} else {
-				e.Messages = make(map[string]*mmtp.MmtpMessage)
+				clear(e.Messages)
 			}
 		}
 	}
