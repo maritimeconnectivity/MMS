@@ -74,6 +74,8 @@ func (er *EdgeRouter) QueueMessage(mmtpMessage *mmtp.MmtpMessage) error {
 		er.msgMu.Lock()
 		er.Messages[uUid] = mmtpMessage
 		er.msgMu.Unlock()
+	} else {
+		return fmt.Errorf("edge Router resolved to nil while trying to queue message")
 	}
 	return nil
 }

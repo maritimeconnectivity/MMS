@@ -69,6 +69,8 @@ func (a *Agent) QueueMessage(mmtpMessage *mmtp.MmtpMessage) error {
 		a.msgMu.Lock()
 		a.Messages[uUid] = mmtpMessage
 		a.msgMu.Unlock()
+	} else {
+		return fmt.Errorf("agent resolved to nil while trying to queue message")
 	}
 	return nil
 }
