@@ -870,9 +870,7 @@ func performCRLCheck(clientCert *x509.Certificate, httpClient *http.Client, issu
 }
 
 func handleSubscription(ctx context.Context, sub *pubsub.Subscription, host *host.Host, incomingChannel chan<- *mmtp.MmtpMessage, wg *sync.WaitGroup) {
-	defer func() {
-		wg.Done()
-	}()
+	defer wg.Done()
 	for {
 		select {
 		case <-ctx.Done():
@@ -913,9 +911,7 @@ func handleSubscription(ctx context.Context, sub *pubsub.Subscription, host *hos
 }
 
 func handleIncomingMessages(ctx context.Context, router *MMSRouter, wg *sync.WaitGroup) {
-	defer func() {
-		wg.Done()
-	}()
+	defer wg.Done()
 	for {
 		select {
 		case <-ctx.Done():
@@ -966,9 +962,7 @@ func handleIncomingMessages(ctx context.Context, router *MMSRouter, wg *sync.Wai
 }
 
 func handleOutgoingMessages(ctx context.Context, router *MMSRouter, wg *sync.WaitGroup) {
-	defer func() {
-		wg.Done()
-	}()
+	defer wg.Done()
 	for {
 		select {
 		case <-ctx.Done():
@@ -1115,13 +1109,21 @@ func main() {
 
 func setupLibP2P(ctx context.Context, libp2pPort *int, privKeyFilePath *string) (host.Host, *drouting.RoutingDiscovery, error) {
 	port := *libp2pPort
-	addrStrings := make([]string, 2)
+	var addrStrings []string
 	if port != 0 {
-		addrStrings[0] = fmt.Sprintf("/ip4/0.0.0.0/udp/%d/quic-v1", port)
-		addrStrings[1] = fmt.Sprintf("/ip6/::/udp/%d/quic-v1", port)
+		addrStrings = []string{
+			fmt.Sprintf("/ip4/0.0.0.0/udp/%d/quic-v1", port),
+			fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", port),
+			fmt.Sprintf("/ip6/::/udp/%d/quic-v1", port),
+			fmt.Sprintf("/ip6/::/tcp/%d", port),
+		}
 	} else {
-		addrStrings[0] = "/ip4/0.0.0.0/udp/0/quic-v1"
-		addrStrings[1] = "/ip6/::/udp/0/quic-v1"
+		addrStrings = []string{
+			"/ip4/0.0.0.0/udp/0/quic-v1",
+			"/ip4/0.0.0.0/tcp/0",
+			"/ip6/::/udp/0/quic-v1",
+			"/ip6/::/tcp/0",
+		}
 	}
 	// TODO make the router discover its public IP address so it can be published
 
