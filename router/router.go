@@ -212,7 +212,7 @@ func (r *MMSRouter) messageGC(ctx context.Context, wg *sync.WaitGroup) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(10 * time.Minute): // run every 10 minutes
+		case <-time.After(5 * time.Minute): // run every 5 minutes
 			r.erMu.RLock()
 			now := time.Now().UTC()
 			for _, er := range r.edgeRouters {

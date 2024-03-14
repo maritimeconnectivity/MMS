@@ -274,7 +274,7 @@ func (er *EdgeRouter) messageGC(ctx context.Context, wg *sync.WaitGroup) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(10 * time.Minute): // run every 10 minutes
+		case <-time.After(5 * time.Minute): // run every 5 minutes
 			er.agentsMu.RLock()
 			now := time.Now().UTC()
 			for _, a := range er.agents {
