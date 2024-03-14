@@ -655,7 +655,6 @@ func handleReceive(mmtpMessage *mmtp.MmtpMessage, e *EdgeRouter, request *http.R
 					delete(e.Messages, msgUuid)
 				}
 			}
-			e.msgMu.Unlock()
 			resp := &mmtp.MmtpMessage{
 				MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
 				Uuid:    uuid.NewString(),
@@ -666,6 +665,7 @@ func handleReceive(mmtpMessage *mmtp.MmtpMessage, e *EdgeRouter, request *http.R
 				}},
 			}
 			err := writeMessage(request.Context(), c, resp)
+			e.msgMu.Unlock()
 			if err != nil {
 				e.BulkQueueMessages(mmtpMessages)
 				return fmt.Errorf("could not send messages to Edge Router: %w", err)
@@ -702,6 +702,7 @@ func handleReceive(mmtpMessage *mmtp.MmtpMessage, e *EdgeRouter, request *http.R
 func handleFetch(mmtpMessage *mmtp.MmtpMessage, e *EdgeRouter, request *http.Request, c *websocket.Conn) error {
 	if fetch := mmtpMessage.GetProtocolMessage().GetFetchMessage(); fetch != nil {
 		e.msgMu.RLock()
+		defer e.msgMu.RUnlock()
 		metadata := make([]*mmtp.MessageMetadata, 0, len(e.Messages))
 		for _, msg := range e.Messages {
 			msgHeader := msg.GetProtocolMessage().GetSendMessage().GetApplicationMessage().GetHeader()
@@ -711,7 +712,6 @@ func handleFetch(mmtpMessage *mmtp.MmtpMessage, e *EdgeRouter, request *http.Req
 			}
 			metadata = append(metadata, msgMetadata)
 		}
-		e.msgMu.RUnlock()
 		resp := &mmtp.MmtpMessage{
 			MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
 			Uuid:    uuid.NewString(),

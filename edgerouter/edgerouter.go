@@ -881,7 +881,6 @@ func handleReceive(mmtpMessage *mmtp.MmtpMessage, agent *Agent, request *http.Re
 					delete(agent.Messages, msgUuid)
 				}
 			}
-			agent.msgMu.Unlock()
 			resp := &mmtp.MmtpMessage{
 				MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
 				Uuid:    uuid.NewString(),
@@ -892,6 +891,7 @@ func handleReceive(mmtpMessage *mmtp.MmtpMessage, agent *Agent, request *http.Re
 				}},
 			}
 			err := writeMessage(request.Context(), c, resp)
+			agent.msgMu.Unlock()
 			if err != nil {
 				agent.BulkQueueMessages(mmtpMessages)
 				return fmt.Errorf("could not send messages to Agent: %w", err)
@@ -928,6 +928,7 @@ func handleReceive(mmtpMessage *mmtp.MmtpMessage, agent *Agent, request *http.Re
 func handleFetch(mmtpMessage *mmtp.MmtpMessage, agent *Agent, request *http.Request, c *websocket.Conn) error {
 	if fetch := mmtpMessage.GetProtocolMessage().GetFetchMessage(); fetch != nil {
 		agent.msgMu.RLock()
+		defer agent.msgMu.RUnlock()
 		metadata := make([]*mmtp.MessageMetadata, 0, len(agent.Messages))
 		for _, msg := range agent.Messages {
 			msgHeader := msg.GetProtocolMessage().GetSendMessage().GetApplicationMessage().GetHeader()
@@ -937,7 +938,6 @@ func handleFetch(mmtpMessage *mmtp.MmtpMessage, agent *Agent, request *http.Requ
 			}
 			metadata = append(metadata, msgMetadata)
 		}
-		agent.msgMu.RUnlock()
 		resp := &mmtp.MmtpMessage{
 			MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
 			Uuid:    uuid.NewString(),
@@ -1111,7 +1111,6 @@ func handleIncomingMessages(ctx context.Context, edgeRouter *EdgeRouter, wg *syn
 					},
 				},
 			}
-			edgeRouter.routerConnMu.Lock()
 			if err := writeMessage(ctx, edgeRouter.routerWs, receiveMsg); err != nil {
 				log.Println("Was not able to send Receive message to MMS Router:", err)
 				edgeRouter.routerConnMu.Unlock()
