@@ -1111,6 +1111,7 @@ func handleIncomingMessages(ctx context.Context, edgeRouter *EdgeRouter, wg *syn
 					},
 				},
 			}
+			edgeRouter.routerConnMu.Lock()
 			if err := writeMessage(ctx, edgeRouter.routerWs, receiveMsg); err != nil {
 				log.Println("Was not able to send Receive message to MMS Router:", err)
 				edgeRouter.routerConnMu.Unlock()
