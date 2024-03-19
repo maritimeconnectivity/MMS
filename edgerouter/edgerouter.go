@@ -226,8 +226,8 @@ func (er *EdgeRouter) StartEdgeRouter(ctx context.Context, wg *sync.WaitGroup, c
 			if err := er.httpServer.ListenAndServe(); err != nil {
 				log.Println(err)
 			}
-			wg.Done()
 		}
+		wg.Done()
 	}()
 
 	go handleIncomingMessages(ctx, er, wg)
