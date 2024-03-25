@@ -709,9 +709,9 @@ func handleFetch(mmtpMessage *mmtp.MmtpMessage, e *EdgeRouter, request *http.Req
 		defer e.msgMu.Unlock()
 		metadata := make([]*mmtp.MessageMetadata, 0, len(e.Messages))
 		now := time.Now().UnixMilli()
-		// If the message has expired, we might as well just delete it
 		for _, msg := range e.Messages {
 			msgHeader := msg.GetProtocolMessage().GetSendMessage().GetApplicationMessage().GetHeader()
+			// If the message has expired, we might as well just delete it
 			if msgHeader.Expires < now {
 				delete(e.Messages, msg.Uuid)
 			} else {
