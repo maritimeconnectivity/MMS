@@ -643,8 +643,9 @@ func handleSend(mmtpMessage *mmtp.MmtpMessage, outgoingChannel chan<- *mmtp.Mmtp
 func handleReceive(mmtpMessage *mmtp.MmtpMessage, e *EdgeRouter, request *http.Request, c *websocket.Conn) error {
 	if receive := mmtpMessage.GetProtocolMessage().GetReceiveMessage(); receive != nil {
 		if msgUuids := receive.GetFilter().GetMessageUuids(); msgUuids != nil {
-			var mmtpMessages []*mmtp.MmtpMessage
-			var appMsgs []*mmtp.ApplicationMessage
+			msgsLen := len(msgUuids)
+			mmtpMessages := make([]*mmtp.MmtpMessage, 0, msgsLen)
+			appMsgs := make([]*mmtp.ApplicationMessage, 0, msgsLen)
 			e.msgMu.Lock()
 			for _, msgUuid := range msgUuids {
 				mmtpMsg, exists := e.Messages[msgUuid]

@@ -869,8 +869,9 @@ func verifySignatureOnMessage(mmtpMessage *mmtp.MmtpMessage, signatureAlgorithm 
 func handleReceive(mmtpMessage *mmtp.MmtpMessage, agent *Agent, request *http.Request, c *websocket.Conn) error {
 	if receive := mmtpMessage.GetProtocolMessage().GetReceiveMessage(); receive != nil {
 		if msgUuids := receive.GetFilter().GetMessageUuids(); msgUuids != nil {
-			var mmtpMessages []*mmtp.MmtpMessage
-			var appMsgs []*mmtp.ApplicationMessage
+			msgsLen := len(msgUuids)
+			mmtpMessages := make([]*mmtp.MmtpMessage, 0, msgsLen)
+			appMsgs := make([]*mmtp.ApplicationMessage, 0, msgsLen)
 			agent.msgMu.Lock()
 			for _, msgUuid := range msgUuids {
 				mmtpMsg, exists := agent.Messages[msgUuid]
