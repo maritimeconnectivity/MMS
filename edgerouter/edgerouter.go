@@ -901,9 +901,12 @@ func handleReceive(mmtpMessage *mmtp.MmtpMessage, agent *Agent, request *http.Re
 			agent.msgMu.Lock()
 			msgsLen := len(agent.Messages)
 			appMsgs := make([]*mmtp.ApplicationMessage, 0, msgsLen)
+			now := time.Now().UnixMilli()
 			for _, mmtpMsg := range agent.Messages {
 				msg := mmtpMsg.GetProtocolMessage().GetSendMessage().GetApplicationMessage()
-				appMsgs = append(appMsgs, msg)
+				if now <= msg.Header.Expires {
+					appMsgs = append(appMsgs, msg)
+				}
 			}
 			resp := &mmtp.MmtpMessage{
 				MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
