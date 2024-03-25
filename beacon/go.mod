@@ -1,6 +1,6 @@
 module github.com/maritimeconnectivity/MMS/beacon
 
-go 1.21
+go 1.22
 
 require (
 	github.com/libp2p/go-libp2p v0.33.0
