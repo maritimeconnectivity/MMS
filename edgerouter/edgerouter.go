@@ -927,16 +927,22 @@ func handleReceive(mmtpMessage *mmtp.MmtpMessage, agent *Agent, request *http.Re
 
 func handleFetch(mmtpMessage *mmtp.MmtpMessage, agent *Agent, request *http.Request, c *websocket.Conn) error {
 	if fetch := mmtpMessage.GetProtocolMessage().GetFetchMessage(); fetch != nil {
-		agent.msgMu.RLock()
-		defer agent.msgMu.RUnlock()
+		agent.msgMu.Lock()
+		defer agent.msgMu.Unlock()
 		metadata := make([]*mmtp.MessageMetadata, 0, len(agent.Messages))
+		now := time.Now().UnixMilli()
 		for _, msg := range agent.Messages {
 			msgHeader := msg.GetProtocolMessage().GetSendMessage().GetApplicationMessage().GetHeader()
-			msgMetadata := &mmtp.MessageMetadata{
-				Uuid:   msg.GetUuid(),
-				Header: msgHeader,
+			// If the message has expired, we might as well just delete it
+			if msgHeader.Expires < now {
+				delete(agent.Messages, msg.Uuid)
+			} else {
+				msgMetadata := &mmtp.MessageMetadata{
+					Uuid:   msg.GetUuid(),
+					Header: msgHeader,
+				}
+				metadata = append(metadata, msgMetadata)
 			}
-			metadata = append(metadata, msgMetadata)
 		}
 		resp := &mmtp.MmtpMessage{
 			MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
