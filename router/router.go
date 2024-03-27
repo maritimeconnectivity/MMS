@@ -214,12 +214,12 @@ func (r *MMSRouter) messageGC(ctx context.Context, wg *sync.WaitGroup) {
 			return
 		case <-time.After(5 * time.Minute): // run every 5 minutes
 			r.erMu.RLock()
-			now := time.Now().UTC()
+			now := time.Now().UnixMilli()
 			for _, er := range r.edgeRouters {
 				er.msgMu.Lock()
 				for _, m := range er.Messages {
 					expires := m.GetProtocolMessage().GetSendMessage().GetApplicationMessage().GetHeader().GetExpires()
-					if (expires <= 0) || now.After(time.UnixMilli(expires)) {
+					if (expires <= 0) || now > expires {
 						delete(er.Messages, m.Uuid)
 					}
 				}
