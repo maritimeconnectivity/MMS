@@ -45,8 +45,9 @@ import (
 )
 
 const (
-	WsReadLimit      int64 = 1 << 20        // 1 MiB = 1048576 B
-	MessageSizeLimit int   = 50 * (1 << 10) // 50 KiB = 51200 B
+	WsReadLimit      int64         = 1 << 20             // 1 MiB = 1048576 B
+	MessageSizeLimit int           = 50 * (1 << 10)      // 50 KiB = 51200 B
+	ExpirationLimit  time.Duration = time.Hour * 24 * 30 // 30 days
 )
 
 // Agent type representing a connected Edge Router
@@ -281,7 +282,7 @@ func (er *EdgeRouter) messageGC(ctx context.Context, wg *sync.WaitGroup) {
 				a.msgMu.Lock()
 				for _, m := range a.Messages {
 					expires := m.GetProtocolMessage().GetSendMessage().GetApplicationMessage().GetHeader().GetExpires()
-					if (expires <= 0) || now > expires {
+					if now > expires {
 						delete(a.Messages, m.Uuid)
 					}
 				}
@@ -1148,10 +1149,12 @@ func handleIncomingMessages(ctx context.Context, edgeRouter *EdgeRouter, wg *syn
 						log.Println("Received response with error:", responseMsg.GetReasonText())
 						continue
 					}
-					now := time.Now().UnixMilli()
+					now := time.Now()
+					nowMilli := now.UnixMilli()
 					for _, appMsg := range responseMsg.GetApplicationMessages() {
-						if appMsg == nil || now > appMsg.GetHeader().GetExpires() {
-							// message is nil or expired so we discard it
+						msgExpires := appMsg.GetHeader().GetExpires()
+						if appMsg == nil || nowMilli > msgExpires || msgExpires > now.Add(ExpirationLimit).UnixMilli() {
+							// message is nil, expired or has a too long expiration, so we discard it
 							continue
 						}
 

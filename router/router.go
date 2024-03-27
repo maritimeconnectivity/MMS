@@ -52,8 +52,9 @@ import (
 )
 
 const (
-	WsReadLimit      int64 = 1 << 20        // 1 MiB = 1048576 B
-	MessageSizeLimit int   = 50 * (1 << 10) // 50 KiB = 51200 B
+	WsReadLimit      int64         = 1 << 20             // 1 MiB = 1048576 B
+	MessageSizeLimit int           = 50 * (1 << 10)      // 50 KiB = 51200 B
+	ExpirationLimit  time.Duration = time.Hour * 24 * 30 // 30 days
 )
 
 // EdgeRouter type representing a connected Edge Router
@@ -219,7 +220,7 @@ func (r *MMSRouter) messageGC(ctx context.Context, wg *sync.WaitGroup) {
 				er.msgMu.Lock()
 				for _, m := range er.Messages {
 					expires := m.GetProtocolMessage().GetSendMessage().GetApplicationMessage().GetHeader().GetExpires()
-					if (expires <= 0) || now > expires {
+					if now > expires {
 						delete(er.Messages, m.Uuid)
 					}
 				}
@@ -936,10 +937,12 @@ func handleIncomingMessages(ctx context.Context, router *MMSRouter, wg *sync.Wai
 				switch incomingMessage.GetMsgType() {
 				case mmtp.MsgType_PROTOCOL_MESSAGE:
 					{
-						now := time.Now().UnixMilli()
+						now := time.Now()
+						nowMilli := now.UnixMilli()
 						appMsg := incomingMessage.GetProtocolMessage().GetSendMessage().GetApplicationMessage()
-						if appMsg == nil || now > appMsg.GetHeader().GetExpires() {
-							// message is nil or expired so we discard it
+						msgExpires := appMsg.GetHeader().GetExpires()
+						if appMsg == nil || nowMilli > msgExpires || msgExpires > now.Add(ExpirationLimit).UnixMilli() {
+							// message is nil, expired or has a too long expiration, so we discard it
 							continue
 						}
 						switch subjectOrRecipient := appMsg.GetHeader().GetSubjectOrRecipient().(type) {
