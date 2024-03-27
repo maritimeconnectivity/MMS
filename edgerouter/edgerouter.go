@@ -1148,10 +1148,13 @@ func handleIncomingMessages(ctx context.Context, edgeRouter *EdgeRouter, wg *syn
 						log.Println("Received response with error:", responseMsg.GetReasonText())
 						continue
 					}
+					now := time.Now().UnixMilli()
 					for _, appMsg := range responseMsg.GetApplicationMessages() {
-						if appMsg == nil {
+						if appMsg == nil || now > appMsg.GetHeader().GetExpires() {
+							// message is nil or expired so we discard it
 							continue
 						}
+
 						incomingMessage := &mmtp.MmtpMessage{
 							MsgType: mmtp.MsgType_PROTOCOL_MESSAGE,
 							Uuid:    uuid.NewString(),

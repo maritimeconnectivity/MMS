@@ -936,8 +936,10 @@ func handleIncomingMessages(ctx context.Context, router *MMSRouter, wg *sync.Wai
 				switch incomingMessage.GetMsgType() {
 				case mmtp.MsgType_PROTOCOL_MESSAGE:
 					{
+						now := time.Now().UnixMilli()
 						appMsg := incomingMessage.GetProtocolMessage().GetSendMessage().GetApplicationMessage()
-						if appMsg == nil {
+						if appMsg == nil || now > appMsg.GetHeader().GetExpires() {
+							// message is nil or expired so we discard it
 							continue
 						}
 						switch subjectOrRecipient := appMsg.GetHeader().GetSubjectOrRecipient().(type) {
