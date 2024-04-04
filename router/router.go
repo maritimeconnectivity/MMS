@@ -1048,85 +1048,6 @@ func handleOutgoingMessages(ctx context.Context, router *MMSRouter, wg *sync.Wai
 	}
 }
 
-func main() {
-	ctx, cancel := context.WithCancel(context.Background())
-
-	listeningPort := flag.Int("port", 8080, "The port number that this Router should listen on.")
-	libp2pPort := flag.Int("libp2p-port", 0, "The port number that this Router should use to "+
-		"open up to the Router Network. If not set, a random port is chosen.")
-	privKeyFilePath := flag.String("privkey", "", "Path to a file containing a private key. If none is provided, a new private key will be generated every time the program is run.")
-	certPath := flag.String("cert-path", "", "Path to a TLS certificate file. If none is provided, TLS will be disabled.")
-	certKeyPath := flag.String("cert-key-path", "", "Path to a TLS certificate private key. If none is provided, TLS will be disabled.")
-	clientCAs := flag.String("client-ca", "", "Path to a file containing a list of client CAs that can connect to this Router.")
-
-	flag.Parse()
-
-	node, rd, err := setupLibP2P(ctx, libp2pPort, privKeyFilePath)
-	if err != nil {
-		log.Println("Could not setup the libp2p backend:", err)
-		return
-	}
-
-	pubSub, err := pubsub.NewGossipSub(ctx, node)
-	if err != nil {
-		panic(err)
-	}
-
-	// Look for others who have announced and attempt to connect to them
-	anyConnected := false
-	attempts := 0
-	for !anyConnected && attempts < 10 {
-		log.Println("Searching for peers...")
-		peerChan, err := rd.FindPeers(ctx, "over here")
-		if err != nil {
-			panic(err)
-		}
-		for p := range peerChan {
-			if p.ID == node.ID() {
-				continue // No self connection
-			}
-			log.Println("Peer:", p)
-			err := node.Connect(ctx, p)
-			if err != nil {
-				log.Println("Failed connecting to ", p.ID.String(), ", error:", err)
-			} else {
-				log.Println("Connected to:", p.ID.String())
-				anyConnected = true
-			}
-		}
-		attempts++
-		time.Sleep(2 * time.Second)
-	}
-	log.Println("Peer discovery complete")
-
-	incomingChannel := make(chan *mmtp.MmtpMessage)
-	outgoingChannel := make(chan *mmtp.MmtpMessage)
-
-	wg := &sync.WaitGroup{}
-
-	router, err := NewMMSRouter(&node, pubSub, ":"+strconv.Itoa(*listeningPort), incomingChannel, outgoingChannel, ctx, wg, clientCAs)
-	if err != nil {
-		log.Println("Could not create MMS Router instance:", err)
-		return
-	}
-
-	wg.Add(1)
-	go router.StartRouter(ctx, wg, certPath, certKeyPath)
-
-	// wait for a SIGINT or SIGTERM signal
-	ch := make(chan os.Signal, 1)
-	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
-	<-ch
-	log.Println("Received signal, shutting down...")
-
-	cancel()
-	wg.Wait()
-	// shut the libp2p node down
-	if err = node.Close(); err != nil {
-		log.Println("libp2p node could not be shut down correctly")
-	}
-}
-
 func setupLibP2P(ctx context.Context, libp2pPort *int, privKeyFilePath *string) (host.Host, *drouting.RoutingDiscovery, error) {
 	port := *libp2pPort
 	var addrStrings []string
@@ -1228,4 +1149,83 @@ func setupLibP2P(ctx context.Context, libp2pPort *int, privKeyFilePath *string) 
 	addrs, err := peerstore.AddrInfoToP2pAddrs(&peerInfo)
 	log.Println("libp2p node addresses:", addrs)
 	return node, rd, nil
+}
+
+func main() {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	listeningPort := flag.Int("port", 8080, "The port number that this Router should listen on.")
+	libp2pPort := flag.Int("libp2p-port", 0, "The port number that this Router should use to "+
+		"open up to the Router Network. If not set, a random port is chosen.")
+	privKeyFilePath := flag.String("privkey", "", "Path to a file containing a private key. If none is provided, a new private key will be generated every time the program is run.")
+	certPath := flag.String("cert-path", "", "Path to a TLS certificate file. If none is provided, TLS will be disabled.")
+	certKeyPath := flag.String("cert-key-path", "", "Path to a TLS certificate private key. If none is provided, TLS will be disabled.")
+	clientCAs := flag.String("client-ca", "", "Path to a file containing a list of client CAs that can connect to this Router.")
+
+	flag.Parse()
+
+	node, rd, err := setupLibP2P(ctx, libp2pPort, privKeyFilePath)
+	if err != nil {
+		log.Println("Could not setup the libp2p backend:", err)
+		return
+	}
+
+	pubSub, err := pubsub.NewGossipSub(ctx, node)
+	if err != nil {
+		panic(err)
+	}
+
+	// Look for others who have announced and attempt to connect to them
+	anyConnected := false
+	attempts := 0
+	for !anyConnected && attempts < 10 {
+		log.Println("Searching for peers...")
+		peerChan, err := rd.FindPeers(ctx, "over here")
+		if err != nil {
+			panic(err)
+		}
+		for p := range peerChan {
+			if p.ID == node.ID() {
+				continue // No self connection
+			}
+			log.Println("Peer:", p)
+			err := node.Connect(ctx, p)
+			if err != nil {
+				log.Println("Failed connecting to ", p.ID.String(), ", error:", err)
+			} else {
+				log.Println("Connected to:", p.ID.String())
+				anyConnected = true
+			}
+		}
+		attempts++
+		time.Sleep(2 * time.Second)
+	}
+	log.Println("Peer discovery complete")
+
+	incomingChannel := make(chan *mmtp.MmtpMessage)
+	outgoingChannel := make(chan *mmtp.MmtpMessage)
+
+	wg := &sync.WaitGroup{}
+
+	router, err := NewMMSRouter(&node, pubSub, ":"+strconv.Itoa(*listeningPort), incomingChannel, outgoingChannel, ctx, wg, clientCAs)
+	if err != nil {
+		log.Println("Could not create MMS Router instance:", err)
+		return
+	}
+
+	wg.Add(1)
+	go router.StartRouter(ctx, wg, certPath, certKeyPath)
+
+	// wait for a SIGINT or SIGTERM signal
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
+	<-ch
+	log.Println("Received signal, shutting down...")
+
+	cancel()
+	wg.Wait()
+	// shut the libp2p node down
+	if err = node.Close(); err != nil {
+		log.Println("libp2p node could not be shut down correctly")
+	}
 }
