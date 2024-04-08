@@ -800,6 +800,7 @@ func handleSend(mmtpMessage *mmtp.MmtpMessage, outgoingChannel chan<- *mmtp.Mmtp
 		err := verifySignatureOnMessage(mmtpMessage, signatureAlgorithm, request)
 		if err != nil {
 			log.Println("Verification of signature on message failed:", err)
+			sendErrorMessage(mmtpMessage.GetUuid(), "Could not authenticate message signature", request.Context(), c)
 			return
 		}
 
