@@ -791,6 +791,12 @@ func handleSend(mmtpMessage *mmtp.MmtpMessage, outgoingChannel chan<- *mmtp.Mmtp
 			sendErrorMessage(mmtpMessage.GetUuid(), "Unauthenticated agents cannot send messages", request.Context(), c)
 			return
 		}
+
+		if agent.Mrn != send.GetApplicationMessage().GetHeader().GetSender() {
+			sendErrorMessage(mmtpMessage.GetUuid(), "Sender MRN must match Agent MRN", request.Context(), c)
+			return
+		}
+
 		err := verifySignatureOnMessage(mmtpMessage, signatureAlgorithm, request)
 		if err != nil {
 			log.Println("Verification of signature on message failed:", err)
