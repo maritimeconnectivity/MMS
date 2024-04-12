@@ -174,14 +174,7 @@ func NewEdgeRouter(listeningAddr string, mrn string, outgoingChannel chan *mmtp.
 	}, nil
 }
 
-func (er *EdgeRouter) StartEdgeRouter(ctx context.Context, wg *sync.WaitGroup, certPath *string, certKeyPath *string) {
-	defer func() {
-		close(er.outgoingChannel)
-		wg.Done()
-	}()
-
-	log.Println("Starting Edge Router")
-
+func (er *EdgeRouter) connectMMTPToRouter(ctx context.Context, wg *sync.WaitGroup) error {
 	connect := &mmtp.MmtpMessage{
 		MsgType: mmtp.MsgType_PROTOCOL_MESSAGE,
 		Uuid:    uuid.NewString(),
@@ -198,25 +191,42 @@ func (er *EdgeRouter) StartEdgeRouter(ctx context.Context, wg *sync.WaitGroup, c
 	}
 	err := writeMessage(ctx, er.routerWs, connect)
 	if err != nil {
-		log.Println("Could not send connect message:", err)
-		return
+		return fmt.Errorf("could not send connect message: %w", err)
 	}
 
 	response, _, err := readMessage(ctx, er.routerWs)
 	if err != nil {
-		log.Println("Something went wrong while receiving response from MMS Router:", err)
-		return
+		return fmt.Errorf("something went wrong while receiving response from MMS Router: %w", err)
 	}
 
 	connectResp := response.GetResponseMessage()
 	if connectResp.Response != mmtp.ResponseEnum_GOOD {
-		log.Println("MMS Router did not accept Connect:", connectResp.GetReasonText())
-		return
+		return fmt.Errorf("the MMS Router did not accept Connect: %s", connectResp.GetReasonText())
 	}
 
-	// TODO store reconnect token and handle reconnection in case of disconnect
+	wg.Add(2)
+	go handleIncomingMessages(ctx, er, wg)
+	go handleOutgoingMessages(ctx, er, wg)
+	return nil
+}
 
-	wg.Add(4)
+func (er *EdgeRouter) StartEdgeRouter(ctx context.Context, wg *sync.WaitGroup, certPath *string, certKeyPath *string) {
+	defer func() {
+		close(er.outgoingChannel)
+		wg.Done()
+	}()
+
+	log.Println("Starting Edge Router")
+
+	// TODO store reconnect token and handle reconnection in case of disconnect
+	if er.routerWs != nil {
+		err := er.connectMMTPToRouter(ctx, wg)
+		if err != nil {
+			log.Println(err)
+		}
+	}
+
+	wg.Add(2)
 	go func() {
 		log.Println("Websocket listening on:", er.httpServer.Addr)
 		if *certPath != "" && *certKeyPath != "" {
@@ -231,8 +241,6 @@ func (er *EdgeRouter) StartEdgeRouter(ctx context.Context, wg *sync.WaitGroup, c
 		wg.Done()
 	}()
 
-	go handleIncomingMessages(ctx, er, wg)
-	go handleOutgoingMessages(ctx, er, wg)
 	go er.messageGC(ctx, wg)
 
 	<-ctx.Done()
@@ -251,21 +259,51 @@ func (er *EdgeRouter) StartEdgeRouter(ctx context.Context, wg *sync.WaitGroup, c
 		},
 	}
 	er.routerConnMu.Lock()
-	if err = writeMessage(context.Background(), er.routerWs, disconnectMsg); err != nil {
-		log.Println("Could not send disconnect to Router:", err)
+
+	if er.routerWs != nil {
+		if err := writeMessage(context.Background(), er.routerWs, disconnectMsg); err != nil {
+			log.Println("Could not send disconnect to Router:", err)
+		}
+
+		response, _, err := readMessage(context.Background(), er.routerWs)
+		if err != nil || response.GetResponseMessage().Response != mmtp.ResponseEnum_GOOD {
+			log.Println("Graceful disconnect from Router failed")
+		}
+
+		<-er.routerWs.CloseRead(context.Background()).Done()
 	}
 
-	response, _, err = readMessage(context.Background(), er.routerWs)
-	if err != nil || response.GetResponseMessage().Response != mmtp.ResponseEnum_GOOD {
-		log.Println("Graceful disconnect from Router failed")
-	}
-
-	<-er.routerWs.CloseRead(context.Background()).Done()
-
-	if err = er.httpServer.Shutdown(context.Background()); err != nil {
+	if err := er.httpServer.Shutdown(context.Background()); err != nil {
 		log.Println(err)
 	}
 	er.routerConnMu.Unlock()
+}
+
+func (er *EdgeRouter) TryConnectRouter(ctx context.Context, wg *sync.WaitGroup, routerAddr *string, httpClient *http.Client) {
+	defer wg.Done()
+	//Runs until a router has been found
+	for {
+		fmt.Println("Trying to conn router")
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(5 * time.Second):
+			routerWs, _, err := websocket.Dial(ctx, *routerAddr, &websocket.DialOptions{HTTPClient: httpClient, CompressionMode: websocket.CompressionContextTakeover})
+			if err != nil {
+				continue
+			}
+			er.routerConnMu.Lock()
+			er.routerWs = routerWs
+			er.routerWs.SetReadLimit(WsReadLimit)
+			er.routerConnMu.Unlock()
+			err = er.connectMMTPToRouter(ctx, wg)
+			if err != nil {
+				log.Println(err)
+			}
+			fmt.Println("Router connected")
+			return
+		}
+	}
 }
 
 // Function for garbage collection of expired messages
@@ -1326,11 +1364,11 @@ func main() {
 	routerWs, _, err := websocket.Dial(ctx, *routerAddr, &websocket.DialOptions{HTTPClient: httpClient, CompressionMode: websocket.CompressionContextTakeover})
 	if err != nil {
 		log.Println("Could not connect to MMS Router:", err)
-		return
+		log.Println("Starting EdgeRouter without connection to Router")
+	} else {
+		// Set the read limit to 1 MiB instead of 32 KiB
+		routerWs.SetReadLimit(WsReadLimit)
 	}
-
-	// Set the read limit to 1 MiB instead of 32 KiB
-	routerWs.SetReadLimit(WsReadLimit)
 
 	wg := &sync.WaitGroup{}
 
@@ -1340,7 +1378,14 @@ func main() {
 		return
 	}
 
+	//Start thread to probe for a router connection
+	if routerWs == nil {
+		wg.Add(1)
+		go er.TryConnectRouter(ctx, wg, routerAddr, httpClient)
+	}
+
 	wg.Add(1)
+	fmt.Println("Starting edge router")
 	go er.StartEdgeRouter(ctx, wg, certPath, certKeyPath)
 
 	mdnsServer, err := zeroconf.Register("MMS Edge Router", "_mms-edgerouter._tcp", "local.", *listeningPort, nil, nil)
