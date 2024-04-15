@@ -48,6 +48,7 @@ const (
 	WsReadLimit      int64         = 1 << 20             // 1 MiB = 1048576 B
 	MessageSizeLimit int           = 50 * (1 << 10)      // 50 KiB = 51200 B
 	ExpirationLimit  time.Duration = time.Hour * 24 * 30 // 30 days
+	ChannelBufSize   int           = 1048576
 )
 
 // Agent type representing a connected Edge Router
@@ -1339,7 +1340,7 @@ func main() {
 
 	flag.Parse()
 
-	outgoingChannel := make(chan *mmtp.MmtpMessage)
+	outgoingChannel := make(chan *mmtp.MmtpMessage, ChannelBufSize)
 
 	certificates := make([]tls.Certificate, 0, 1)
 
