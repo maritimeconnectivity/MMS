@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-option go_package = "mmtp";
+option go_package = "./mmtp";
 
 message ApplicationMessage {
   ApplicationMessageHeader header = 1;
@@ -48,6 +48,7 @@ message ProtocolMessage {
     Fetch fetchMessage = 6;
     Disconnect disconnectMessage = 7;
     Connect connectMessage = 8;
+    Notify notifyMessage = 9;
   }
 }
 
@@ -90,6 +91,10 @@ message Connect {
   optional string reconnectToken = 2;
 }
 
+message Notify {
+  repeated MessageMetadata messageMetadata = 1;
+}
+
 enum ProtocolMessageType {
   UNSPECIFIED = 0;
   SUBSCRIBE_MESSAGE = 1;
@@ -99,6 +104,7 @@ enum ProtocolMessageType {
   FETCH_MESSAGE = 5;
   DISCONNECT_MESSAGE = 6;
   CONNECT_MESSAGE = 7;
+  NOTIFY_MESSAGE = 8;
 }
 
 message ResponseMessage {
