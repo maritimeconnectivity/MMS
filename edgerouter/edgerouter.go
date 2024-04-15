@@ -283,7 +283,6 @@ func (er *EdgeRouter) TryConnectRouter(ctx context.Context, wg *sync.WaitGroup, 
 	defer wg.Done()
 	//Runs until a router has been found
 	for {
-		fmt.Println("Trying to conn router")
 		select {
 		case <-ctx.Done():
 			return
