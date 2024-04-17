@@ -488,14 +488,12 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 								log.Println("Failed handling Subscribe message:", err)
 								sendErrorMessage(mmtpMessage.GetUuid(), errorText, request.Context(), c)
 							}
-							break
 						}
 					case mmtp.ProtocolMessageType_UNSUBSCRIBE_MESSAGE:
 						{
 							if err = handleUnsubscribe(mmtpMessage, subMu, subs, e, request, c); err != nil {
 								log.Println("Failed handling Unsubscribe message:", err)
 							}
-							break
 						}
 					case mmtp.ProtocolMessageType_SEND_MESSAGE:
 						{
@@ -504,21 +502,18 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 								break
 							}
 							handleSend(mmtpMessage, outgoingChannel, erMu, subMu, subs, e)
-							break
 						}
 					case mmtp.ProtocolMessageType_RECEIVE_MESSAGE:
 						{
 							if err = handleReceive(mmtpMessage, e, request, c); err != nil {
 								log.Println("Failed handling Receive message:", err)
 							}
-							break
 						}
 					case mmtp.ProtocolMessageType_FETCH_MESSAGE:
 						{
 							if err = handleFetch(mmtpMessage, e, request, c); err != nil {
 								log.Println("Failed handling Fetch message:", err)
 							}
-							break
 						}
 					case mmtp.ProtocolMessageType_DISCONNECT_MESSAGE:
 						{
@@ -530,7 +525,6 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 					case mmtp.ProtocolMessageType_CONNECT_MESSAGE:
 						{
 							sendErrorMessage(mmtpMessage.GetUuid(), "Already connected", request.Context(), c)
-							break
 						}
 					default:
 						continue
@@ -987,7 +981,6 @@ func handleSubscription(ctx context.Context, sub *pubsub.Subscription, host *hos
 						if sendMsg := mmtpMessage.GetProtocolMessage().GetSendMessage(); sendMsg != nil {
 							incomingChannel <- &mmtpMessage
 						}
-						break
 					}
 				case mmtp.MsgType_RESPONSE_MESSAGE:
 				default:

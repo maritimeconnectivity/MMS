@@ -490,7 +490,6 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 					}
 					return
 				}
-				break
 			default:
 				if err = c.Close(websocket.StatusPolicyViolation, "The provided client certificate does not use an allowed public key algorithm"); err != nil {
 					log.Println(err)
@@ -501,13 +500,10 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 			switch pubKeyLen {
 			case 256:
 				signatureAlgorithm = x509.ECDSAWithSHA256
-				break
 			case 384:
 				signatureAlgorithm = x509.ECDSAWithSHA384
-				break
 			case 512:
 				signatureAlgorithm = x509.ECDSAWithSHA512
-				break
 			default:
 				if err = c.Close(websocket.StatusPolicyViolation, "The public key length of the provided client certificate is not supported"); err != nil {
 					log.Println(err)
@@ -654,14 +650,12 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 							if err = handleSubscribe(mmtpMessage, agent, subMu, subs, outgoingChannel, request, c); err != nil {
 								log.Println("Failed handling Subscribe message:", err)
 							}
-							break
 						}
 					case mmtp.ProtocolMessageType_UNSUBSCRIBE_MESSAGE:
 						{
 							if err = handleUnsubscribe(mmtpMessage, subMu, subs, agent, request, c, outgoingChannel); err != nil {
 								log.Println("Failed handling Unsubscribe message:", err)
 							}
-							break
 						}
 					case mmtp.ProtocolMessageType_SEND_MESSAGE:
 						{
@@ -670,21 +664,18 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 								break
 							}
 							handleSend(mmtpMessage, outgoingChannel, request, c, signatureAlgorithm, mrnToAgent, mrnToAgentMu, subMu, subs, agent)
-							break
 						}
 					case mmtp.ProtocolMessageType_RECEIVE_MESSAGE:
 						{
 							if err = handleReceive(mmtpMessage, agent, request, c); err != nil {
 								log.Println("Failed handling Receive message:", err)
 							}
-							break
 						}
 					case mmtp.ProtocolMessageType_FETCH_MESSAGE:
 						{
 							if err = handleFetch(mmtpMessage, agent, request, c); err != nil {
 								log.Println("Failed handling Fetch message:", err)
 							}
-							break
 						}
 					case mmtp.ProtocolMessageType_DISCONNECT_MESSAGE:
 						{
@@ -696,7 +687,6 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 					case mmtp.ProtocolMessageType_CONNECT_MESSAGE:
 						{
 							sendErrorMessage(mmtpMessage.GetUuid(), "Already connected", request.Context(), c)
-							break
 						}
 					default:
 						continue
@@ -723,7 +713,6 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 						return
 					}
 				}
-				break
 
 			default:
 				continue
@@ -1324,7 +1313,6 @@ func handleIncomingMessages(ctx context.Context, edgeRouter *EdgeRouter, wg *syn
 									}
 								}
 								edgeRouter.subMu.RUnlock()
-								break
 							}
 						case *mmtp.ApplicationMessageHeader_Recipients:
 							{
@@ -1339,7 +1327,6 @@ func handleIncomingMessages(ctx context.Context, edgeRouter *EdgeRouter, wg *syn
 									}
 								}
 								edgeRouter.mrnToAgentMu.RUnlock()
-								break
 							}
 						}
 					}
