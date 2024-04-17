@@ -94,16 +94,13 @@ func (a *Agent) BulkQueueMessages(mmtpMessages []*mmtp.MmtpMessage) {
 
 func (a *Agent) notify(ctx context.Context, c *websocket.Conn) error {
 	notifications := make([]*mmtp.MessageMetadata, 0, len(a.Notifications))
-	for msgUuid := range a.Notifications {
-		mmtpMsg, exists := a.Notifications[msgUuid]
-		if exists {
-			msgMetadata := &mmtp.MessageMetadata{
-				Uuid:   mmtpMsg.GetUuid(),
-				Header: mmtpMsg.GetProtocolMessage().GetSendMessage().GetApplicationMessage().GetHeader(),
-			}
-			notifications = append(notifications, msgMetadata)
-			delete(a.Notifications, msgUuid)
+	for msgUuid, mmtpMsg := range a.Notifications {
+		msgMetadata := &mmtp.MessageMetadata{
+			Uuid:   mmtpMsg.GetUuid(),
+			Header: mmtpMsg.GetProtocolMessage().GetSendMessage().GetApplicationMessage().GetHeader(),
 		}
+		notifications = append(notifications, msgMetadata)
+		delete(a.Notifications, msgUuid)
 	}
 
 	notifyMsg := &mmtp.MmtpMessage{
@@ -1351,8 +1348,7 @@ func handleIncomingMessages(ctx context.Context, edgeRouter *EdgeRouter, wg *syn
 				{
 					protocolMsgType := response.GetProtocolMessage().GetProtocolMsgType()
 					if protocolMsgType == mmtp.ProtocolMessageType_NOTIFY_MESSAGE {
-						metaData := make([]*mmtp.MessageMetadata, 0, len(response.GetProtocolMessage().GetNotifyMessage().GetMessageMetadata()))
-						if err = edgeRouter.handleNotify(metaData); err != nil {
+						if err = edgeRouter.handleNotify(response.GetProtocolMessage().GetNotifyMessage().GetMessageMetadata()); err != nil {
 							log.Println("Could not handle Notify received from router", err)
 							continue
 						}
@@ -1459,8 +1455,7 @@ func main() {
 	httpClient := &http.Client{
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
-				Certificates:       certificates,
-				InsecureSkipVerify: true,
+				Certificates: certificates,
 			},
 		},
 	}

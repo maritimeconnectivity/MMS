@@ -65,6 +65,8 @@ type EdgeRouter struct {
 	Messages       map[string]*mmtp.MmtpMessage // the incoming messages for this EdgeRouter
 	msgMu          *sync.RWMutex                // RWMutex for locking the Messages map
 	reconnectToken string                       // token for reconnecting to a previous session
+	Notifications  map[string]*mmtp.MmtpMessage // Map containing pointers to messages, which the Edgerouter should be notified about
+	notifyMu       *sync.RWMutex                // a Mutex for Notifications map
 }
 
 func (er *EdgeRouter) QueueMessage(mmtpMessage *mmtp.MmtpMessage) error {
@@ -76,6 +78,9 @@ func (er *EdgeRouter) QueueMessage(mmtpMessage *mmtp.MmtpMessage) error {
 		er.msgMu.Lock()
 		er.Messages[uUid] = mmtpMessage
 		er.msgMu.Unlock()
+		er.notifyMu.Lock()
+		er.Notifications[uUid] = mmtpMessage
+		er.notifyMu.Unlock()
 	} else {
 		return fmt.Errorf("edge Router resolved to nil while trying to queue message")
 	}
@@ -89,6 +94,58 @@ func (er *EdgeRouter) BulkQueueMessages(mmtpMessages []*mmtp.MmtpMessage) {
 			er.Messages[message.Uuid] = message
 		}
 		er.msgMu.Unlock()
+	}
+}
+
+func (er *EdgeRouter) notify(ctx context.Context, c *websocket.Conn) error {
+	notifications := make([]*mmtp.MessageMetadata, 0, len(er.Notifications))
+	for msgUuid, mmtpMsg := range er.Notifications {
+		msgMetadata := &mmtp.MessageMetadata{
+			Uuid:   mmtpMsg.GetUuid(),
+			Header: mmtpMsg.GetProtocolMessage().GetSendMessage().GetApplicationMessage().GetHeader(),
+		}
+		notifications = append(notifications, msgMetadata)
+		delete(er.Notifications, msgUuid)
+	}
+
+	notifyMsg := &mmtp.MmtpMessage{
+		MsgType: mmtp.MsgType_PROTOCOL_MESSAGE,
+		Uuid:    uuid.NewString(),
+		Body: &mmtp.MmtpMessage_ProtocolMessage{
+			ProtocolMessage: &mmtp.ProtocolMessage{
+				ProtocolMsgType: mmtp.ProtocolMessageType_NOTIFY_MESSAGE,
+				Body: &mmtp.ProtocolMessage_NotifyMessage{
+					NotifyMessage: &mmtp.Notify{
+						MessageMetadata: notifications,
+					},
+				},
+			},
+		},
+	}
+	err := writeMessage(ctx, c, notifyMsg)
+	if err != nil {
+		return fmt.Errorf("could not send Notify to Agent: %w", err)
+	}
+	return nil
+}
+
+// Checks if there are messages the Edgerouter has not been notified about and notifies about these
+func (er *EdgeRouter) checkNewMessages(ctx context.Context, c *websocket.Conn, wg *sync.WaitGroup) {
+	defer wg.Done()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(5 * time.Second):
+			er.notifyMu.Lock()
+			if len(er.Notifications) > 0 {
+				if err := er.notify(ctx, c); err != nil {
+					log.Println("Failed Notifying Edgerouter:", err)
+				}
+			}
+			er.notifyMu.Unlock()
+			continue
+		}
 	}
 }
 
@@ -354,10 +411,12 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 			}
 		} else {
 			e = &EdgeRouter{
-				Mrn:       erMrn,
-				Interests: make([]string, 0, 1),
-				Messages:  make(map[string]*mmtp.MmtpMessage),
-				msgMu:     &sync.RWMutex{},
+				Mrn:           erMrn,
+				Interests:     make([]string, 0, 1),
+				Messages:      make(map[string]*mmtp.MmtpMessage),
+				msgMu:         &sync.RWMutex{},
+				Notifications: make(map[string]*mmtp.MmtpMessage),
+				notifyMu:      &sync.RWMutex{},
 			}
 		}
 
@@ -382,6 +441,12 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 			log.Println("Could not send response message:", err)
 			return
 		}
+
+		//Start thread that checks for incoming messages and notfies edgerouter
+		wg.Add(1)
+		erCtx, cancel := context.WithCancel(ctx)
+		defer cancel() //When done handling edgerouter
+		go e.checkNewMessages(erCtx, c, wg)
 
 		for {
 			mmtpMessage, n, err := readMessage(ctx, c)
@@ -649,6 +714,7 @@ func handleReceive(mmtpMessage *mmtp.MmtpMessage, e *EdgeRouter, request *http.R
 			mmtpMessages := make([]*mmtp.MmtpMessage, 0, msgsLen)
 			appMsgs := make([]*mmtp.ApplicationMessage, 0, msgsLen)
 			e.msgMu.Lock()
+			e.notifyMu.Lock()
 			for _, msgUuid := range msgUuids {
 				mmtpMsg, exists := e.Messages[msgUuid]
 				if exists {
@@ -656,8 +722,10 @@ func handleReceive(mmtpMessage *mmtp.MmtpMessage, e *EdgeRouter, request *http.R
 					mmtpMessages = append(mmtpMessages, mmtpMsg)
 					appMsgs = append(appMsgs, msg)
 					delete(e.Messages, msgUuid)
+					delete(e.Notifications, msgUuid) //Delete upcoming notification
 				}
 			}
+			e.notifyMu.Unlock()
 			resp := &mmtp.MmtpMessage{
 				MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
 				Uuid:    uuid.NewString(),
@@ -678,12 +746,15 @@ func handleReceive(mmtpMessage *mmtp.MmtpMessage, e *EdgeRouter, request *http.R
 			msgsLen := len(e.Messages)
 			appMsgs := make([]*mmtp.ApplicationMessage, 0, msgsLen)
 			now := time.Now().UnixMilli()
-			for _, mmtpMsg := range e.Messages {
+			e.notifyMu.Lock()
+			for msgUuid, mmtpMsg := range e.Messages {
 				msg := mmtpMsg.GetProtocolMessage().GetSendMessage().GetApplicationMessage()
 				if now <= msg.Header.Expires {
 					appMsgs = append(appMsgs, msg)
+					delete(e.Notifications, msgUuid)
 				}
 			}
+			e.notifyMu.Unlock()
 			resp := &mmtp.MmtpMessage{
 				MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
 				Uuid:    uuid.NewString(),
