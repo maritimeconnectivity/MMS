@@ -391,6 +391,37 @@ func (er *EdgeRouter) messageGC(ctx context.Context, wg *sync.WaitGroup) {
 	}
 }
 
+// This function adds a request to the outgoing ch to receive messages from the router upon receiving a notify from the router
+func (er *EdgeRouter) handleNotify(metadata []*mmtp.MessageMetadata) error {
+
+	//Filter such that we only request to receive messages we were notified about
+	filter := make([]string, 0, len(metadata))
+	for elem := range metadata {
+		uuId := metadata[elem].GetUuid()
+		filter = append(filter, uuId)
+	}
+
+	receiveMsg := &mmtp.MmtpMessage{
+		MsgType: mmtp.MsgType_PROTOCOL_MESSAGE,
+		Uuid:    uuid.NewString(),
+		Body: &mmtp.MmtpMessage_ProtocolMessage{
+			ProtocolMessage: &mmtp.ProtocolMessage{
+				ProtocolMsgType: mmtp.ProtocolMessageType_RECEIVE_MESSAGE,
+				Body: &mmtp.ProtocolMessage_ReceiveMessage{
+					ReceiveMessage: &mmtp.Receive{
+						Filter: &mmtp.Filter{
+							MessageUuids: filter,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	er.outgoingChannel <- receiveMsg
+	return nil
+}
+
 func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[string]*Subscription, subMu *sync.RWMutex, agents map[string]*Agent, agentsMu *sync.RWMutex, mrnToAgent map[string]*Agent, mrnToAgentMu *sync.RWMutex, ctx context.Context, wg *sync.WaitGroup) http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
 		wg.Add(1)
@@ -1323,6 +1354,21 @@ func handleIncomingMessages(ctx context.Context, edgeRouter *EdgeRouter, wg *syn
 						}
 					}
 				}
+			case *mmtp.MmtpMessage_ProtocolMessage:
+				{
+					protocolMsgType := response.GetProtocolMessage().GetProtocolMsgType()
+					if protocolMsgType == mmtp.ProtocolMessageType_NOTIFY_MESSAGE {
+						metaData := make([]*mmtp.MessageMetadata, 0, len(response.GetProtocolMessage().GetNotifyMessage().GetMessageMetadata()))
+						if err = edgeRouter.handleNotify(metaData); err != nil {
+							log.Println("Could not handle Notify received from router", err)
+							continue
+						}
+					} else {
+						log.Println("ERR, received ProtocolMsg with type: ", protocolMsgType)
+						continue
+					}
+				}
+
 			default:
 				continue
 			}
