@@ -1353,7 +1353,7 @@ func handleIncomingMessages(ctx context.Context, edgeRouter *EdgeRouter, wg *syn
 							continue
 						}
 					} else {
-						log.Println("ERR, received ProtocolMsg with type: ", protocolMsgType)
+						log.Println("ERR, received ProtocolMsg with type:", protocolMsgType.String())
 						continue
 					}
 				}
