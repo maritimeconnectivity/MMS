@@ -1,6 +1,6 @@
 module github.com/maritimeconnectivity/MMS/router
 
-go 1.22
+go 1.22.2
 
 require (
 	github.com/google/uuid v1.6.0
@@ -8,7 +8,7 @@ require (
 	github.com/libp2p/go-libp2p-kad-dht v0.25.2
 	github.com/libp2p/go-libp2p-pubsub v0.10.0
 	github.com/maritimeconnectivity/MMS/mmtp v0.0.0
-	golang.org/x/crypto v0.22.0
+	github.com/maritimeconnectivity/MMS/utils v0.0.0-00010101000000-000000000000
 	google.golang.org/protobuf v1.33.0
 	nhooyr.io/websocket v1.8.11
 )
@@ -104,6 +104,7 @@ require (
 	go.uber.org/mock v0.4.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.27.0 // indirect
+	golang.org/x/crypto v0.22.0 // indirect
 	golang.org/x/exp v0.0.0-20240213143201-ec583247a57a // indirect
 	golang.org/x/mod v0.15.0 // indirect
 	golang.org/x/net v0.21.0 // indirect
@@ -116,3 +117,5 @@ require (
 )
 
 replace github.com/maritimeconnectivity/MMS/mmtp => ../mmtp
+
+replace github.com/maritimeconnectivity/MMS/utils => ../utils
