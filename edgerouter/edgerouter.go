@@ -51,7 +51,6 @@ const (
 // Agent type representing a connected Edge Router
 type Agent struct {
 	consumers.Consumer        // A base struct that applies both to Agent and Edge Router consumers
-	reconnectToken     string // token for reconnecting to a previous session
 	agentUuid          string // UUID for uniquely identifying this Agent
 	directMessages     bool   // bool indicating whether the Agent is subscribing to direct messages
 	authenticated      bool   // bool indicating whther the Agent is authenticated
@@ -460,7 +459,7 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 					return
 				}
 			}
-			if connect.GetReconnectToken() != agent.reconnectToken {
+			if connect.GetReconnectToken() != agent.ReconnectToken {
 				errorMsg := "The given reconnect token does not match the one that is stored"
 				resp := &mmtp.MmtpMessage{
 					MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
@@ -478,7 +477,7 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 				}
 			}
 			agentsMu.Lock()
-			delete(agents, agent.reconnectToken)
+			delete(agents, agent.ReconnectToken)
 			agentsMu.Unlock()
 		} else {
 			agent = &Agent{
@@ -500,10 +499,10 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 			}
 		}
 
-		agent.reconnectToken = uuid.NewString()
+		agent.ReconnectToken = uuid.NewString()
 
 		agentsMu.Lock()
-		agents[agent.reconnectToken] = agent
+		agents[agent.ReconnectToken] = agent
 		agentsMu.Unlock()
 
 		resp := &mmtp.MmtpMessage{
@@ -512,7 +511,7 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 			Body: &mmtp.MmtpMessage_ResponseMessage{
 				ResponseMessage: &mmtp.ResponseMessage{
 					ResponseToUuid: mmtpMessage.GetUuid(),
-					ReconnectToken: &agent.reconnectToken,
+					ReconnectToken: &agent.ReconnectToken,
 					Response:       mmtp.ResponseEnum_GOOD,
 				}},
 		}
