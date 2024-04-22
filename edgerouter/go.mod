@@ -1,14 +1,16 @@
 module github.com/maritimeconnectivity/MMS/edgerouter
 
-go 1.22
+go 1.22.2
 
 require (
 	github.com/google/uuid v1.6.0
 	github.com/libp2p/zeroconf/v2 v2.2.0
+	github.com/maritimeconnectivity/MMS/mmsUtils v0.0.0-00010101000000-000000000000
 	github.com/maritimeconnectivity/MMS/mmtp v0.0.0
 	golang.org/x/crypto v0.22.0
 	google.golang.org/protobuf v1.33.0
 	nhooyr.io/websocket v1.8.11
+
 )
 
 require (
@@ -18,3 +20,5 @@ require (
 )
 
 replace github.com/maritimeconnectivity/MMS/mmtp => ../mmtp
+
+replace github.com/maritimeconnectivity/MMS/mmsUtils => ../mmsUtils
