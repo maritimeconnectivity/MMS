@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"github.com/google/uuid"
 	"github.com/libp2p/zeroconf/v2"
+	"github.com/maritimeconnectivity/MMS/consumers"
 	"github.com/maritimeconnectivity/MMS/mmtp"
 	"github.com/maritimeconnectivity/MMS/utils/auth"
 	"github.com/maritimeconnectivity/MMS/utils/revocation"
@@ -49,44 +50,11 @@ const (
 
 // Agent type representing a connected Edge Router
 type Agent struct {
-	Mrn            string                       // the MRN of the Agent
-	Interests      []string                     // the Interests that the Agent wants to subscribe to
-	Messages       map[string]*mmtp.MmtpMessage // the incoming messages for this Agent
-	msgMu          *sync.RWMutex                // RWMutex for locking the Messages map
-	Notifications  map[string]*mmtp.MmtpMessage
-	notifyMu       *sync.RWMutex
-	reconnectToken string // token for reconnecting to a previous session
-	agentUuid      string // UUID for uniquely identifying this Agent
-	directMessages bool   // bool indicating whether the Agent is subscribing to direct messages
-	authenticated  bool   // bool indicating whther the Agent is authenticated
-}
-
-func (a *Agent) QueueMessage(mmtpMessage *mmtp.MmtpMessage) error {
-	if a != nil {
-		uUid := mmtpMessage.GetUuid()
-		if uUid == "" {
-			return fmt.Errorf("the message does not contain a UUID")
-		}
-		a.msgMu.Lock()
-		a.Messages[uUid] = mmtpMessage
-		a.msgMu.Unlock()
-		a.notifyMu.Lock()
-		a.Notifications[uUid] = mmtpMessage
-		a.notifyMu.Unlock()
-	} else {
-		return fmt.Errorf("agent resolved to nil while trying to queue message")
-	}
-	return nil
-}
-
-func (a *Agent) BulkQueueMessages(mmtpMessages []*mmtp.MmtpMessage) {
-	if a != nil {
-		a.msgMu.Lock()
-		for _, message := range mmtpMessages {
-			a.Messages[message.Uuid] = message
-		}
-		a.msgMu.Unlock()
-	}
+	consumers.Consumer        // A base struct that applies both to Agent and Edge Router consumers
+	reconnectToken     string // token for reconnecting to a previous session
+	agentUuid          string // UUID for uniquely identifying this Agent
+	directMessages     bool   // bool indicating whether the Agent is subscribing to direct messages
+	authenticated      bool   // bool indicating whther the Agent is authenticated
 }
 
 func (a *Agent) notify(ctx context.Context, c *websocket.Conn) error {
@@ -129,13 +97,13 @@ func (a *Agent) checkNewMessages(ctx context.Context, c *websocket.Conn, wg *syn
 		case <-ctx.Done():
 			return
 		case <-time.After(5 * time.Second):
-			a.notifyMu.Lock()
+			a.NotifyMu.Lock()
 			if len(a.Notifications) > 0 {
 				if err := a.notify(ctx, c); err != nil {
 					log.Println("Failed Notifying Agent:", err)
 				}
 			}
-			a.notifyMu.Unlock()
+			a.NotifyMu.Unlock()
 			continue
 		}
 	}
@@ -371,14 +339,14 @@ func (er *EdgeRouter) messageGC(ctx context.Context, wg *sync.WaitGroup) {
 			er.agentsMu.RLock()
 			now := time.Now().UnixMilli()
 			for _, a := range er.agents {
-				a.msgMu.Lock()
+				a.MsgMu.Lock()
 				for _, m := range a.Messages {
 					expires := m.GetProtocolMessage().GetSendMessage().GetApplicationMessage().GetHeader().GetExpires()
 					if now > expires {
 						delete(a.Messages, m.Uuid)
 					}
 				}
-				a.msgMu.Unlock()
+				a.MsgMu.Unlock()
 			}
 			er.agentsMu.RUnlock()
 		}
@@ -514,12 +482,14 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 			agentsMu.Unlock()
 		} else {
 			agent = &Agent{
-				Mrn:           agentMrn,
-				Interests:     make([]string, 0, 1),
-				Messages:      make(map[string]*mmtp.MmtpMessage),
-				msgMu:         &sync.RWMutex{},
-				Notifications: make(map[string]*mmtp.MmtpMessage),
-				notifyMu:      &sync.RWMutex{},
+				Consumer: consumers.Consumer{
+					Mrn:           agentMrn,
+					Interests:     make([]string, 0, 1),
+					Messages:      make(map[string]*mmtp.MmtpMessage),
+					MsgMu:         &sync.RWMutex{},
+					Notifications: make(map[string]*mmtp.MmtpMessage),
+					NotifyMu:      &sync.RWMutex{},
+				},
 				agentUuid:     uuid.NewString(),
 				authenticated: authenticated,
 			}
@@ -908,8 +878,8 @@ func handleReceive(mmtpMessage *mmtp.MmtpMessage, agent *Agent, request *http.Re
 			msgsLen := len(msgUuids)
 			mmtpMessages := make([]*mmtp.MmtpMessage, 0, msgsLen)
 			appMsgs := make([]*mmtp.ApplicationMessage, 0, msgsLen)
-			agent.msgMu.Lock()
-			agent.notifyMu.Lock()
+			agent.MsgMu.Lock()
+			agent.NotifyMu.Lock()
 			for _, msgUuid := range msgUuids {
 				mmtpMsg, exists := agent.Messages[msgUuid]
 				if exists {
@@ -920,7 +890,7 @@ func handleReceive(mmtpMessage *mmtp.MmtpMessage, agent *Agent, request *http.Re
 					delete(agent.Notifications, msgUuid) //Delete upcoming notification
 				}
 			}
-			agent.notifyMu.Unlock()
+			agent.NotifyMu.Unlock()
 			resp := &mmtp.MmtpMessage{
 				MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
 				Uuid:    uuid.NewString(),
@@ -931,17 +901,17 @@ func handleReceive(mmtpMessage *mmtp.MmtpMessage, agent *Agent, request *http.Re
 				}},
 			}
 			err := writeMessage(request.Context(), c, resp)
-			agent.msgMu.Unlock()
+			agent.MsgMu.Unlock()
 			if err != nil {
 				agent.BulkQueueMessages(mmtpMessages)
 				return fmt.Errorf("could not send messages to Agent: %w", err)
 			}
 		} else { // Receive all messages
-			agent.msgMu.Lock()
+			agent.MsgMu.Lock()
 			msgsLen := len(agent.Messages)
 			appMsgs := make([]*mmtp.ApplicationMessage, 0, msgsLen)
 			now := time.Now().UnixMilli()
-			agent.notifyMu.Lock()
+			agent.NotifyMu.Lock()
 			for msgUuid, mmtpMsg := range agent.Messages {
 				msg := mmtpMsg.GetProtocolMessage().GetSendMessage().GetApplicationMessage()
 				if now <= msg.Header.Expires {
@@ -949,7 +919,7 @@ func handleReceive(mmtpMessage *mmtp.MmtpMessage, agent *Agent, request *http.Re
 					delete(agent.Notifications, msgUuid) //Delete upcoming notification
 				}
 			}
-			agent.notifyMu.Unlock()
+			agent.NotifyMu.Unlock()
 			resp := &mmtp.MmtpMessage{
 				MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
 				Uuid:    uuid.NewString(),
@@ -960,7 +930,7 @@ func handleReceive(mmtpMessage *mmtp.MmtpMessage, agent *Agent, request *http.Re
 				}},
 			}
 
-			defer agent.msgMu.Unlock()
+			defer agent.MsgMu.Unlock()
 
 			err := writeMessage(request.Context(), c, resp)
 			if err != nil {
@@ -975,8 +945,8 @@ func handleReceive(mmtpMessage *mmtp.MmtpMessage, agent *Agent, request *http.Re
 
 func handleFetch(mmtpMessage *mmtp.MmtpMessage, agent *Agent, request *http.Request, c *websocket.Conn) error {
 	if fetch := mmtpMessage.GetProtocolMessage().GetFetchMessage(); fetch != nil {
-		agent.msgMu.Lock()
-		defer agent.msgMu.Unlock()
+		agent.MsgMu.Lock()
+		defer agent.MsgMu.Unlock()
 		metadata := make([]*mmtp.MessageMetadata, 0, len(agent.Messages))
 		now := time.Now().UnixMilli()
 		for _, msg := range agent.Messages {

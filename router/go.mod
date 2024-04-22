@@ -11,6 +11,7 @@ require (
 	github.com/maritimeconnectivity/MMS/utils v0.0.0-00010101000000-000000000000
 	google.golang.org/protobuf v1.33.0
 	nhooyr.io/websocket v1.8.11
+	github.com/maritimeconnectivity/MMS/consumers v0.0.0
 )
 
 require (
@@ -119,3 +120,4 @@ require (
 replace github.com/maritimeconnectivity/MMS/mmtp => ../mmtp
 
 replace github.com/maritimeconnectivity/MMS/utils => ../utils
+replace github.com/maritimeconnectivity/MMS/consumers => ../consumers
