@@ -24,7 +24,7 @@ import (
 	"fmt"
 	"github.com/google/uuid"
 	"github.com/libp2p/zeroconf/v2"
-	"github.com/maritimeconnectivity/MMS/consumers"
+	"github.com/maritimeconnectivity/MMS/consumer"
 	"github.com/maritimeconnectivity/MMS/mmtp"
 	"github.com/maritimeconnectivity/MMS/utils/auth"
 	"github.com/maritimeconnectivity/MMS/utils/revocation"
@@ -50,62 +50,10 @@ const (
 
 // Agent type representing a connected Edge Router
 type Agent struct {
-	consumers.Consumer        // A base struct that applies both to Agent and Edge Router consumers
-	agentUuid          string // UUID for uniquely identifying this Agent
-	directMessages     bool   // bool indicating whether the Agent is subscribing to direct messages
-	authenticated      bool   // bool indicating whther the Agent is authenticated
-}
-
-func (a *Agent) notify(ctx context.Context, c *websocket.Conn) error {
-	notifications := make([]*mmtp.MessageMetadata, 0, len(a.Notifications))
-	for msgUuid, mmtpMsg := range a.Notifications {
-		msgMetadata := &mmtp.MessageMetadata{
-			Uuid:   mmtpMsg.GetUuid(),
-			Header: mmtpMsg.GetProtocolMessage().GetSendMessage().GetApplicationMessage().GetHeader(),
-		}
-		notifications = append(notifications, msgMetadata)
-		delete(a.Notifications, msgUuid)
-	}
-
-	notifyMsg := &mmtp.MmtpMessage{
-		MsgType: mmtp.MsgType_PROTOCOL_MESSAGE,
-		Uuid:    uuid.NewString(),
-		Body: &mmtp.MmtpMessage_ProtocolMessage{
-			ProtocolMessage: &mmtp.ProtocolMessage{
-				ProtocolMsgType: mmtp.ProtocolMessageType_NOTIFY_MESSAGE,
-				Body: &mmtp.ProtocolMessage_NotifyMessage{
-					NotifyMessage: &mmtp.Notify{
-						MessageMetadata: notifications,
-					},
-				},
-			},
-		},
-	}
-	err := rw.WriteMessage(ctx, c, notifyMsg)
-	if err != nil {
-		return fmt.Errorf("could not send Notify to Agent: %w", err)
-	}
-	return nil
-}
-
-// Checks if there are messages the Agent has not been notified about and notifies about these
-func (a *Agent) checkNewMessages(ctx context.Context, c *websocket.Conn, wg *sync.WaitGroup) {
-	defer wg.Done()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(5 * time.Second):
-			a.NotifyMu.Lock()
-			if len(a.Notifications) > 0 {
-				if err := a.notify(ctx, c); err != nil {
-					log.Println("Failed Notifying Agent:", err)
-				}
-			}
-			a.NotifyMu.Unlock()
-			continue
-		}
-	}
+	consumer.Consumer        // A base struct that applies both to Agent and Edge Router consumers
+	agentUuid         string // UUID for uniquely identifying this Agent
+	directMessages    bool   // bool indicating whether the Agent is subscribing to direct messages
+	authenticated     bool   // bool indicating whther the Agent is authenticated
 }
 
 // Subscription type representing a subscription
@@ -481,7 +429,7 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 			agentsMu.Unlock()
 		} else {
 			agent = &Agent{
-				Consumer: consumers.Consumer{
+				Consumer: consumer.Consumer{
 					Mrn:           agentMrn,
 					Interests:     make([]string, 0, 1),
 					Messages:      make(map[string]*mmtp.MmtpMessage),
@@ -525,7 +473,7 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 		wg.Add(1)
 		agCtx, cancel := context.WithCancel(ctx)
 		defer cancel() //When done handling client
-		go agent.checkNewMessages(agCtx, c, wg)
+		go agent.CheckNewMessages(agCtx, c, wg)
 
 		for {
 			mmtpMessage, n, err := rw.ReadMessage(ctx, c)

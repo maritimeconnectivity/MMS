@@ -34,7 +34,7 @@ import (
 	drouting "github.com/libp2p/go-libp2p/p2p/discovery/routing"
 	dutil "github.com/libp2p/go-libp2p/p2p/discovery/util"
 	"github.com/libp2p/go-libp2p/p2p/protocol/identify"
-	"github.com/maritimeconnectivity/MMS/consumers"
+	"github.com/maritimeconnectivity/MMS/consumer"
 	"github.com/maritimeconnectivity/MMS/mmtp"
 	"github.com/maritimeconnectivity/MMS/utils/revocation"
 	"github.com/maritimeconnectivity/MMS/utils/rw"
@@ -60,59 +60,7 @@ const (
 
 // EdgeRouter type representing a connected Edge Router
 type EdgeRouter struct {
-	consumers.Consumer // A base struct that applies both to Agent and Edge Router consumers
-}
-
-func (er *EdgeRouter) notify(ctx context.Context, c *websocket.Conn) error {
-	notifications := make([]*mmtp.MessageMetadata, 0, len(er.Notifications))
-	for msgUuid, mmtpMsg := range er.Notifications {
-		msgMetadata := &mmtp.MessageMetadata{
-			Uuid:   mmtpMsg.GetUuid(),
-			Header: mmtpMsg.GetProtocolMessage().GetSendMessage().GetApplicationMessage().GetHeader(),
-		}
-		notifications = append(notifications, msgMetadata)
-		delete(er.Notifications, msgUuid)
-	}
-
-	notifyMsg := &mmtp.MmtpMessage{
-		MsgType: mmtp.MsgType_PROTOCOL_MESSAGE,
-		Uuid:    uuid.NewString(),
-		Body: &mmtp.MmtpMessage_ProtocolMessage{
-			ProtocolMessage: &mmtp.ProtocolMessage{
-				ProtocolMsgType: mmtp.ProtocolMessageType_NOTIFY_MESSAGE,
-				Body: &mmtp.ProtocolMessage_NotifyMessage{
-					NotifyMessage: &mmtp.Notify{
-						MessageMetadata: notifications,
-					},
-				},
-			},
-		},
-	}
-	err := writeMessage(ctx, c, notifyMsg)
-	if err != nil {
-		return fmt.Errorf("could not send Notify to Agent: %w", err)
-	}
-	return nil
-}
-
-// Checks if there are messages the Edgerouter has not been notified about and notifies about these
-func (er *EdgeRouter) checkNewMessages(ctx context.Context, c *websocket.Conn, wg *sync.WaitGroup) {
-	defer wg.Done()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(5 * time.Second):
-			er.NotifyMu.Lock()
-			if len(er.Notifications) > 0 {
-				if err := er.notify(ctx, c); err != nil {
-					log.Println("Failed Notifying Edgerouter:", err)
-				}
-			}
-			er.NotifyMu.Unlock()
-			continue
-		}
-	}
+	consumer.Consumer // A base struct that applies both to Agent and Edge Router consumers
 }
 
 // Subscription type representing a subscription
@@ -377,7 +325,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 			}
 		} else {
 			e = &EdgeRouter{
-				Consumer: consumers.Consumer{
+				Consumer: consumer.Consumer{
 					Mrn:           erMrn,
 					Interests:     make([]string, 0, 1),
 					Messages:      make(map[string]*mmtp.MmtpMessage),
@@ -414,7 +362,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 		wg.Add(1)
 		erCtx, cancel := context.WithCancel(ctx)
 		defer cancel() //When done handling edgerouter
-		go e.checkNewMessages(erCtx, c, wg)
+		go e.CheckNewMessages(erCtx, c, wg)
 
 		for {
 			mmtpMessage, n, err := rw.ReadMessage(ctx, c)

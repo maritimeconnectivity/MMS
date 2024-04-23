@@ -7,9 +7,9 @@ require (
 	github.com/libp2p/go-libp2p v0.33.2
 	github.com/libp2p/go-libp2p-kad-dht v0.25.2
 	github.com/libp2p/go-libp2p-pubsub v0.10.0
-	github.com/maritimeconnectivity/MMS/consumers v0.0.0
+	github.com/maritimeconnectivity/MMS/consumer v0.0.0
 	github.com/maritimeconnectivity/MMS/mmtp v0.0.0
-	github.com/maritimeconnectivity/MMS/utils v0.0.0-00010101000000-000000000000
+	github.com/maritimeconnectivity/MMS/utils v0.0.0
 	google.golang.org/protobuf v1.33.0
 	nhooyr.io/websocket v1.8.11
 )
@@ -121,4 +121,4 @@ replace github.com/maritimeconnectivity/MMS/mmtp => ../mmtp
 
 replace github.com/maritimeconnectivity/MMS/utils => ../utils
 
-replace github.com/maritimeconnectivity/MMS/consumers => ../consumers
+replace github.com/maritimeconnectivity/MMS/consumer => ./../consumer
