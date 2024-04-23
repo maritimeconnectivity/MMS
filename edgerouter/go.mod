@@ -8,7 +8,6 @@ require (
 	github.com/maritimeconnectivity/MMS/consumers v0.0.0
 	github.com/maritimeconnectivity/MMS/mmtp v0.0.0
 	github.com/maritimeconnectivity/MMS/utils v0.0.0
-	google.golang.org/protobuf v1.33.0
 	nhooyr.io/websocket v1.8.11
 
 )
@@ -18,6 +17,7 @@ require (
 	golang.org/x/crypto v0.22.0 // indirect
 	golang.org/x/net v0.21.0 // indirect
 	golang.org/x/sys v0.19.0 // indirect
+	google.golang.org/protobuf v1.33.0 // indirect
 )
 
 replace github.com/maritimeconnectivity/MMS/mmtp => ../mmtp

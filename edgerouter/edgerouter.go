@@ -28,7 +28,7 @@ import (
 	"github.com/maritimeconnectivity/MMS/mmtp"
 	"github.com/maritimeconnectivity/MMS/utils/auth"
 	"github.com/maritimeconnectivity/MMS/utils/revocation"
-	"google.golang.org/protobuf/proto"
+	"github.com/maritimeconnectivity/MMS/utils/rw"
 	"log"
 	"net/http"
 	"nhooyr.io/websocket"
@@ -81,7 +81,7 @@ func (a *Agent) notify(ctx context.Context, c *websocket.Conn) error {
 			},
 		},
 	}
-	err := writeMessage(ctx, c, notifyMsg)
+	err := rw.WriteMessage(ctx, c, notifyMsg)
 	if err != nil {
 		return fmt.Errorf("could not send Notify to Agent: %w", err)
 	}
@@ -215,12 +215,12 @@ func (er *EdgeRouter) connectMMTPToRouter(ctx context.Context, wg *sync.WaitGrou
 			},
 		},
 	}
-	err := writeMessage(ctx, er.routerWs, connect)
+	err := rw.WriteMessage(ctx, er.routerWs, connect)
 	if err != nil {
 		return fmt.Errorf("could not send connect message: %w", err)
 	}
 
-	response, _, err := readMessage(ctx, er.routerWs)
+	response, _, err := rw.ReadMessage(ctx, er.routerWs)
 	if err != nil {
 		return fmt.Errorf("something went wrong while receiving response from MMS Router: %w", err)
 	}
@@ -286,11 +286,11 @@ func (er *EdgeRouter) StartEdgeRouter(ctx context.Context, wg *sync.WaitGroup, c
 	}
 
 	if er.routerWs != nil {
-		if err := writeMessage(context.Background(), er.routerWs, disconnectMsg); err != nil {
+		if err := rw.WriteMessage(context.Background(), er.routerWs, disconnectMsg); err != nil {
 			log.Println("Could not send disconnect to Router:", err)
 		}
 
-		response, _, err := readMessage(context.Background(), er.routerWs)
+		response, _, err := rw.ReadMessage(context.Background(), er.routerWs)
 		if err != nil || response.GetResponseMessage().Response != mmtp.ResponseEnum_GOOD {
 			log.Println("Graceful disconnect from Router failed")
 		}
@@ -403,7 +403,7 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 		// Set the read limit to 1 MiB instead of 32 KiB
 		c.SetReadLimit(WsReadLimit)
 
-		mmtpMessage, _, err := readMessage(ctx, c)
+		mmtpMessage, _, err := rw.ReadMessage(ctx, c)
 		if err != nil {
 			log.Println("Could not read message:", err)
 			if err = c.Close(websocket.StatusUnsupportedData, "The first message could not be parsed as an MMTP message"); err != nil {
@@ -454,7 +454,7 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 							ReasonText:     &errorMsg,
 						}},
 				}
-				if err = writeMessage(request.Context(), c, resp); err != nil {
+				if err = rw.WriteMessage(request.Context(), c, resp); err != nil {
 					log.Println("Could not send error message:", err)
 					return
 				}
@@ -471,7 +471,7 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 							ReasonText:     &errorMsg,
 						}},
 				}
-				if err = writeMessage(request.Context(), c, resp); err != nil {
+				if err = rw.WriteMessage(request.Context(), c, resp); err != nil {
 					log.Println("Could not send error message:", err)
 					return
 				}
@@ -515,7 +515,7 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 					Response:       mmtp.ResponseEnum_GOOD,
 				}},
 		}
-		err = writeMessage(request.Context(), c, resp)
+		err = rw.WriteMessage(request.Context(), c, resp)
 		if err != nil {
 			log.Println("Could not send response:", err)
 			return
@@ -528,7 +528,7 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 		go agent.checkNewMessages(agCtx, c, wg)
 
 		for {
-			mmtpMessage, n, err := readMessage(ctx, c)
+			mmtpMessage, n, err := rw.ReadMessage(ctx, c)
 			if err != nil {
 				log.Println("Something went wrong while reading message from Agent:", err)
 				reasonText := "Message could not be correctly parsed"
@@ -543,7 +543,7 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 						},
 					},
 				}
-				if err = writeMessage(request.Context(), c, resp); err != nil {
+				if err = rw.WriteMessage(request.Context(), c, resp); err != nil {
 					return
 				}
 				if err = c.Close(websocket.StatusUnsupportedData, reasonText); err != nil {
@@ -622,7 +622,7 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 							},
 						},
 					}
-					if err = writeMessage(request.Context(), c, resp); err != nil {
+					if err = rw.WriteMessage(request.Context(), c, resp); err != nil {
 						log.Println("Could not send error message:", err)
 						return
 					}
@@ -676,7 +676,7 @@ func handleSubscribeSubject(mmtpMessage *mmtp.MmtpMessage, agent *Agent, subMu *
 				Response:       mmtp.ResponseEnum_GOOD,
 			}},
 	}
-	if err := writeMessage(request.Context(), c, resp); err != nil {
+	if err := rw.WriteMessage(request.Context(), c, resp); err != nil {
 		return fmt.Errorf("could not send subscribe response to Agent: %w", err)
 	}
 	return nil
@@ -722,7 +722,7 @@ func handleSubscribeDirect(mmtpMessage *mmtp.MmtpMessage, agent *Agent, subscrib
 				Response:       mmtp.ResponseEnum_GOOD,
 			}},
 	}
-	if err := writeMessage(request.Context(), c, resp); err != nil {
+	if err := rw.WriteMessage(request.Context(), c, resp); err != nil {
 		return fmt.Errorf("could not send subscribe response to Agent: %w", err)
 	}
 	return nil
@@ -772,7 +772,7 @@ func handleUnsubscribeSubject(mmtpMessage *mmtp.MmtpMessage, subMu *sync.RWMutex
 				Response:       mmtp.ResponseEnum_GOOD,
 			}},
 	}
-	if err := writeMessage(request.Context(), c, resp); err != nil {
+	if err := rw.WriteMessage(request.Context(), c, resp); err != nil {
 		return fmt.Errorf("could not write response to unsubscribe message: %w", err)
 	}
 	return nil
@@ -815,7 +815,7 @@ func handleUnsubscribeDirect(mmtpMessage *mmtp.MmtpMessage, unsubscribe *mmtp.Un
 					Response:       mmtp.ResponseEnum_GOOD,
 				}},
 		}
-		if err := writeMessage(request.Context(), c, resp); err != nil {
+		if err := rw.WriteMessage(request.Context(), c, resp); err != nil {
 			return fmt.Errorf("could not send unsubscribe response to Agent: %w", err)
 		}
 	}
@@ -899,7 +899,7 @@ func handleReceive(mmtpMessage *mmtp.MmtpMessage, agent *Agent, request *http.Re
 					ApplicationMessages: appMsgs,
 				}},
 			}
-			err := writeMessage(request.Context(), c, resp)
+			err := rw.WriteMessage(request.Context(), c, resp)
 			agent.MsgMu.Unlock()
 			if err != nil {
 				agent.BulkQueueMessages(mmtpMessages)
@@ -931,7 +931,7 @@ func handleReceive(mmtpMessage *mmtp.MmtpMessage, agent *Agent, request *http.Re
 
 			defer agent.MsgMu.Unlock()
 
-			err := writeMessage(request.Context(), c, resp)
+			err := rw.WriteMessage(request.Context(), c, resp)
 			if err != nil {
 				return fmt.Errorf("could not send messages to Agent: %w", err)
 			} else {
@@ -971,7 +971,7 @@ func handleFetch(mmtpMessage *mmtp.MmtpMessage, agent *Agent, request *http.Requ
 					MessageMetadata: metadata,
 				}},
 		}
-		err := writeMessage(request.Context(), c, resp)
+		err := rw.WriteMessage(request.Context(), c, resp)
 		if err != nil {
 			return fmt.Errorf("could not send fetch response to Agent: %w", err)
 		}
@@ -990,7 +990,7 @@ func handleDisconnect(mmtpMessage *mmtp.MmtpMessage, request *http.Request, c *w
 					Response:       mmtp.ResponseEnum_GOOD,
 				}},
 		}
-		if err := writeMessage(request.Context(), c, resp); err != nil {
+		if err := rw.WriteMessage(request.Context(), c, resp); err != nil {
 			return fmt.Errorf("could not send disconnect response to Agent: %w", err)
 		}
 
@@ -1014,7 +1014,7 @@ func sendErrorMessage(uid string, errorText string, ctx context.Context, c *webs
 				ReasonText:     &errorText,
 			}},
 	}
-	if err := writeMessage(ctx, c, resp); err != nil {
+	if err := rw.WriteMessage(ctx, c, resp); err != nil {
 		log.Println("Could not send error response:", err)
 	}
 }
@@ -1055,7 +1055,7 @@ func handleIncomingMessages(ctx context.Context, edgeRouter *EdgeRouter, wg *syn
 		case <-ctx.Done():
 			return
 		default:
-			response, _, err := readMessage(ctx, edgeRouter.routerWs) //Block until recieve from socket
+			response, _, err := rw.ReadMessage(ctx, edgeRouter.routerWs) //Block until recieve from socket
 			if err != nil {
 				log.Println("Could not receive response from MMS Router:", err)
 				continue
@@ -1170,7 +1170,7 @@ func handleOutgoingMessages(ctx context.Context, edgeRouter *EdgeRouter, wg *syn
 				switch outgoingMessage.GetMsgType() {
 				case mmtp.MsgType_PROTOCOL_MESSAGE:
 					{
-						if err := writeMessage(ctx, edgeRouter.routerWs, outgoingMessage); err != nil {
+						if err := rw.WriteMessage(ctx, edgeRouter.routerWs, outgoingMessage); err != nil {
 							log.Println("Could not send outgoing message to MMS Router, will try again later:", err)
 							edgeRouter.outgoingChannel <- outgoingMessage
 							continue
@@ -1189,30 +1189,6 @@ func handleOutgoingMessages(ctx context.Context, edgeRouter *EdgeRouter, wg *syn
 			}
 		}
 	}
-}
-
-func readMessage(ctx context.Context, c *websocket.Conn) (*mmtp.MmtpMessage, int, error) {
-	_, b, err := c.Read(ctx)
-	if err != nil {
-		return nil, -1, fmt.Errorf("could not read message from Agent: %w", err)
-	}
-	mmtpMessage := &mmtp.MmtpMessage{}
-	if err = proto.Unmarshal(b, mmtpMessage); err != nil {
-		return nil, -1, fmt.Errorf("could not unmarshal message: %w", err)
-	}
-	return mmtpMessage, len(b), nil
-}
-
-func writeMessage(ctx context.Context, c *websocket.Conn, mmtpMessage *mmtp.MmtpMessage) error {
-	b, err := proto.Marshal(mmtpMessage)
-	if err != nil {
-		return fmt.Errorf("could not marshal message: %w", err)
-	}
-	err = c.Write(ctx, websocket.MessageBinary, b)
-	if err != nil {
-		return fmt.Errorf("could not write message: %w", err)
-	}
-	return nil
 }
 
 func main() {
