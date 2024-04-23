@@ -2,10 +2,9 @@ module github.com/maritimeconnectivity/MMS/consumer
 
 go 1.22.2
 
-require github.com/maritimeconnectivity/MMS/mmtp v0.0.0-20240419133059-31bacee3e55e
-
 require (
 	github.com/google/uuid v1.6.0
+	github.com/maritimeconnectivity/MMS/mmtp v0.0.0
 	github.com/maritimeconnectivity/MMS/utils v0.0.0
 	nhooyr.io/websocket v1.8.11
 )
@@ -13,3 +12,5 @@ require (
 require google.golang.org/protobuf v1.33.0 // indirect
 
 replace github.com/maritimeconnectivity/MMS/utils => ../utils
+
+replace github.com/maritimeconnectivity/MMS/mmtp => ../mmtp
