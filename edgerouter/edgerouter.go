@@ -27,6 +27,7 @@ import (
 	"github.com/maritimeconnectivity/MMS/consumer"
 	"github.com/maritimeconnectivity/MMS/mmtp"
 	"github.com/maritimeconnectivity/MMS/utils/auth"
+	"github.com/maritimeconnectivity/MMS/utils/errors"
 	"github.com/maritimeconnectivity/MMS/utils/revocation"
 	"github.com/maritimeconnectivity/MMS/utils/rw"
 	"log"
@@ -522,7 +523,7 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 					case mmtp.ProtocolMessageType_SEND_MESSAGE:
 						{
 							if n > MessageSizeLimit {
-								sendErrorMessage(mmtpMessage.GetUuid(), "The message size exceeds the allowed 50 KiB", request.Context(), c)
+								errors.SendErrorMessage(mmtpMessage.GetUuid(), "The message size exceeds the allowed 50 KiB", request.Context(), c)
 								break
 							}
 							handleSend(mmtpMessage, outgoingChannel, request, c, signatureAlgorithm, mrnToAgent, mrnToAgentMu, subMu, subs, agent)
@@ -541,14 +542,14 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 						}
 					case mmtp.ProtocolMessageType_DISCONNECT_MESSAGE:
 						{
-							if err = handleDisconnect(mmtpMessage, request, c); err != nil {
+							if err = agent.HandleDisconnect(mmtpMessage, request, c); err != nil {
 								log.Println("Failed handling Disconnect message:", err)
 							}
 							return
 						}
 					case mmtp.ProtocolMessageType_CONNECT_MESSAGE:
 						{
-							sendErrorMessage(mmtpMessage.GetUuid(), "Already connected", request.Context(), c)
+							errors.SendErrorMessage(mmtpMessage.GetUuid(), "Already connected", request.Context(), c)
 						}
 					default:
 						continue
@@ -599,7 +600,7 @@ func handleSubscribe(mmtpMessage *mmtp.MmtpMessage, agent *Agent, subMu *sync.RW
 func handleSubscribeSubject(mmtpMessage *mmtp.MmtpMessage, agent *Agent, subMu *sync.RWMutex, subs map[string]*Subscription, outgoingChannel chan<- *mmtp.MmtpMessage, request *http.Request, c *websocket.Conn) error {
 	subject := mmtpMessage.GetProtocolMessage().GetSubscribeMessage().GetSubject()
 	if subject == "" {
-		sendErrorMessage(mmtpMessage.GetUuid(), "Cannot subscribe to empty subject", request.Context(), c)
+		errors.SendErrorMessage(mmtpMessage.GetUuid(), "Cannot subscribe to empty subject", request.Context(), c)
 		return nil
 	}
 	subMu.Lock()
@@ -633,11 +634,11 @@ func handleSubscribeSubject(mmtpMessage *mmtp.MmtpMessage, agent *Agent, subMu *
 func handleSubscribeDirect(mmtpMessage *mmtp.MmtpMessage, agent *Agent, subscribe *mmtp.Subscribe, request *http.Request, c *websocket.Conn, outgoingChannel chan<- *mmtp.MmtpMessage) error {
 	directMessages := subscribe.GetDirectMessages()
 	if !directMessages {
-		sendErrorMessage(mmtpMessage.GetUuid(), "The directMessages flag needs to be true to be able to subscribe to direct messages", request.Context(), c)
+		errors.SendErrorMessage(mmtpMessage.GetUuid(), "The directMessages flag needs to be true to be able to subscribe to direct messages", request.Context(), c)
 		return nil
 	}
 	if (agent.Mrn == "") || (len(request.TLS.PeerCertificates) == 0) {
-		sendErrorMessage(mmtpMessage.GetUuid(), "You need to be authenticated to be able to subscribe to direct messages", request.Context(), c)
+		errors.SendErrorMessage(mmtpMessage.GetUuid(), "You need to be authenticated to be able to subscribe to direct messages", request.Context(), c)
 		return nil
 	}
 	// Subscribe on direct messages to the Agent
@@ -692,7 +693,7 @@ func handleUnsubscribeSubject(mmtpMessage *mmtp.MmtpMessage, subMu *sync.RWMutex
 	subject := unsubscribe.GetSubject()
 	if subject == "" {
 		reasonText := "Tried to unsubscribe to empty subject"
-		sendErrorMessage(mmtpMessage.GetUuid(), reasonText, request.Context(), c)
+		errors.SendErrorMessage(mmtpMessage.GetUuid(), reasonText, request.Context(), c)
 		return nil
 	}
 	subMu.Lock()
@@ -730,7 +731,7 @@ func handleUnsubscribeDirect(mmtpMessage *mmtp.MmtpMessage, unsubscribe *mmtp.Un
 	directMessages := unsubscribe.GetDirectMessages()
 	if !directMessages {
 		reason := "The directMessages flag needs to be true to be able to unsubscribe from direct messages"
-		sendErrorMessage(mmtpMessage.GetUuid(), reason, request.Context(), c)
+		errors.SendErrorMessage(mmtpMessage.GetUuid(), reason, request.Context(), c)
 		return nil
 	}
 	if agent.Mrn != "" {
@@ -773,19 +774,19 @@ func handleUnsubscribeDirect(mmtpMessage *mmtp.MmtpMessage, unsubscribe *mmtp.Un
 func handleSend(mmtpMessage *mmtp.MmtpMessage, outgoingChannel chan<- *mmtp.MmtpMessage, request *http.Request, c *websocket.Conn, signatureAlgorithm x509.SignatureAlgorithm, mrnToAgent map[string]*Agent, mrnToAgentMu *sync.RWMutex, subMu *sync.RWMutex, subs map[string]*Subscription, agent *Agent) {
 	if send := mmtpMessage.GetProtocolMessage().GetSendMessage(); send != nil {
 		if agent.Mrn == "" || request.TLS == nil || len(request.TLS.PeerCertificates) == 0 {
-			sendErrorMessage(mmtpMessage.GetUuid(), "Unauthenticated agents cannot send messages", request.Context(), c)
+			errors.SendErrorMessage(mmtpMessage.GetUuid(), "Unauthenticated agents cannot send messages", request.Context(), c)
 			return
 		}
 
 		if agent.Mrn != send.GetApplicationMessage().GetHeader().GetSender() {
-			sendErrorMessage(mmtpMessage.GetUuid(), "Sender MRN must match Agent MRN", request.Context(), c)
+			errors.SendErrorMessage(mmtpMessage.GetUuid(), "Sender MRN must match Agent MRN", request.Context(), c)
 			return
 		}
 
 		err := auth.VerifySignatureOnMessage(mmtpMessage, signatureAlgorithm, request)
 		if err != nil {
 			log.Println("Verification of signature on message failed:", err)
-			sendErrorMessage(mmtpMessage.GetUuid(), "Could not authenticate message signature", request.Context(), c)
+			errors.SendErrorMessage(mmtpMessage.GetUuid(), "Could not authenticate message signature", request.Context(), c)
 			return
 		}
 
@@ -854,46 +855,6 @@ func handleFetch(mmtpMessage *mmtp.MmtpMessage, agent *Agent, request *http.Requ
 		}
 	}
 	return nil
-}
-
-func handleDisconnect(mmtpMessage *mmtp.MmtpMessage, request *http.Request, c *websocket.Conn) error {
-	if disconnect := mmtpMessage.GetProtocolMessage().GetDisconnectMessage(); disconnect != nil {
-		resp := &mmtp.MmtpMessage{
-			MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
-			Uuid:    uuid.NewString(),
-			Body: &mmtp.MmtpMessage_ResponseMessage{
-				ResponseMessage: &mmtp.ResponseMessage{
-					ResponseToUuid: mmtpMessage.GetUuid(),
-					Response:       mmtp.ResponseEnum_GOOD,
-				}},
-		}
-		if err := rw.WriteMessage(request.Context(), c, resp); err != nil {
-			return fmt.Errorf("could not send disconnect response to Agent: %w", err)
-		}
-
-		if err := c.Close(websocket.StatusNormalClosure, "Closed connection after receiving Disconnect message"); err != nil {
-			return fmt.Errorf("websocket could not be closed cleanly: %w", err)
-		}
-		return nil
-	}
-	sendErrorMessage(mmtpMessage.GetUuid(), "Mismatch between protocol message type and message body", request.Context(), c)
-	return fmt.Errorf("message did not contain a Disconnect message in the body")
-}
-
-func sendErrorMessage(uid string, errorText string, ctx context.Context, c *websocket.Conn) {
-	resp := &mmtp.MmtpMessage{
-		MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
-		Uuid:    uuid.NewString(),
-		Body: &mmtp.MmtpMessage_ResponseMessage{
-			ResponseMessage: &mmtp.ResponseMessage{
-				ResponseToUuid: uid,
-				Response:       mmtp.ResponseEnum_ERROR,
-				ReasonText:     &errorText,
-			}},
-	}
-	if err := rw.WriteMessage(ctx, c, resp); err != nil {
-		log.Println("Could not send error response:", err)
-	}
 }
 
 func verifyAgentCertificate() func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
@@ -1102,8 +1063,7 @@ func main() {
 	httpClient := &http.Client{
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
-				Certificates:       certificates,
-				InsecureSkipVerify: true,
+				Certificates: certificates,
 			},
 		},
 	}

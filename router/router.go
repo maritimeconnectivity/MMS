@@ -36,6 +36,7 @@ import (
 	"github.com/libp2p/go-libp2p/p2p/protocol/identify"
 	"github.com/maritimeconnectivity/MMS/consumer"
 	"github.com/maritimeconnectivity/MMS/mmtp"
+	"github.com/maritimeconnectivity/MMS/utils/errors"
 	"github.com/maritimeconnectivity/MMS/utils/revocation"
 	"github.com/maritimeconnectivity/MMS/utils/rw"
 	"google.golang.org/protobuf/proto"
@@ -402,7 +403,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 							err, errorText := handleSubscribe(mmtpMessage, subMu, subs, topicHandles, pubSub, e, wg, ctx, p2p, incomingChannel, request, c)
 							if err != nil {
 								log.Println("Failed handling Subscribe message:", err)
-								sendErrorMessage(mmtpMessage.GetUuid(), errorText, request.Context(), c)
+								errors.SendErrorMessage(mmtpMessage.GetUuid(), errorText, request.Context(), c)
 							}
 						}
 					case mmtp.ProtocolMessageType_UNSUBSCRIBE_MESSAGE:
@@ -414,7 +415,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 					case mmtp.ProtocolMessageType_SEND_MESSAGE:
 						{
 							if n > MessageSizeLimit {
-								sendErrorMessage(mmtpMessage.GetUuid(), "The message size exceeds the allowed 50 KiB", request.Context(), c)
+								errors.SendErrorMessage(mmtpMessage.GetUuid(), "The message size exceeds the allowed 50 KiB", request.Context(), c)
 								break
 							}
 							handleSend(mmtpMessage, outgoingChannel, erMu, subMu, subs, e)
@@ -433,14 +434,14 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 						}
 					case mmtp.ProtocolMessageType_DISCONNECT_MESSAGE:
 						{
-							if err = handleDisconnect(mmtpMessage, request, c); err != nil {
+							if err = e.HandleDisconnect(mmtpMessage, request, c); err != nil {
 								log.Println("Failed handling Disconnect message:", err)
 							}
 							return
 						}
 					case mmtp.ProtocolMessageType_CONNECT_MESSAGE:
 						{
-							sendErrorMessage(mmtpMessage.GetUuid(), "Already connected", request.Context(), c)
+							errors.SendErrorMessage(mmtpMessage.GetUuid(), "Already connected", request.Context(), c)
 						}
 					default:
 						continue
@@ -451,22 +452,6 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 				continue
 			}
 		}
-	}
-}
-
-func sendErrorMessage(uid string, errorText string, ctx context.Context, c *websocket.Conn) {
-	resp := &mmtp.MmtpMessage{
-		MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
-		Uuid:    uuid.NewString(),
-		Body: &mmtp.MmtpMessage_ResponseMessage{
-			ResponseMessage: &mmtp.ResponseMessage{
-				ResponseToUuid: uid,
-				Response:       mmtp.ResponseEnum_ERROR,
-				ReasonText:     &errorText,
-			}},
-	}
-	if err := rw.WriteMessage(ctx, c, resp); err != nil {
-		log.Println("Could not send error response:", err)
 	}
 }
 
@@ -652,30 +637,6 @@ func handleFetch(mmtpMessage *mmtp.MmtpMessage, e *EdgeRouter, request *http.Req
 		}
 	}
 	return nil
-}
-
-func handleDisconnect(mmtpMessage *mmtp.MmtpMessage, request *http.Request, c *websocket.Conn) error {
-	if disconnect := mmtpMessage.GetProtocolMessage().GetDisconnectMessage(); disconnect != nil {
-		resp := &mmtp.MmtpMessage{
-			MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
-			Uuid:    uuid.NewString(),
-			Body: &mmtp.MmtpMessage_ResponseMessage{
-				ResponseMessage: &mmtp.ResponseMessage{
-					ResponseToUuid: mmtpMessage.GetUuid(),
-					Response:       mmtp.ResponseEnum_GOOD,
-				}},
-		}
-		if err := rw.WriteMessage(request.Context(), c, resp); err != nil {
-			return fmt.Errorf("could not send disconnect response to Edge Router: %w", err)
-		}
-
-		if err := c.Close(websocket.StatusNormalClosure, "Closed connection after receiving Disconnect message"); err != nil {
-			return fmt.Errorf("websocket could not be closed cleanly: %w", err)
-		}
-		return nil
-	}
-	sendErrorMessage(mmtpMessage.GetUuid(), "Mismatch between protocol message type and message body", request.Context(), c)
-	return fmt.Errorf("message did not contain a Disconnect message in the body")
 }
 
 func verifyEdgeRouterCertificate() func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
