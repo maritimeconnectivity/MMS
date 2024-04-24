@@ -7,6 +7,7 @@ import (
 	"github.com/maritimeconnectivity/MMS/mmtp"
 	"github.com/maritimeconnectivity/MMS/utils/rw"
 	"log"
+	"net/http"
 	"nhooyr.io/websocket"
 	"sync"
 	"time"
@@ -100,4 +101,75 @@ func (c *Consumer) CheckNewMessages(ctx context.Context, conn *websocket.Conn, w
 			continue
 		}
 	}
+}
+
+func (c *Consumer) HandleReceive(mmtpMessage *mmtp.MmtpMessage, request *http.Request, conn *websocket.Conn) error {
+	if receive := mmtpMessage.GetProtocolMessage().GetReceiveMessage(); receive != nil {
+		if msgUuids := receive.GetFilter().GetMessageUuids(); msgUuids != nil {
+			msgsLen := len(msgUuids)
+			mmtpMessages := make([]*mmtp.MmtpMessage, 0, msgsLen)
+			appMsgs := make([]*mmtp.ApplicationMessage, 0, msgsLen)
+			c.MsgMu.Lock()
+			c.NotifyMu.Lock()
+			for _, msgUuid := range msgUuids {
+				mmtpMsg, exists := c.Messages[msgUuid]
+				if exists {
+					msg := mmtpMsg.GetProtocolMessage().GetSendMessage().GetApplicationMessage()
+					mmtpMessages = append(mmtpMessages, mmtpMsg)
+					appMsgs = append(appMsgs, msg)
+					delete(c.Messages, msgUuid)
+					delete(c.Notifications, msgUuid) //Delete upcoming notification
+				}
+			}
+			c.NotifyMu.Unlock()
+			resp := &mmtp.MmtpMessage{
+				MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+				Uuid:    uuid.NewString(),
+				Body: &mmtp.MmtpMessage_ResponseMessage{ResponseMessage: &mmtp.ResponseMessage{
+					ResponseToUuid:      mmtpMessage.GetUuid(),
+					Response:            mmtp.ResponseEnum_GOOD,
+					ApplicationMessages: appMsgs,
+				}},
+			}
+			err := rw.WriteMessage(request.Context(), conn, resp)
+			c.MsgMu.Unlock()
+			if err != nil {
+				c.BulkQueueMessages(mmtpMessages)
+				return fmt.Errorf("could not send messages to Consumer: %w", err)
+			}
+		} else { // Receive all messages
+			c.MsgMu.Lock()
+			msgsLen := len(c.Messages)
+			appMsgs := make([]*mmtp.ApplicationMessage, 0, msgsLen)
+			now := time.Now().UnixMilli()
+			c.NotifyMu.Lock()
+			for msgUuid, mmtpMsg := range c.Messages {
+				msg := mmtpMsg.GetProtocolMessage().GetSendMessage().GetApplicationMessage()
+				if now <= msg.Header.Expires {
+					appMsgs = append(appMsgs, msg)
+					delete(c.Notifications, msgUuid) //Delete upcoming notification
+				}
+			}
+			c.NotifyMu.Unlock()
+			resp := &mmtp.MmtpMessage{
+				MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+				Uuid:    uuid.NewString(),
+				Body: &mmtp.MmtpMessage_ResponseMessage{ResponseMessage: &mmtp.ResponseMessage{
+					ResponseToUuid:      mmtpMessage.GetUuid(),
+					Response:            mmtp.ResponseEnum_GOOD,
+					ApplicationMessages: appMsgs,
+				}},
+			}
+
+			defer c.MsgMu.Unlock()
+
+			err := rw.WriteMessage(request.Context(), conn, resp)
+			if err != nil {
+				return fmt.Errorf("could not send messages to Consumer: %w", err)
+			} else {
+				clear(c.Messages)
+			}
+		}
+	}
+	return nil
 }

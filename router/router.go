@@ -421,7 +421,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 						}
 					case mmtp.ProtocolMessageType_RECEIVE_MESSAGE:
 						{
-							if err = handleReceive(mmtpMessage, e, request, c); err != nil {
+							if err = e.HandleReceive(mmtpMessage, request, c); err != nil {
 								log.Println("Failed handling Receive message:", err)
 							}
 						}
@@ -615,75 +615,6 @@ func handleSend(mmtpMessage *mmtp.MmtpMessage, outgoingChannel chan<- *mmtp.Mmtp
 			subMu.RUnlock()
 		}
 	}
-}
-
-func handleReceive(mmtpMessage *mmtp.MmtpMessage, e *EdgeRouter, request *http.Request, c *websocket.Conn) error {
-	if receive := mmtpMessage.GetProtocolMessage().GetReceiveMessage(); receive != nil {
-		if msgUuids := receive.GetFilter().GetMessageUuids(); msgUuids != nil {
-			msgsLen := len(msgUuids)
-			mmtpMessages := make([]*mmtp.MmtpMessage, 0, msgsLen)
-			appMsgs := make([]*mmtp.ApplicationMessage, 0, msgsLen)
-			e.MsgMu.Lock()
-			e.NotifyMu.Lock()
-			for _, msgUuid := range msgUuids {
-				mmtpMsg, exists := e.Messages[msgUuid]
-				if exists {
-					msg := mmtpMsg.GetProtocolMessage().GetSendMessage().GetApplicationMessage()
-					mmtpMessages = append(mmtpMessages, mmtpMsg)
-					appMsgs = append(appMsgs, msg)
-					delete(e.Messages, msgUuid)
-					delete(e.Notifications, msgUuid) //Delete upcoming notification
-				}
-			}
-			e.NotifyMu.Unlock()
-			resp := &mmtp.MmtpMessage{
-				MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
-				Uuid:    uuid.NewString(),
-				Body: &mmtp.MmtpMessage_ResponseMessage{ResponseMessage: &mmtp.ResponseMessage{
-					ResponseToUuid:      mmtpMessage.GetUuid(),
-					Response:            mmtp.ResponseEnum_GOOD,
-					ApplicationMessages: appMsgs,
-				}},
-			}
-			err := rw.WriteMessage(request.Context(), c, resp)
-			e.MsgMu.Unlock()
-			if err != nil {
-				e.BulkQueueMessages(mmtpMessages)
-				return fmt.Errorf("could not send messages to Edge Router: %w", err)
-			}
-		} else { // Receive all messages
-			e.MsgMu.Lock()
-			msgsLen := len(e.Messages)
-			appMsgs := make([]*mmtp.ApplicationMessage, 0, msgsLen)
-			now := time.Now().UnixMilli()
-			e.NotifyMu.Lock()
-			for msgUuid, mmtpMsg := range e.Messages {
-				msg := mmtpMsg.GetProtocolMessage().GetSendMessage().GetApplicationMessage()
-				if now <= msg.Header.Expires {
-					appMsgs = append(appMsgs, msg)
-					delete(e.Notifications, msgUuid)
-				}
-			}
-			e.NotifyMu.Unlock()
-			resp := &mmtp.MmtpMessage{
-				MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
-				Uuid:    uuid.NewString(),
-				Body: &mmtp.MmtpMessage_ResponseMessage{ResponseMessage: &mmtp.ResponseMessage{
-					ResponseToUuid:      mmtpMessage.GetUuid(),
-					Response:            mmtp.ResponseEnum_GOOD,
-					ApplicationMessages: appMsgs,
-				}},
-			}
-			defer e.MsgMu.Unlock()
-			err := rw.WriteMessage(request.Context(), c, resp)
-			if err != nil {
-				return fmt.Errorf("could not send messages to Edge Router: %w", err)
-			} else {
-				clear(e.Messages)
-			}
-		}
-	}
-	return nil
 }
 
 func handleFetch(mmtpMessage *mmtp.MmtpMessage, e *EdgeRouter, request *http.Request, c *websocket.Conn) error {
