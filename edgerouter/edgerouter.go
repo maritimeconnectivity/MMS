@@ -536,7 +536,7 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 						}
 					case mmtp.ProtocolMessageType_FETCH_MESSAGE:
 						{
-							if err = handleFetch(mmtpMessage, agent, request, c); err != nil {
+							if err = agent.HandleFetch(mmtpMessage, request, c); err != nil {
 								log.Println("Failed handling Fetch message:", err)
 							}
 						}
@@ -818,43 +818,6 @@ func handleSend(mmtpMessage *mmtp.MmtpMessage, outgoingChannel chan<- *mmtp.Mmtp
 			subMu.RUnlock()
 		}
 	}
-}
-
-func handleFetch(mmtpMessage *mmtp.MmtpMessage, agent *Agent, request *http.Request, c *websocket.Conn) error {
-	if fetch := mmtpMessage.GetProtocolMessage().GetFetchMessage(); fetch != nil {
-		agent.MsgMu.Lock()
-		defer agent.MsgMu.Unlock()
-		metadata := make([]*mmtp.MessageMetadata, 0, len(agent.Messages))
-		now := time.Now().UnixMilli()
-		for _, msg := range agent.Messages {
-			msgHeader := msg.GetProtocolMessage().GetSendMessage().GetApplicationMessage().GetHeader()
-			// If the message has expired, we might as well just delete it
-			if msgHeader.Expires < now {
-				delete(agent.Messages, msg.Uuid)
-			} else {
-				msgMetadata := &mmtp.MessageMetadata{
-					Uuid:   msg.GetUuid(),
-					Header: msgHeader,
-				}
-				metadata = append(metadata, msgMetadata)
-			}
-		}
-		resp := &mmtp.MmtpMessage{
-			MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
-			Uuid:    uuid.NewString(),
-			Body: &mmtp.MmtpMessage_ResponseMessage{
-				ResponseMessage: &mmtp.ResponseMessage{
-					ResponseToUuid:  mmtpMessage.GetUuid(),
-					Response:        mmtp.ResponseEnum_GOOD,
-					MessageMetadata: metadata,
-				}},
-		}
-		err := rw.WriteMessage(request.Context(), c, resp)
-		if err != nil {
-			return fmt.Errorf("could not send fetch response to Agent: %w", err)
-		}
-	}
-	return nil
 }
 
 func verifyAgentCertificate() func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {

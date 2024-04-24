@@ -428,7 +428,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 						}
 					case mmtp.ProtocolMessageType_FETCH_MESSAGE:
 						{
-							if err = handleFetch(mmtpMessage, e, request, c); err != nil {
+							if err = e.HandleFetch(mmtpMessage, request, c); err != nil {
 								log.Println("Failed handling Fetch message:", err)
 							}
 						}
@@ -600,43 +600,6 @@ func handleSend(mmtpMessage *mmtp.MmtpMessage, outgoingChannel chan<- *mmtp.Mmtp
 			subMu.RUnlock()
 		}
 	}
-}
-
-func handleFetch(mmtpMessage *mmtp.MmtpMessage, e *EdgeRouter, request *http.Request, c *websocket.Conn) error {
-	if fetch := mmtpMessage.GetProtocolMessage().GetFetchMessage(); fetch != nil {
-		e.MsgMu.Lock()
-		defer e.MsgMu.Unlock()
-		metadata := make([]*mmtp.MessageMetadata, 0, len(e.Messages))
-		now := time.Now().UnixMilli()
-		for _, msg := range e.Messages {
-			msgHeader := msg.GetProtocolMessage().GetSendMessage().GetApplicationMessage().GetHeader()
-			// If the message has expired, we might as well just delete it
-			if msgHeader.Expires < now {
-				delete(e.Messages, msg.Uuid)
-			} else {
-				msgMetadata := &mmtp.MessageMetadata{
-					Uuid:   msg.GetUuid(),
-					Header: msgHeader,
-				}
-				metadata = append(metadata, msgMetadata)
-			}
-		}
-		resp := &mmtp.MmtpMessage{
-			MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
-			Uuid:    uuid.NewString(),
-			Body: &mmtp.MmtpMessage_ResponseMessage{
-				ResponseMessage: &mmtp.ResponseMessage{
-					ResponseToUuid:  mmtpMessage.GetUuid(),
-					Response:        mmtp.ResponseEnum_GOOD,
-					MessageMetadata: metadata,
-				}},
-		}
-		err := rw.WriteMessage(request.Context(), c, resp)
-		if err != nil {
-			return fmt.Errorf("could not send fetch response to Edge Router: %w", err)
-		}
-	}
-	return nil
 }
 
 func verifyEdgeRouterCertificate() func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {

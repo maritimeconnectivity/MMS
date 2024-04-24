@@ -201,3 +201,41 @@ func (c *Consumer) HandleDisconnect(mmtpMessage *mmtp.MmtpMessage, request *http
 	errors.SendErrorMessage(mmtpMessage.GetUuid(), "Mismatch between protocol message type and message body", request.Context(), conn)
 	return fmt.Errorf("message did not contain a Disconnect message in the body")
 }
+
+// HandleFetch fetches message metadata for messages addressed to consumer, and informs consumer about these (metadata only)
+func (c *Consumer) HandleFetch(mmtpMessage *mmtp.MmtpMessage, request *http.Request, conn *websocket.Conn) error {
+	if fetch := mmtpMessage.GetProtocolMessage().GetFetchMessage(); fetch != nil {
+		c.MsgMu.Lock()
+		defer c.MsgMu.Unlock()
+		metadata := make([]*mmtp.MessageMetadata, 0, len(c.Messages))
+		now := time.Now().UnixMilli()
+		for _, msg := range c.Messages {
+			msgHeader := msg.GetProtocolMessage().GetSendMessage().GetApplicationMessage().GetHeader()
+			// If the message has expired, we might as well just delete it
+			if msgHeader.Expires < now {
+				delete(c.Messages, msg.Uuid)
+			} else {
+				msgMetadata := &mmtp.MessageMetadata{
+					Uuid:   msg.GetUuid(),
+					Header: msgHeader,
+				}
+				metadata = append(metadata, msgMetadata)
+			}
+		}
+		resp := &mmtp.MmtpMessage{
+			MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+			Uuid:    uuid.NewString(),
+			Body: &mmtp.MmtpMessage_ResponseMessage{
+				ResponseMessage: &mmtp.ResponseMessage{
+					ResponseToUuid:  mmtpMessage.GetUuid(),
+					Response:        mmtp.ResponseEnum_GOOD,
+					MessageMetadata: metadata,
+				}},
+		}
+		err := rw.WriteMessage(request.Context(), conn, resp)
+		if err != nil {
+			return fmt.Errorf("could not send fetch response to Consumer: %w", err)
+		}
+	}
+	return nil
+}
