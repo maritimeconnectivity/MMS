@@ -773,7 +773,7 @@ func handleUnsubscribeDirect(mmtpMessage *mmtp.MmtpMessage, unsubscribe *mmtp.Un
 
 func handleSend(mmtpMessage *mmtp.MmtpMessage, outgoingChannel chan<- *mmtp.MmtpMessage, request *http.Request, c *websocket.Conn, signatureAlgorithm x509.SignatureAlgorithm, mrnToAgent map[string]*Agent, mrnToAgentMu *sync.RWMutex, subMu *sync.RWMutex, subs map[string]*Subscription, agent *Agent) {
 	if send := mmtpMessage.GetProtocolMessage().GetSendMessage(); send != nil {
-		if agent.Mrn == "" || request.TLS == nil || len(request.TLS.PeerCertificates) == 0 {
+		if !agent.authenticated {
 			errors.SendErrorMessage(mmtpMessage.GetUuid(), "Unauthenticated agents cannot send messages", request.Context(), c)
 			return
 		}
