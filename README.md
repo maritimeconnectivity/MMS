@@ -41,12 +41,12 @@ connect to router identities specified in the `beacons.txt`
 The followings flags can be provided to the MMS edgerouter. Note that not specifying the proper certificates imposes restrictions on the allowed operations.
 #### Flags
 
-* `raddr`  "The websocket URL of the Router to connect to."
+* `raddr`  The websocket URL of the Router to connect to.
 * `port` The port number that this edgerouter should listen on. Agents shall use this port to connect to the edgerouter.
 *  `mrn` The MRN of this Edge Router
 * `client-cert` Path to the edgerouter's MCP-certificate
 * `client-cert-key` Path to the MCP-certificate private key
-* `cert-path` Path to the edgerouter's TLS-certificate
+* `cert-path` Path to the edgerouter's TLS-certificate. **Does not have to be an MCP-certificate. In many cases it will be from a trusted TLS-ca, such as Let's Encrypt**
 * `cert-key-path` Path to the TLS-certificate private key
 * `client-ca` Path to a file containing a list of client CAs that can connect to this Edge Router. This is necessary for proper validation of client (Agent) certificates
 #### Usage example
@@ -62,7 +62,7 @@ The followings flags can be provided to the MMS router. Note that not specifying
 * `port` The port number that this router should listen on. Edgerouters shall use this port to connect to the router. '
 * `libp2p-port` The libp2p port exposed by this router to the MMS router network
  * `privkey` Path to a file containing a private key for use within libp2p. If none is provided, a new private key will be generated every time the program is run. To uniquely identify a router and connect to that router (through the `beacons.txt`) configuration, a key must be provided.
-* `cert-path` Path to the edgerouter's TLS-certificate
+* `cert-path` Path to the router's TLS-certificate. **Does not have to be an MCP-certificate. In many cases it will be from a trusted TLS-ca, such as Let's Encrypt**
 * `cert-key-path` Path to the TLS-certificate private key
 * `client-ca` Path to a file containing a list of client CAs that can connect to this router. This is necessary for proper validation of client (edgerouter) certificates
 
