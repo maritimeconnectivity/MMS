@@ -18,11 +18,11 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"flag"
 	"fmt"
 	"github.com/google/uuid"
@@ -35,10 +35,13 @@ import (
 	drouting "github.com/libp2p/go-libp2p/p2p/discovery/routing"
 	dutil "github.com/libp2p/go-libp2p/p2p/discovery/util"
 	"github.com/libp2p/go-libp2p/p2p/protocol/identify"
+	"github.com/maritimeconnectivity/MMS/consumer"
 	"github.com/maritimeconnectivity/MMS/mmtp"
-	"golang.org/x/crypto/ocsp"
+	"github.com/maritimeconnectivity/MMS/utils/auth"
+	"github.com/maritimeconnectivity/MMS/utils/errMsg"
+	"github.com/maritimeconnectivity/MMS/utils/revocation"
+	"github.com/maritimeconnectivity/MMS/utils/rw"
 	"google.golang.org/protobuf/proto"
-	"io"
 	"log"
 	"net/http"
 	"nhooyr.io/websocket"
@@ -60,93 +63,7 @@ const (
 
 // EdgeRouter type representing a connected Edge Router
 type EdgeRouter struct {
-	Mrn            string                       // the MRN of the EdgeRouter
-	Interests      []string                     // the Interests that the EdgeRouter wants to subscribe to
-	Messages       map[string]*mmtp.MmtpMessage // the incoming messages for this EdgeRouter
-	msgMu          *sync.RWMutex                // RWMutex for locking the Messages map
-	reconnectToken string                       // token for reconnecting to a previous session
-	Notifications  map[string]*mmtp.MmtpMessage // Map containing pointers to messages, which the Edgerouter should be notified about
-	notifyMu       *sync.RWMutex                // a Mutex for Notifications map
-}
-
-func (er *EdgeRouter) QueueMessage(mmtpMessage *mmtp.MmtpMessage) error {
-	if er != nil {
-		uUid := mmtpMessage.GetUuid()
-		if uUid == "" {
-			return fmt.Errorf("the message does not contain a UUID")
-		}
-		er.msgMu.Lock()
-		er.Messages[uUid] = mmtpMessage
-		er.msgMu.Unlock()
-		er.notifyMu.Lock()
-		er.Notifications[uUid] = mmtpMessage
-		er.notifyMu.Unlock()
-	} else {
-		return fmt.Errorf("edge Router resolved to nil while trying to queue message")
-	}
-	return nil
-}
-
-func (er *EdgeRouter) BulkQueueMessages(mmtpMessages []*mmtp.MmtpMessage) {
-	if er != nil {
-		er.msgMu.Lock()
-		for _, message := range mmtpMessages {
-			er.Messages[message.Uuid] = message
-		}
-		er.msgMu.Unlock()
-	}
-}
-
-func (er *EdgeRouter) notify(ctx context.Context, c *websocket.Conn) error {
-	notifications := make([]*mmtp.MessageMetadata, 0, len(er.Notifications))
-	for msgUuid, mmtpMsg := range er.Notifications {
-		msgMetadata := &mmtp.MessageMetadata{
-			Uuid:   mmtpMsg.GetUuid(),
-			Header: mmtpMsg.GetProtocolMessage().GetSendMessage().GetApplicationMessage().GetHeader(),
-		}
-		notifications = append(notifications, msgMetadata)
-		delete(er.Notifications, msgUuid)
-	}
-
-	notifyMsg := &mmtp.MmtpMessage{
-		MsgType: mmtp.MsgType_PROTOCOL_MESSAGE,
-		Uuid:    uuid.NewString(),
-		Body: &mmtp.MmtpMessage_ProtocolMessage{
-			ProtocolMessage: &mmtp.ProtocolMessage{
-				ProtocolMsgType: mmtp.ProtocolMessageType_NOTIFY_MESSAGE,
-				Body: &mmtp.ProtocolMessage_NotifyMessage{
-					NotifyMessage: &mmtp.Notify{
-						MessageMetadata: notifications,
-					},
-				},
-			},
-		},
-	}
-	err := writeMessage(ctx, c, notifyMsg)
-	if err != nil {
-		return fmt.Errorf("could not send Notify to Agent: %w", err)
-	}
-	return nil
-}
-
-// Checks if there are messages the Edgerouter has not been notified about and notifies about these
-func (er *EdgeRouter) checkNewMessages(ctx context.Context, c *websocket.Conn, wg *sync.WaitGroup) {
-	defer wg.Done()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(5 * time.Second):
-			er.notifyMu.Lock()
-			if len(er.Notifications) > 0 {
-				if err := er.notify(ctx, c); err != nil {
-					log.Println("Failed Notifying Edgerouter:", err)
-				}
-			}
-			er.notifyMu.Unlock()
-			continue
-		}
-	}
+	consumer.Consumer // A base struct that applies both to Agent and Edge Router consumers
 }
 
 // Subscription type representing a subscription
@@ -275,14 +192,14 @@ func (r *MMSRouter) messageGC(ctx context.Context, wg *sync.WaitGroup) {
 			r.erMu.RLock()
 			now := time.Now().UnixMilli()
 			for _, er := range r.edgeRouters {
-				er.msgMu.Lock()
+				er.MsgMu.Lock()
 				for _, m := range er.Messages {
 					expires := m.GetProtocolMessage().GetSendMessage().GetApplicationMessage().GetHeader().GetExpires()
 					if now > expires {
 						delete(er.Messages, m.Uuid)
 					}
 				}
-				er.msgMu.Unlock()
+				er.MsgMu.Unlock()
 			}
 			r.erMu.RUnlock()
 		}
@@ -309,7 +226,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 		// Set the read limit to 1 MiB instead of 32 KiB
 		c.SetReadLimit(WsReadLimit)
 
-		mmtpMessage, _, err := readMessage(ctx, c)
+		mmtpMessage, _, err := rw.ReadMessage(ctx, c)
 		if err != nil {
 			log.Println("Could not read message:", err)
 			if err = c.Close(websocket.StatusUnsupportedData, "The first message could not be parsed as an MMTP message"); err != nil {
@@ -343,29 +260,36 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 		}
 		erMrn = strings.ToLower(erMrn)
 
-		// If TLS is enabled, we should verify the certificate from the Edge Router
-		if request.TLS != nil {
-			uidOid := []int{0, 9, 2342, 19200300, 100, 1, 1}
+		//Make sure all authentication checks pass, and otherwise return. ER MUST be authenticated
+		_, authenticated, err := auth.AuthenticateConsumer(request, erMrn)
 
-			if len(request.TLS.PeerCertificates) < 1 {
-				if err = c.Close(websocket.StatusPolicyViolation, "A valid client certificate must be provided for authenticated connections"); err != nil {
-					log.Println(err)
+		if err != nil {
+			var certErr *auth.CertValErr
+			var sigAlgErr *auth.SigAlgErr
+			var mrnErr *auth.MrnMismatchErr
+			switch {
+			case errors.As(err, &certErr):
+				if wsErr := c.Close(websocket.StatusPolicyViolation, err.Error()); wsErr != nil {
+					log.Println(wsErr)
 				}
-				return
-			}
-			// https://stackoverflow.com/a/50640119
-			for _, n := range request.TLS.PeerCertificates[0].Subject.Names {
-				if n.Type.Equal(uidOid) {
-					if v, ok := n.Value.(string); ok {
-						if !strings.EqualFold(v, erMrn) {
-							if err = c.Close(websocket.StatusUnsupportedData, "The MRN given in the Connect message does not match the one in the certificate that was used for authentication"); err != nil {
-								log.Println(err)
-							}
-							return
-						}
-					}
+			case errors.As(err, &sigAlgErr):
+				if wsErr := c.Close(websocket.StatusPolicyViolation, err.Error()); wsErr != nil {
+					log.Println(wsErr)
 				}
+
+			case errors.As(err, &mrnErr):
+				if wsErr := c.Close(websocket.StatusUnsupportedData, err.Error()); wsErr != nil {
+					log.Println(wsErr)
+				}
+			default:
+				log.Printf("Unknown error occured: %s\n", err.Error())
 			}
+			return
+		} else if !authenticated {
+			if wsErr := c.Close(websocket.StatusPolicyViolation, "Could not authenticate Edge Router"); wsErr != nil {
+				log.Println(wsErr)
+			}
+			return
 		}
 
 		var e *EdgeRouter
@@ -385,13 +309,13 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 							ReasonText:     &errorMsg,
 						}},
 				}
-				err = writeMessage(request.Context(), c, resp)
+				err = rw.WriteMessage(request.Context(), c, resp)
 				if err != nil {
 					log.Println("Could not send response message:", err)
 					return
 				}
 			}
-			if connect.GetReconnectToken() != e.reconnectToken {
+			if connect.GetReconnectToken() != e.ReconnectToken {
 				errorMsg := "The given reconnect token does not match the one that is stored"
 				resp := &mmtp.MmtpMessage{
 					MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
@@ -403,7 +327,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 							ReasonText:     &errorMsg,
 						}},
 				}
-				err = writeMessage(request.Context(), c, resp)
+				err = rw.WriteMessage(request.Context(), c, resp)
 				if err != nil {
 					log.Println("Could not send response message:", err)
 					return
@@ -411,16 +335,18 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 			}
 		} else {
 			e = &EdgeRouter{
-				Mrn:           erMrn,
-				Interests:     make([]string, 0, 1),
-				Messages:      make(map[string]*mmtp.MmtpMessage),
-				msgMu:         &sync.RWMutex{},
-				Notifications: make(map[string]*mmtp.MmtpMessage),
-				notifyMu:      &sync.RWMutex{},
+				Consumer: consumer.Consumer{
+					Mrn:           erMrn,
+					Interests:     make([]string, 0, 1),
+					Messages:      make(map[string]*mmtp.MmtpMessage),
+					MsgMu:         &sync.RWMutex{},
+					Notifications: make(map[string]*mmtp.MmtpMessage),
+					NotifyMu:      &sync.RWMutex{},
+				},
 			}
 		}
 
-		e.reconnectToken = uuid.NewString()
+		e.ReconnectToken = uuid.NewString()
 
 		erMu.Lock()
 		edgeRouters[e.Mrn] = e
@@ -432,11 +358,11 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 			Body: &mmtp.MmtpMessage_ResponseMessage{
 				ResponseMessage: &mmtp.ResponseMessage{
 					ResponseToUuid: mmtpMessage.GetUuid(),
-					ReconnectToken: &e.reconnectToken,
+					ReconnectToken: &e.ReconnectToken,
 					Response:       mmtp.ResponseEnum_GOOD,
 				}},
 		}
-		err = writeMessage(request.Context(), c, resp)
+		err = rw.WriteMessage(request.Context(), c, resp)
 		if err != nil {
 			log.Println("Could not send response message:", err)
 			return
@@ -446,10 +372,10 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 		wg.Add(1)
 		erCtx, cancel := context.WithCancel(ctx)
 		defer cancel() //When done handling edgerouter
-		go e.checkNewMessages(erCtx, c, wg)
+		go e.CheckNewMessages(erCtx, c, wg)
 
 		for {
-			mmtpMessage, n, err := readMessage(ctx, c)
+			mmtpMessage, n, err := rw.ReadMessage(ctx, c)
 			if err != nil {
 				log.Println("Could not receive message:", err)
 				reasonText := "Message could not be correctly parsed"
@@ -464,7 +390,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 						},
 					},
 				}
-				if err = writeMessage(request.Context(), c, resp); err != nil {
+				if err = rw.WriteMessage(request.Context(), c, resp); err != nil {
 					return
 				}
 				if err = c.Close(websocket.StatusUnsupportedData, reasonText); err != nil {
@@ -486,7 +412,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 							err, errorText := handleSubscribe(mmtpMessage, subMu, subs, topicHandles, pubSub, e, wg, ctx, p2p, incomingChannel, request, c)
 							if err != nil {
 								log.Println("Failed handling Subscribe message:", err)
-								sendErrorMessage(mmtpMessage.GetUuid(), errorText, request.Context(), c)
+								errMsg.SendErrorMessage(mmtpMessage.GetUuid(), errorText, request.Context(), c)
 							}
 						}
 					case mmtp.ProtocolMessageType_UNSUBSCRIBE_MESSAGE:
@@ -498,33 +424,33 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 					case mmtp.ProtocolMessageType_SEND_MESSAGE:
 						{
 							if n > MessageSizeLimit {
-								sendErrorMessage(mmtpMessage.GetUuid(), "The message size exceeds the allowed 50 KiB", request.Context(), c)
+								errMsg.SendErrorMessage(mmtpMessage.GetUuid(), "The message size exceeds the allowed 50 KiB", request.Context(), c)
 								break
 							}
 							handleSend(mmtpMessage, outgoingChannel, erMu, subMu, subs, e)
 						}
 					case mmtp.ProtocolMessageType_RECEIVE_MESSAGE:
 						{
-							if err = handleReceive(mmtpMessage, e, request, c); err != nil {
+							if err = e.HandleReceive(mmtpMessage, request, c); err != nil {
 								log.Println("Failed handling Receive message:", err)
 							}
 						}
 					case mmtp.ProtocolMessageType_FETCH_MESSAGE:
 						{
-							if err = handleFetch(mmtpMessage, e, request, c); err != nil {
+							if err = e.HandleFetch(mmtpMessage, request, c); err != nil {
 								log.Println("Failed handling Fetch message:", err)
 							}
 						}
 					case mmtp.ProtocolMessageType_DISCONNECT_MESSAGE:
 						{
-							if err = handleDisconnect(mmtpMessage, request, c); err != nil {
+							if err = e.HandleDisconnect(mmtpMessage, request, c); err != nil {
 								log.Println("Failed handling Disconnect message:", err)
 							}
 							return
 						}
 					case mmtp.ProtocolMessageType_CONNECT_MESSAGE:
 						{
-							sendErrorMessage(mmtpMessage.GetUuid(), "Already connected", request.Context(), c)
+							errMsg.SendErrorMessage(mmtpMessage.GetUuid(), "Already connected", request.Context(), c)
 						}
 					default:
 						continue
@@ -535,22 +461,6 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 				continue
 			}
 		}
-	}
-}
-
-func sendErrorMessage(uid string, errorText string, ctx context.Context, c *websocket.Conn) {
-	resp := &mmtp.MmtpMessage{
-		MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
-		Uuid:    uuid.NewString(),
-		Body: &mmtp.MmtpMessage_ResponseMessage{
-			ResponseMessage: &mmtp.ResponseMessage{
-				ResponseToUuid: uid,
-				Response:       mmtp.ResponseEnum_ERROR,
-				ReasonText:     &errorText,
-			}},
-	}
-	if err := writeMessage(ctx, c, resp); err != nil {
-		log.Println("Could not send error response:", err)
 	}
 }
 
@@ -599,7 +509,7 @@ func handleSubscribe(mmtpMessage *mmtp.MmtpMessage, subMu *sync.RWMutex, subs ma
 					Response:       mmtp.ResponseEnum_GOOD,
 				}},
 		}
-		if err := writeMessage(request.Context(), c, resp); err != nil {
+		if err := rw.WriteMessage(request.Context(), c, resp); err != nil {
 			log.Println("Could not send subscribe response to Edge Router:", err)
 		}
 	}
@@ -624,9 +534,8 @@ func handleUnsubscribe(mmtpMessage *mmtp.MmtpMessage, subMu *sync.RWMutex, subs 
 			reasonText := "Tried to unsubscribe to empty subject"
 			resp.GetResponseMessage().Response = mmtp.ResponseEnum_ERROR
 			resp.GetResponseMessage().ReasonText = &reasonText
-			err := writeMessage(request.Context(), c, resp)
+			err := rw.WriteMessage(request.Context(), c, resp)
 			if err != nil {
-				fmt.Printf(reasonText)
 				err = fmt.Errorf("could not write response to unsubscribe message: %w", err)
 			}
 			return err
@@ -653,7 +562,7 @@ func handleUnsubscribe(mmtpMessage *mmtp.MmtpMessage, subMu *sync.RWMutex, subs 
 		resp.GetResponseMessage().ReasonText = &reasonText
 	}
 
-	err := writeMessage(request.Context(), c, resp)
+	err := rw.WriteMessage(request.Context(), c, resp)
 	if err != nil {
 		err = fmt.Errorf("could not write response to unsubscribe message: %w", err)
 	}
@@ -701,160 +610,6 @@ func handleSend(mmtpMessage *mmtp.MmtpMessage, outgoingChannel chan<- *mmtp.Mmtp
 	}
 }
 
-func handleReceive(mmtpMessage *mmtp.MmtpMessage, e *EdgeRouter, request *http.Request, c *websocket.Conn) error {
-	if receive := mmtpMessage.GetProtocolMessage().GetReceiveMessage(); receive != nil {
-		if msgUuids := receive.GetFilter().GetMessageUuids(); msgUuids != nil {
-			msgsLen := len(msgUuids)
-			mmtpMessages := make([]*mmtp.MmtpMessage, 0, msgsLen)
-			appMsgs := make([]*mmtp.ApplicationMessage, 0, msgsLen)
-			e.msgMu.Lock()
-			e.notifyMu.Lock()
-			for _, msgUuid := range msgUuids {
-				mmtpMsg, exists := e.Messages[msgUuid]
-				if exists {
-					msg := mmtpMsg.GetProtocolMessage().GetSendMessage().GetApplicationMessage()
-					mmtpMessages = append(mmtpMessages, mmtpMsg)
-					appMsgs = append(appMsgs, msg)
-					delete(e.Messages, msgUuid)
-					delete(e.Notifications, msgUuid) //Delete upcoming notification
-				}
-			}
-			e.notifyMu.Unlock()
-			resp := &mmtp.MmtpMessage{
-				MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
-				Uuid:    uuid.NewString(),
-				Body: &mmtp.MmtpMessage_ResponseMessage{ResponseMessage: &mmtp.ResponseMessage{
-					ResponseToUuid:      mmtpMessage.GetUuid(),
-					Response:            mmtp.ResponseEnum_GOOD,
-					ApplicationMessages: appMsgs,
-				}},
-			}
-			err := writeMessage(request.Context(), c, resp)
-			e.msgMu.Unlock()
-			if err != nil {
-				e.BulkQueueMessages(mmtpMessages)
-				return fmt.Errorf("could not send messages to Edge Router: %w", err)
-			}
-		} else { // Receive all messages
-			e.msgMu.Lock()
-			msgsLen := len(e.Messages)
-			appMsgs := make([]*mmtp.ApplicationMessage, 0, msgsLen)
-			now := time.Now().UnixMilli()
-			e.notifyMu.Lock()
-			for msgUuid, mmtpMsg := range e.Messages {
-				msg := mmtpMsg.GetProtocolMessage().GetSendMessage().GetApplicationMessage()
-				if now <= msg.Header.Expires {
-					appMsgs = append(appMsgs, msg)
-					delete(e.Notifications, msgUuid)
-				}
-			}
-			e.notifyMu.Unlock()
-			resp := &mmtp.MmtpMessage{
-				MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
-				Uuid:    uuid.NewString(),
-				Body: &mmtp.MmtpMessage_ResponseMessage{ResponseMessage: &mmtp.ResponseMessage{
-					ResponseToUuid:      mmtpMessage.GetUuid(),
-					Response:            mmtp.ResponseEnum_GOOD,
-					ApplicationMessages: appMsgs,
-				}},
-			}
-			defer e.msgMu.Unlock()
-			err := writeMessage(request.Context(), c, resp)
-			if err != nil {
-				return fmt.Errorf("could not send messages to Edge Router: %w", err)
-			} else {
-				clear(e.Messages)
-			}
-		}
-	}
-	return nil
-}
-
-func handleFetch(mmtpMessage *mmtp.MmtpMessage, e *EdgeRouter, request *http.Request, c *websocket.Conn) error {
-	if fetch := mmtpMessage.GetProtocolMessage().GetFetchMessage(); fetch != nil {
-		e.msgMu.Lock()
-		defer e.msgMu.Unlock()
-		metadata := make([]*mmtp.MessageMetadata, 0, len(e.Messages))
-		now := time.Now().UnixMilli()
-		for _, msg := range e.Messages {
-			msgHeader := msg.GetProtocolMessage().GetSendMessage().GetApplicationMessage().GetHeader()
-			// If the message has expired, we might as well just delete it
-			if msgHeader.Expires < now {
-				delete(e.Messages, msg.Uuid)
-			} else {
-				msgMetadata := &mmtp.MessageMetadata{
-					Uuid:   msg.GetUuid(),
-					Header: msgHeader,
-				}
-				metadata = append(metadata, msgMetadata)
-			}
-		}
-		resp := &mmtp.MmtpMessage{
-			MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
-			Uuid:    uuid.NewString(),
-			Body: &mmtp.MmtpMessage_ResponseMessage{
-				ResponseMessage: &mmtp.ResponseMessage{
-					ResponseToUuid:  mmtpMessage.GetUuid(),
-					Response:        mmtp.ResponseEnum_GOOD,
-					MessageMetadata: metadata,
-				}},
-		}
-		err := writeMessage(request.Context(), c, resp)
-		if err != nil {
-			return fmt.Errorf("could not send fetch response to Edge Router: %w", err)
-		}
-	}
-	return nil
-}
-
-func handleDisconnect(mmtpMessage *mmtp.MmtpMessage, request *http.Request, c *websocket.Conn) error {
-	if disconnect := mmtpMessage.GetProtocolMessage().GetDisconnectMessage(); disconnect != nil {
-		resp := &mmtp.MmtpMessage{
-			MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
-			Uuid:    uuid.NewString(),
-			Body: &mmtp.MmtpMessage_ResponseMessage{
-				ResponseMessage: &mmtp.ResponseMessage{
-					ResponseToUuid: mmtpMessage.GetUuid(),
-					Response:       mmtp.ResponseEnum_GOOD,
-				}},
-		}
-		if err := writeMessage(request.Context(), c, resp); err != nil {
-			return fmt.Errorf("could not send disconnect response to Edge Router: %w", err)
-		}
-
-		if err := c.Close(websocket.StatusNormalClosure, "Closed connection after receiving Disconnect message"); err != nil {
-			return fmt.Errorf("websocket could not be closed cleanly: %w", err)
-		}
-		return nil
-	}
-	sendErrorMessage(mmtpMessage.GetUuid(), "Mismatch between protocol message type and message body", request.Context(), c)
-	return fmt.Errorf("message did not contain a Disconnect message in the body")
-}
-
-func readMessage(ctx context.Context, c *websocket.Conn) (*mmtp.MmtpMessage, int, error) {
-	_, b, err := c.Read(ctx)
-	if err != nil {
-		return nil, -1, fmt.Errorf("could not read message from edge router: %w", err)
-	}
-	mmtpMessage := &mmtp.MmtpMessage{}
-	if err = proto.Unmarshal(b, mmtpMessage); err != nil {
-		return nil, -1, fmt.Errorf("could not unmarshal message: %w", err)
-	}
-	return mmtpMessage, len(b), nil
-}
-
-func writeMessage(ctx context.Context, c *websocket.Conn, mmtpMessage *mmtp.MmtpMessage) error {
-	b, err := proto.Marshal(mmtpMessage)
-	if err != nil {
-		return fmt.Errorf("could not marshal message: %w", err)
-	}
-	err = c.Write(ctx, websocket.MessageBinary, b)
-	if err != nil {
-		return fmt.Errorf("could not write message: %w", err)
-	}
-	return nil
-}
-
 func verifyEdgeRouterCertificate() func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
 	return func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
 		// we did not receive a certificate from the client, so we just return early
@@ -867,12 +622,12 @@ func verifyEdgeRouterCertificate() func(rawCerts [][]byte, verifiedChains [][]*x
 
 		httpClient := http.DefaultClient
 		if len(clientCert.OCSPServer) > 0 {
-			err := performOCSPCheck(clientCert, issuingCert, httpClient)
+			err := revocation.PerformOCSPCheck(clientCert, issuingCert, httpClient)
 			if err != nil {
 				return err
 			}
 		} else if len(clientCert.CRLDistributionPoints) > 0 {
-			err := performCRLCheck(clientCert, httpClient, issuingCert)
+			err := revocation.PerformCRLCheck(clientCert, httpClient, issuingCert)
 			if err != nil {
 				return err
 			}
@@ -882,73 +637,6 @@ func verifyEdgeRouterCertificate() func(rawCerts [][]byte, verifiedChains [][]*x
 
 		return nil
 	}
-}
-
-func performOCSPCheck(clientCert *x509.Certificate, issuingCert *x509.Certificate, httpClient *http.Client) error {
-	ocspUrl := clientCert.OCSPServer[0]
-	ocspReq, err := ocsp.CreateRequest(clientCert, issuingCert, nil)
-	if err != nil {
-		return fmt.Errorf("could not create OCSP request for the given client cert: %w", err)
-	}
-	resp, err := httpClient.Post(ocspUrl, "application/ocsp-request", bytes.NewBuffer(ocspReq))
-	if err != nil {
-		return fmt.Errorf("could not send OCSP request: %w", err)
-	}
-	respBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("getting OCSP response failed: %w", err)
-	}
-	if err = resp.Body.Close(); err != nil {
-		return fmt.Errorf("could not close response body: %w", err)
-	}
-	ocspResp, err := ocsp.ParseResponse(respBytes, nil)
-	if err != nil {
-		return fmt.Errorf("parsing OCSP response failed: %w", err)
-	}
-	if ocspResp.SerialNumber.Cmp(clientCert.SerialNumber) != 0 {
-		return fmt.Errorf("the serial number in the OCSP response does not correspond to the serial number of the certificate being checked")
-	}
-	if ocspResp.Certificate == nil {
-		if err = ocspResp.CheckSignatureFrom(issuingCert); err != nil {
-			return fmt.Errorf("the signature on the OCSP response is not valid: %w", err)
-		}
-	}
-	if (ocspResp.Certificate != nil) && !ocspResp.Certificate.Equal(issuingCert) {
-		return fmt.Errorf("the certificate embedded in the OCSP response does not match the configured issuing CA")
-	}
-	if ocspResp.Status != ocsp.Good {
-		return fmt.Errorf("the given client certificate has been revoked")
-	}
-	return nil
-}
-
-func performCRLCheck(clientCert *x509.Certificate, httpClient *http.Client, issuingCert *x509.Certificate) error {
-	crlURL := clientCert.CRLDistributionPoints[0]
-	resp, err := httpClient.Get(crlURL)
-	if err != nil {
-		return fmt.Errorf("could not send CRL request: %w", err)
-	}
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("getting CRL response body failed: %w", err)
-	}
-	if err = resp.Body.Close(); err != nil {
-		return fmt.Errorf("failed to close CRL response body: %w", err)
-	}
-	crl, err := x509.ParseRevocationList(respBody)
-	if err != nil {
-		return fmt.Errorf("could not parse received CRL: %w", err)
-	}
-	if err = crl.CheckSignatureFrom(issuingCert); err != nil {
-		return fmt.Errorf("signature on CRL is not valid: %w", err)
-	}
-	now := time.Now().UTC()
-	for _, rev := range crl.RevokedCertificateEntries {
-		if (rev.SerialNumber.Cmp(clientCert.SerialNumber) == 0) && (rev.RevocationTime.UTC().Before(now)) {
-			return fmt.Errorf("the given client certificate has been revoked")
-		}
-	}
-	return nil
 }
 
 func handleSubscription(ctx context.Context, sub *pubsub.Subscription, host *host.Host, incomingChannel chan<- *mmtp.MmtpMessage, wg *sync.WaitGroup) {
