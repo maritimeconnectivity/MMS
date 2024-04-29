@@ -393,7 +393,6 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 					log.Println(wsErr)
 				}
 			case errors.As(err, &sigAlgErr):
-				fmt.Printf("Sigalg err is %s\n", err.Error())
 				if wsErr := c.Close(websocket.StatusPolicyViolation, err.Error()); wsErr != nil {
 					log.Println(wsErr)
 				}

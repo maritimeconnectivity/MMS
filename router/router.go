@@ -536,7 +536,6 @@ func handleUnsubscribe(mmtpMessage *mmtp.MmtpMessage, subMu *sync.RWMutex, subs 
 			resp.GetResponseMessage().ReasonText = &reasonText
 			err := rw.WriteMessage(request.Context(), c, resp)
 			if err != nil {
-				fmt.Printf(reasonText)
 				err = fmt.Errorf("could not write response to unsubscribe message: %w", err)
 			}
 			return err
