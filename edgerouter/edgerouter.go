@@ -1076,7 +1076,7 @@ func main() {
 	}
 
 	wg.Add(1)
-	fmt.Println("Starting edge router")
+	log.Println("Starting edge router")
 	go er.StartEdgeRouter(ctx, wg, certPath, certKeyPath)
 
 	mdnsServer, err := zeroconf.Register("MMS Edge Router", "_mms-edgerouter._tcp", "local.", *listeningPort, nil, nil)
