@@ -22,31 +22,44 @@ import (
 	"encoding/base64"
 	"fmt"
 	"github.com/maritimeconnectivity/MMS/mmtp"
-	"log"
 	"net/http"
-	"nhooyr.io/websocket"
 	"strconv"
 	"strings"
 )
 
-func AuthenticateAgent(request *http.Request, agentMrn string, c *websocket.Conn) (x509.SignatureAlgorithm, bool, error) {
+type AuthenticationErr struct {
+	Msg string
+}
+
+// CertValErr Define error types
+type CertValErr struct {
+	AuthenticationErr
+}
+
+type SigAlgErr struct {
+	AuthenticationErr
+}
+
+type MrnMismatchErr struct {
+	AuthenticationErr
+}
+
+func (e *AuthenticationErr) Error() string {
+	return e.Msg
+}
+
+func AuthenticateConsumer(request *http.Request, consumerMrn string) (x509.SignatureAlgorithm, bool, error) {
 	// If TLS is enabled, we should verify the certificate from the Agent
-	if request.TLS != nil && agentMrn != "" {
+	if request.TLS != nil && consumerMrn != "" {
 		uidOid := []int{0, 9, 2342, 19200300, 100, 1, 1}
 
 		if len(request.TLS.PeerCertificates) < 1 {
-			if wsErr := c.Close(websocket.StatusPolicyViolation, "A valid client certificate must be provided for authenticated connections"); wsErr != nil {
-				log.Println(wsErr)
-			}
-			return x509.UnknownSignatureAlgorithm, false, fmt.Errorf("client certificate validation failed, websocket closed")
+			return x509.UnknownSignatureAlgorithm, false, &CertValErr{AuthenticationErr{Msg: fmt.Sprintf("A valid client certificate must be provided for authenticated connections")}}
 		}
 
 		//Determine signature Algorithm used by client and check if valid
 		signatureAlgorithm, err := getSignatureAlgorithm(request)
 		if err != nil {
-			if wsErr := c.Close(websocket.StatusPolicyViolation, err.Error()); wsErr != nil {
-				log.Println(wsErr)
-			}
 			return x509.UnknownSignatureAlgorithm, false, err
 		}
 
@@ -54,11 +67,8 @@ func AuthenticateAgent(request *http.Request, agentMrn string, c *websocket.Conn
 		for _, n := range request.TLS.PeerCertificates[0].Subject.Names {
 			if n.Type.Equal(uidOid) {
 				if v, ok := n.Value.(string); ok {
-					if !strings.EqualFold(v, agentMrn) {
-						if wsErr := c.Close(websocket.StatusUnsupportedData, "The MRN given in the Connect message does not match the one in the certificate that was used for authentication"); wsErr != nil {
-							log.Println(wsErr)
-						}
-						return x509.UnknownSignatureAlgorithm, false, fmt.Errorf("connect message MRN does not match certificate MRN, websocket closed")
+					if !strings.EqualFold(v, consumerMrn) {
+						return x509.UnknownSignatureAlgorithm, false, &MrnMismatchErr{AuthenticationErr{"connect message MRN does not match certificate MRN, websocket closed"}}
 					}
 				}
 			}
@@ -74,10 +84,10 @@ func getSignatureAlgorithm(request *http.Request) (x509.SignatureAlgorithm, erro
 	switch pubKey := request.TLS.PeerCertificates[0].PublicKey.(type) {
 	case *ecdsa.PublicKey:
 		if pubKeyLen = pubKey.Params().BitSize; pubKeyLen < 256 {
-			return 0, fmt.Errorf("the public key length of the provided client certificate cannot be less than 256 bits")
+			return 0, &SigAlgErr{AuthenticationErr{Msg: "the public key length of the provided client certificate cannot be less than 256 bits"}}
 		}
 	default:
-		return 0, fmt.Errorf("the provided client certificate does not use an allowed public key algorithm")
+		return 0, &SigAlgErr{AuthenticationErr{Msg: "the provided client certificate does not use an allowed public key algorithm"}}
 	}
 
 	var signatureAlgorithm x509.SignatureAlgorithm
@@ -89,7 +99,7 @@ func getSignatureAlgorithm(request *http.Request) (x509.SignatureAlgorithm, erro
 	case 512:
 		signatureAlgorithm = x509.ECDSAWithSHA512
 	default:
-		return 0, fmt.Errorf("the public key length of the provided client certificate is not supported")
+		return 0, &SigAlgErr{AuthenticationErr{Msg: "the public key length of the provided client certificate is not supported"}}
 	}
 	return signatureAlgorithm, nil
 }

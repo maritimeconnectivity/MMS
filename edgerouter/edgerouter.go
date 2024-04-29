@@ -20,6 +20,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"flag"
 	"fmt"
 	"github.com/google/uuid"
@@ -27,7 +28,7 @@ import (
 	"github.com/maritimeconnectivity/MMS/consumer"
 	"github.com/maritimeconnectivity/MMS/mmtp"
 	"github.com/maritimeconnectivity/MMS/utils/auth"
-	"github.com/maritimeconnectivity/MMS/utils/errors"
+	"github.com/maritimeconnectivity/MMS/utils/errMsg"
 	"github.com/maritimeconnectivity/MMS/utils/revocation"
 	"github.com/maritimeconnectivity/MMS/utils/rw"
 	"log"
@@ -381,8 +382,29 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 		agentMrn = strings.ToLower(agentMrn)
 
 		//Authenticate agent
-		signatureAlgorithm, authenticated, err := auth.AuthenticateAgent(request, agentMrn, c)
+		signatureAlgorithm, authenticated, err := auth.AuthenticateConsumer(request, agentMrn)
 		if err != nil {
+			var certErr *auth.CertValErr
+			var sigAlgErr *auth.SigAlgErr
+			var mrnErr *auth.MrnMismatchErr
+			switch {
+			case errors.As(err, &certErr):
+				if wsErr := c.Close(websocket.StatusPolicyViolation, err.Error()); wsErr != nil {
+					log.Println(wsErr)
+				}
+			case errors.As(err, &sigAlgErr):
+				fmt.Printf("Sigalg err is %s\n", err.Error())
+				if wsErr := c.Close(websocket.StatusPolicyViolation, err.Error()); wsErr != nil {
+					log.Println(wsErr)
+				}
+
+			case errors.As(err, &mrnErr):
+				if wsErr := c.Close(websocket.StatusUnsupportedData, err.Error()); wsErr != nil {
+					log.Println(wsErr)
+				}
+			default:
+				log.Printf("Unknown error occured: %s\n", err.Error())
+			}
 			return
 		}
 
@@ -523,7 +545,7 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 					case mmtp.ProtocolMessageType_SEND_MESSAGE:
 						{
 							if n > MessageSizeLimit {
-								errors.SendErrorMessage(mmtpMessage.GetUuid(), "The message size exceeds the allowed 50 KiB", request.Context(), c)
+								errMsg.SendErrorMessage(mmtpMessage.GetUuid(), "The message size exceeds the allowed 50 KiB", request.Context(), c)
 								break
 							}
 							handleSend(mmtpMessage, outgoingChannel, request, c, signatureAlgorithm, mrnToAgent, mrnToAgentMu, subMu, subs, agent)
@@ -549,7 +571,7 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 						}
 					case mmtp.ProtocolMessageType_CONNECT_MESSAGE:
 						{
-							errors.SendErrorMessage(mmtpMessage.GetUuid(), "Already connected", request.Context(), c)
+							errMsg.SendErrorMessage(mmtpMessage.GetUuid(), "Already connected", request.Context(), c)
 						}
 					default:
 						continue
@@ -600,7 +622,7 @@ func handleSubscribe(mmtpMessage *mmtp.MmtpMessage, agent *Agent, subMu *sync.RW
 func handleSubscribeSubject(mmtpMessage *mmtp.MmtpMessage, agent *Agent, subMu *sync.RWMutex, subs map[string]*Subscription, outgoingChannel chan<- *mmtp.MmtpMessage, request *http.Request, c *websocket.Conn) error {
 	subject := mmtpMessage.GetProtocolMessage().GetSubscribeMessage().GetSubject()
 	if subject == "" {
-		errors.SendErrorMessage(mmtpMessage.GetUuid(), "Cannot subscribe to empty subject", request.Context(), c)
+		errMsg.SendErrorMessage(mmtpMessage.GetUuid(), "Cannot subscribe to empty subject", request.Context(), c)
 		return nil
 	}
 	subMu.Lock()
@@ -634,11 +656,11 @@ func handleSubscribeSubject(mmtpMessage *mmtp.MmtpMessage, agent *Agent, subMu *
 func handleSubscribeDirect(mmtpMessage *mmtp.MmtpMessage, agent *Agent, subscribe *mmtp.Subscribe, request *http.Request, c *websocket.Conn, outgoingChannel chan<- *mmtp.MmtpMessage) error {
 	directMessages := subscribe.GetDirectMessages()
 	if !directMessages {
-		errors.SendErrorMessage(mmtpMessage.GetUuid(), "The directMessages flag needs to be true to be able to subscribe to direct messages", request.Context(), c)
+		errMsg.SendErrorMessage(mmtpMessage.GetUuid(), "The directMessages flag needs to be true to be able to subscribe to direct messages", request.Context(), c)
 		return nil
 	}
 	if (agent.Mrn == "") || (len(request.TLS.PeerCertificates) == 0) {
-		errors.SendErrorMessage(mmtpMessage.GetUuid(), "You need to be authenticated to be able to subscribe to direct messages", request.Context(), c)
+		errMsg.SendErrorMessage(mmtpMessage.GetUuid(), "You need to be authenticated to be able to subscribe to direct messages", request.Context(), c)
 		return nil
 	}
 	// Subscribe on direct messages to the Agent
@@ -693,7 +715,7 @@ func handleUnsubscribeSubject(mmtpMessage *mmtp.MmtpMessage, subMu *sync.RWMutex
 	subject := unsubscribe.GetSubject()
 	if subject == "" {
 		reasonText := "Tried to unsubscribe to empty subject"
-		errors.SendErrorMessage(mmtpMessage.GetUuid(), reasonText, request.Context(), c)
+		errMsg.SendErrorMessage(mmtpMessage.GetUuid(), reasonText, request.Context(), c)
 		return nil
 	}
 	subMu.Lock()
@@ -731,7 +753,7 @@ func handleUnsubscribeDirect(mmtpMessage *mmtp.MmtpMessage, unsubscribe *mmtp.Un
 	directMessages := unsubscribe.GetDirectMessages()
 	if !directMessages {
 		reason := "The directMessages flag needs to be true to be able to unsubscribe from direct messages"
-		errors.SendErrorMessage(mmtpMessage.GetUuid(), reason, request.Context(), c)
+		errMsg.SendErrorMessage(mmtpMessage.GetUuid(), reason, request.Context(), c)
 		return nil
 	}
 	if agent.Mrn != "" {
@@ -774,19 +796,19 @@ func handleUnsubscribeDirect(mmtpMessage *mmtp.MmtpMessage, unsubscribe *mmtp.Un
 func handleSend(mmtpMessage *mmtp.MmtpMessage, outgoingChannel chan<- *mmtp.MmtpMessage, request *http.Request, c *websocket.Conn, signatureAlgorithm x509.SignatureAlgorithm, mrnToAgent map[string]*Agent, mrnToAgentMu *sync.RWMutex, subMu *sync.RWMutex, subs map[string]*Subscription, agent *Agent) {
 	if send := mmtpMessage.GetProtocolMessage().GetSendMessage(); send != nil {
 		if !agent.authenticated {
-			errors.SendErrorMessage(mmtpMessage.GetUuid(), "Unauthenticated agents cannot send messages", request.Context(), c)
+			errMsg.SendErrorMessage(mmtpMessage.GetUuid(), "Unauthenticated agents cannot send messages", request.Context(), c)
 			return
 		}
 
 		if agent.Mrn != send.GetApplicationMessage().GetHeader().GetSender() {
-			errors.SendErrorMessage(mmtpMessage.GetUuid(), "Sender MRN must match Agent MRN", request.Context(), c)
+			errMsg.SendErrorMessage(mmtpMessage.GetUuid(), "Sender MRN must match Agent MRN", request.Context(), c)
 			return
 		}
 
 		err := auth.VerifySignatureOnMessage(mmtpMessage, signatureAlgorithm, request)
 		if err != nil {
 			log.Println("Verification of signature on message failed:", err)
-			errors.SendErrorMessage(mmtpMessage.GetUuid(), "Could not authenticate message signature", request.Context(), c)
+			errMsg.SendErrorMessage(mmtpMessage.GetUuid(), "Could not authenticate message signature", request.Context(), c)
 			return
 		}
 

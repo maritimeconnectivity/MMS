@@ -22,6 +22,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"flag"
 	"fmt"
 	"github.com/google/uuid"
@@ -36,7 +37,8 @@ import (
 	"github.com/libp2p/go-libp2p/p2p/protocol/identify"
 	"github.com/maritimeconnectivity/MMS/consumer"
 	"github.com/maritimeconnectivity/MMS/mmtp"
-	"github.com/maritimeconnectivity/MMS/utils/errors"
+	"github.com/maritimeconnectivity/MMS/utils/auth"
+	"github.com/maritimeconnectivity/MMS/utils/errMsg"
 	"github.com/maritimeconnectivity/MMS/utils/revocation"
 	"github.com/maritimeconnectivity/MMS/utils/rw"
 	"google.golang.org/protobuf/proto"
@@ -258,29 +260,36 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 		}
 		erMrn = strings.ToLower(erMrn)
 
-		// If TLS is enabled, we should verify the certificate from the Edge Router
-		if request.TLS != nil {
-			uidOid := []int{0, 9, 2342, 19200300, 100, 1, 1}
+		//Make sure all authentication checks pass, and otherwise return. ER MUST be authenticated
+		_, authenticated, err := auth.AuthenticateConsumer(request, erMrn)
 
-			if len(request.TLS.PeerCertificates) < 1 {
-				if err = c.Close(websocket.StatusPolicyViolation, "A valid client certificate must be provided for authenticated connections"); err != nil {
-					log.Println(err)
+		if err != nil {
+			var certErr *auth.CertValErr
+			var sigAlgErr *auth.SigAlgErr
+			var mrnErr *auth.MrnMismatchErr
+			switch {
+			case errors.As(err, &certErr):
+				if wsErr := c.Close(websocket.StatusPolicyViolation, err.Error()); wsErr != nil {
+					log.Println(wsErr)
 				}
-				return
-			}
-			// https://stackoverflow.com/a/50640119
-			for _, n := range request.TLS.PeerCertificates[0].Subject.Names {
-				if n.Type.Equal(uidOid) {
-					if v, ok := n.Value.(string); ok {
-						if !strings.EqualFold(v, erMrn) {
-							if err = c.Close(websocket.StatusUnsupportedData, "The MRN given in the Connect message does not match the one in the certificate that was used for authentication"); err != nil {
-								log.Println(err)
-							}
-							return
-						}
-					}
+			case errors.As(err, &sigAlgErr):
+				if wsErr := c.Close(websocket.StatusPolicyViolation, err.Error()); wsErr != nil {
+					log.Println(wsErr)
 				}
+
+			case errors.As(err, &mrnErr):
+				if wsErr := c.Close(websocket.StatusUnsupportedData, err.Error()); wsErr != nil {
+					log.Println(wsErr)
+				}
+			default:
+				log.Printf("Unknown error occured: %s\n", err.Error())
 			}
+			return
+		} else if !authenticated {
+			if wsErr := c.Close(websocket.StatusPolicyViolation, "Could not authenticate Edge Router"); wsErr != nil {
+				log.Println(wsErr)
+			}
+			return
 		}
 
 		var e *EdgeRouter
@@ -403,7 +412,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 							err, errorText := handleSubscribe(mmtpMessage, subMu, subs, topicHandles, pubSub, e, wg, ctx, p2p, incomingChannel, request, c)
 							if err != nil {
 								log.Println("Failed handling Subscribe message:", err)
-								errors.SendErrorMessage(mmtpMessage.GetUuid(), errorText, request.Context(), c)
+								errMsg.SendErrorMessage(mmtpMessage.GetUuid(), errorText, request.Context(), c)
 							}
 						}
 					case mmtp.ProtocolMessageType_UNSUBSCRIBE_MESSAGE:
@@ -415,7 +424,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 					case mmtp.ProtocolMessageType_SEND_MESSAGE:
 						{
 							if n > MessageSizeLimit {
-								errors.SendErrorMessage(mmtpMessage.GetUuid(), "The message size exceeds the allowed 50 KiB", request.Context(), c)
+								errMsg.SendErrorMessage(mmtpMessage.GetUuid(), "The message size exceeds the allowed 50 KiB", request.Context(), c)
 								break
 							}
 							handleSend(mmtpMessage, outgoingChannel, erMu, subMu, subs, e)
@@ -441,7 +450,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 						}
 					case mmtp.ProtocolMessageType_CONNECT_MESSAGE:
 						{
-							errors.SendErrorMessage(mmtpMessage.GetUuid(), "Already connected", request.Context(), c)
+							errMsg.SendErrorMessage(mmtpMessage.GetUuid(), "Already connected", request.Context(), c)
 						}
 					default:
 						continue

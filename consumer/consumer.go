@@ -21,7 +21,7 @@ import (
 	"fmt"
 	"github.com/google/uuid"
 	"github.com/maritimeconnectivity/MMS/mmtp"
-	"github.com/maritimeconnectivity/MMS/utils/errors"
+	"github.com/maritimeconnectivity/MMS/utils/errMsg"
 	"github.com/maritimeconnectivity/MMS/utils/rw"
 	"log"
 	"net/http"
@@ -214,7 +214,7 @@ func (c *Consumer) HandleDisconnect(mmtpMessage *mmtp.MmtpMessage, request *http
 		}
 		return nil
 	}
-	errors.SendErrorMessage(mmtpMessage.GetUuid(), "Mismatch between protocol message type and message body", request.Context(), conn)
+	errMsg.SendErrorMessage(mmtpMessage.GetUuid(), "Mismatch between protocol message type and message body", request.Context(), conn)
 	return fmt.Errorf("message did not contain a Disconnect message in the body")
 }
 
