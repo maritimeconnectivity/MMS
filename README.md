@@ -4,7 +4,7 @@ This is an implementation of the Maritime Messaging Service - One of the three c
 
 The following sections describe how to set up the router and edge router components of the MMS. Note that the setting up MMS over VDES is not covered by this guide. 
 
-For instructions on how to set up an MMS Agent, read [here](##agent)
+For instructions on how to set up an MMS Agent, read [here](#agent)
 
 **DISCLAIMER:** This code is provided "as is" and without warranties of any kind, either express or implied. It is a work in progress and may contain bugs, errors, or inconsistencies that could cause system failures or discrepancies in data. By using this code, you acknowledge and agree that you do so at your own risk. The developers make no guarantees regarding the functionality, reliability, or safety of the code, and will not be liable for any damages or losses incurred from its use.
 
