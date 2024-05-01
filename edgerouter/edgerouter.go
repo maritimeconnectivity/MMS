@@ -99,9 +99,13 @@ type EdgeRouter struct {
 	routerWs        *websocket.Conn              // the websocket connection to the MMS Router
 	awaitResponse   map[string]*mmtp.MmtpMessage // a mapping from uuid to sent messages which we expect an answer to
 	responseMu      *sync.RWMutex                // a Mutex locking the awaitResponse map
+	routerAddr      *string                      // Address of initial router to connect to, if provided
+	httpClient      *http.Client                 // The EdgeRouters http client if provided
+	wsMu            *sync.RWMutex                // Mutex for locking the WS upon send/recv, to properly handle if socket was closed
+
 }
 
-func NewEdgeRouter(listeningAddr string, mrn string, outgoingChannel chan *mmtp.MmtpMessage, routerWs *websocket.Conn, ctx context.Context, wg *sync.WaitGroup, clientCAs *string) (*EdgeRouter, error) {
+func NewEdgeRouter(listeningAddr string, mrn string, outgoingChannel chan *mmtp.MmtpMessage, routerWs *websocket.Conn, ctx context.Context, wg *sync.WaitGroup, clientCAs *string, routerAddr *string, httpClient *http.Client) (*EdgeRouter, error) {
 	subs := make(map[string]*Subscription)
 	subMu := &sync.RWMutex{}
 	agents := make(map[string]*Agent)
@@ -110,6 +114,7 @@ func NewEdgeRouter(listeningAddr string, mrn string, outgoingChannel chan *mmtp.
 	mrnToAgentMu := &sync.RWMutex{}
 	awaitResponse := make(map[string]*mmtp.MmtpMessage)
 	responseMu := &sync.RWMutex{}
+	wsMu := &sync.RWMutex{}
 
 	var certPool *x509.CertPool = nil
 	if *clientCAs != "" {
@@ -147,6 +152,9 @@ func NewEdgeRouter(listeningAddr string, mrn string, outgoingChannel chan *mmtp.
 		routerWs:        routerWs,
 		awaitResponse:   awaitResponse,
 		responseMu:      responseMu,
+		routerAddr:      routerAddr,
+		httpClient:      httpClient,
+		wsMu:            wsMu,
 	}, nil
 }
 
@@ -253,15 +261,23 @@ func (er *EdgeRouter) StartEdgeRouter(ctx context.Context, wg *sync.WaitGroup, c
 	}
 }
 
-func (er *EdgeRouter) TryConnectRouter(ctx context.Context, wg *sync.WaitGroup, routerAddr *string, httpClient *http.Client) {
-	defer wg.Done()
+func (er *EdgeRouter) TryConnectRouter(ctx context.Context, wg *sync.WaitGroup) {
+	if er.routerWs != nil {
+		wsCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := er.routerWs.Ping(wsCtx); err == nil { //If there is no errors, we already have a conn
+			log.Println("Connection to router was already established")
+			return
+		}
+	}
 	//Runs until a router has been found
+	log.Println("Probing for a router connection")
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-time.After(5 * time.Second):
-			routerWs, _, err := websocket.Dial(ctx, *routerAddr, &websocket.DialOptions{HTTPClient: httpClient, CompressionMode: websocket.CompressionContextTakeover})
+			routerWs, _, err := websocket.Dial(ctx, *er.routerAddr, &websocket.DialOptions{HTTPClient: er.httpClient, CompressionMode: websocket.CompressionContextTakeover})
 			if err != nil {
 				continue
 			}
@@ -275,6 +291,12 @@ func (er *EdgeRouter) TryConnectRouter(ctx context.Context, wg *sync.WaitGroup, 
 			return
 		}
 	}
+}
+
+// TryConnectRouterRoutine is a wrapper function called when starting TryConnectRouter in a new thread
+func (er *EdgeRouter) TryConnectRouterRoutine(ctx context.Context, wg *sync.WaitGroup) {
+	defer wg.Done()
+	er.TryConnectRouter(ctx, wg)
 }
 
 // Function for garbage collection of expired messages
@@ -876,7 +898,10 @@ func handleIncomingMessages(ctx context.Context, edgeRouter *EdgeRouter, wg *syn
 			response, _, err := rw.ReadMessage(ctx, edgeRouter.routerWs) //Block until recieve from socket
 			if err != nil {
 				log.Println("Could not receive response from MMS Router:", err)
-				continue
+				edgeRouter.wsMu.Lock()
+
+				edgeRouter.TryConnectRouter(ctx, wg)
+				edgeRouter.wsMu.Unlock()
 			}
 
 			if _, err := uuid.Parse(response.GetUuid()); err != nil {
@@ -894,7 +919,6 @@ func handleIncomingMessages(ctx context.Context, edgeRouter *EdgeRouter, wg *syn
 					edgeRouter.responseMu.Unlock()
 					if exists {
 						if response.GetResponseMessage().GetResponse() != mmtp.ResponseEnum_GOOD {
-							log.Printf("Received response to a %s message awaiting response, but with error: %s\n", msg.GetProtocolMessage().GetProtocolMsgType().String(), responseMsg.GetReasonText())
 							edgeRouter.outgoingChannel <- msg //Attempt re-send
 							continue
 						}
@@ -991,6 +1015,9 @@ func handleOutgoingMessages(ctx context.Context, edgeRouter *EdgeRouter, wg *syn
 						if err := rw.WriteMessage(ctx, edgeRouter.routerWs, outgoingMessage); err != nil {
 							log.Println("Could not send outgoing message to MMS Router, will try again later:", err)
 							edgeRouter.outgoingChannel <- outgoingMessage
+							edgeRouter.wsMu.Lock()
+							edgeRouter.TryConnectRouter(ctx, wg)
+							edgeRouter.wsMu.Unlock()
 							continue
 						}
 						protoMsgType := outgoingMessage.GetProtocolMessage().GetProtocolMsgType()
@@ -1059,16 +1086,16 @@ func main() {
 
 	wg := &sync.WaitGroup{}
 
-	er, err := NewEdgeRouter(":"+strconv.Itoa(*listeningPort), *ownMrn, outgoingChannel, routerWs, ctx, wg, clientCAs)
+	er, err := NewEdgeRouter(":"+strconv.Itoa(*listeningPort), *ownMrn, outgoingChannel, routerWs, ctx, wg, clientCAs, routerAddr, httpClient)
 	if err != nil {
 		log.Println("Could not create MMS Edge Router instance:", err)
 		return
 	}
 
-	//Start thread to probe for a router connection
-	if routerWs == nil {
+	//Start thread to probe for a router connection, but only if a routerAddr was given
+	if routerWs == nil && routerAddr != nil {
 		wg.Add(1)
-		go er.TryConnectRouter(ctx, wg, routerAddr, httpClient)
+		go er.TryConnectRouterRoutine(ctx, wg)
 	}
 
 	wg.Add(1)
