@@ -245,12 +245,12 @@ func (er *EdgeRouter) StartEdgeRouter(ctx context.Context, wg *sync.WaitGroup, c
 
 	if er.routerWs != nil {
 		if err := rw.WriteMessage(context.Background(), er.routerWs, disconnectMsg); err != nil {
-			log.Error("Could not send disconnect to Router:", err)
+			log.Warn("Could not send disconnect to Router:", err)
 		}
 
 		response, _, err := rw.ReadMessage(context.Background(), er.routerWs)
 		if err != nil || response.GetResponseMessage().Response != mmtp.ResponseEnum_GOOD {
-			log.Error("Graceful disconnect from Router failed")
+			log.Warn("Graceful disconnect from Router failed")
 		}
 
 		<-er.routerWs.CloseRead(context.Background()).Done()
@@ -1045,7 +1045,6 @@ func handleOutgoingMessages(ctx context.Context, edgeRouter *EdgeRouter, wg *syn
 
 func main() {
 	ctx, cancel := context.WithCancel(context.Background())
-	log.SetLevel(log.InfoLevel)
 
 	// wait for a SIGINT or SIGTERM signal
 	ch := make(chan os.Signal, 1)
@@ -1059,8 +1058,15 @@ func main() {
 	certPath := flag.String("cert-path", "", "Path to a TLS certificate file. If none is provided, TLS will be disabled.")
 	certKeyPath := flag.String("cert-key-path", "", "Path to a TLS certificate private key. If none is provided, TLS will be disabled.")
 	clientCAs := flag.String("client-ca", "", "Path to a file containing a list of client CAs that can connect to this Edge Router.")
+	debug := flag.Bool("d", false, "Indicates whether debugging should be enabled, false by default")
 
 	flag.Parse()
+	if *debug {
+		log.SetLevel(log.DebugLevel)
+		log.Info("Operating in Debug mode")
+	} else {
+		log.SetLevel(log.InfoLevel)
+	}
 
 	outgoingChannel := make(chan *mmtp.MmtpMessage, ChannelBufSize)
 
