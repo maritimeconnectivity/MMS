@@ -70,13 +70,12 @@ func (c *Consumer) BulkQueueMessages(mmtpMessages []*mmtp.MmtpMessage) {
 
 func (c *Consumer) notify(ctx context.Context, conn *websocket.Conn) error {
 	notifications := make([]*mmtp.MessageMetadata, 0, len(c.Notifications))
-	for msgUuid, mmtpMsg := range c.Notifications {
+	for _, mmtpMsg := range c.Notifications {
 		msgMetadata := &mmtp.MessageMetadata{
 			Uuid:   mmtpMsg.GetUuid(),
 			Header: mmtpMsg.GetProtocolMessage().GetSendMessage().GetApplicationMessage().GetHeader(),
 		}
 		notifications = append(notifications, msgMetadata)
-		delete(c.Notifications, msgUuid)
 	}
 
 	notifyMsg := &mmtp.MmtpMessage{
@@ -95,7 +94,11 @@ func (c *Consumer) notify(ctx context.Context, conn *websocket.Conn) error {
 	}
 	err := rw.WriteMessage(ctx, conn, notifyMsg)
 	if err != nil {
+		log.Println("Could not send notify")
 		return fmt.Errorf("could not send Notify to Producer: %w", err)
+	}
+	for msgUuid, _ := range c.Notifications {
+		delete(c.Notifications, msgUuid)
 	}
 	return nil
 }
