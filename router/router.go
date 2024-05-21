@@ -398,7 +398,6 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 			switch mmtpMessage.GetMsgType() {
 			case mmtp.MsgType_PROTOCOL_MESSAGE:
 				{
-
 					protoMessage = mmtpMessage.GetProtocolMessage()
 					if protoMessage == nil {
 						continue
