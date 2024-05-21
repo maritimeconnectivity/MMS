@@ -30,6 +30,7 @@ import (
 	"github.com/maritimeconnectivity/MMS/mmtp"
 	"github.com/maritimeconnectivity/MMS/utils/auth"
 	"github.com/maritimeconnectivity/MMS/utils/errMsg"
+	"github.com/maritimeconnectivity/MMS/utils/packet"
 	"github.com/maritimeconnectivity/MMS/utils/revocation"
 	"github.com/maritimeconnectivity/MMS/utils/rw"
 	"net/http"
@@ -367,7 +368,7 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 		defer func(c *websocket.Conn, code websocket.StatusCode, reason string) {
 			err := c.Close(code, reason)
 			if err != nil {
-				log.Error("Could not close connection:", err)
+				log.Errorf("Could not close connection: %s", err.Error())
 			}
 			wg.Done()
 		}(c, websocket.StatusInternalError, "PANIC!!!")
