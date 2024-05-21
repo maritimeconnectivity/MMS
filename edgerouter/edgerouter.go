@@ -103,7 +103,6 @@ type EdgeRouter struct {
 	routerAddr      *string                      // Address of initial router to connect to, if provided
 	httpClient      *http.Client                 // The EdgeRouters http client if provided
 	wsMu            *sync.RWMutex                // Mutex for locking the WS upon send/recv, to properly handle if socket was closed
-
 }
 
 func NewEdgeRouter(listeningAddr string, mrn string, outgoingChannel chan *mmtp.MmtpMessage, routerWs *websocket.Conn, ctx context.Context, wg *sync.WaitGroup, clientCAs *string, routerAddr *string, httpClient *http.Client) (*EdgeRouter, error) {
