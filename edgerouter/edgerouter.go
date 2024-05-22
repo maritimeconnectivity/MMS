@@ -30,7 +30,6 @@ import (
 	"github.com/maritimeconnectivity/MMS/mmtp"
 	"github.com/maritimeconnectivity/MMS/utils/auth"
 	"github.com/maritimeconnectivity/MMS/utils/errMsg"
-	"github.com/maritimeconnectivity/MMS/utils/packet"
 	"github.com/maritimeconnectivity/MMS/utils/revocation"
 	"github.com/maritimeconnectivity/MMS/utils/rw"
 	"net/http"
