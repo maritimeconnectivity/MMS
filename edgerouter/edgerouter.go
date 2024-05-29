@@ -428,47 +428,11 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 		}
 
 		var agent *Agent
-		if connect.ReconnectToken != nil {
-			agentsMu.RLock()
-			agent = agents[connect.GetReconnectToken()]
-			agentsMu.RUnlock()
-			if agent == nil {
-				errorMsg := "No existing session was found for the given reconnect token"
-				resp := &mmtp.MmtpMessage{
-					MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
-					Uuid:    uuid.NewString(),
-					Body: &mmtp.MmtpMessage_ResponseMessage{
-						ResponseMessage: &mmtp.ResponseMessage{
-							ResponseToUuid: mmtpMessage.GetUuid(),
-							Response:       mmtp.ResponseEnum_ERROR,
-							ReasonText:     &errorMsg,
-						}},
-				}
-				if err = rw.WriteMessage(request.Context(), c, resp); err != nil {
-					log.Error("Could not send error message:", err)
-					return
-				}
-			}
-			if connect.GetReconnectToken() != agent.ReconnectToken {
-				errorMsg := "The given reconnect token does not match the one that is stored"
-				resp := &mmtp.MmtpMessage{
-					MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
-					Uuid:    uuid.NewString(),
-					Body: &mmtp.MmtpMessage_ResponseMessage{
-						ResponseMessage: &mmtp.ResponseMessage{
-							ResponseToUuid: mmtpMessage.GetUuid(),
-							Response:       mmtp.ResponseEnum_ERROR,
-							ReasonText:     &errorMsg,
-						}},
-				}
-				if err = rw.WriteMessage(request.Context(), c, resp); err != nil {
-					log.Error("Could not send error message:", err)
-					return
-				}
-			}
-			agentsMu.Lock()
-			delete(agents, agent.ReconnectToken)
-			agentsMu.Unlock()
+		agentsMu.RLock()
+		savedAgent, ok := agents[connect.GetReconnectToken()]
+		agentsMu.RUnlock()
+		if ok {
+			agent = savedAgent
 		} else {
 			agent = &Agent{
 				Consumer: consumer.Consumer{
@@ -488,9 +452,7 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 				mrnToAgentMu.Unlock()
 			}
 		}
-
 		agent.ReconnectToken = uuid.NewString()
-
 		agentsMu.Lock()
 		agents[agent.ReconnectToken] = agent
 		agentsMu.Unlock()
@@ -1083,7 +1045,8 @@ func main() {
 	httpClient := &http.Client{
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
-				Certificates: certificates,
+				Certificates:       certificates,
+				InsecureSkipVerify: true,
 			},
 		},
 	}
