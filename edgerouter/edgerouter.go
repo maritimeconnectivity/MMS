@@ -443,8 +443,9 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 					Notifications: make(map[string]*mmtp.MmtpMessage),
 					NotifyMu:      &sync.RWMutex{},
 				},
-				agentUuid:     uuid.NewString(),
-				authenticated: authenticated,
+				agentUuid:      uuid.NewString(),
+				authenticated:  authenticated,
+				directMessages: false,
 			}
 			if agentMrn != "" {
 				mrnToAgentMu.Lock()
@@ -930,8 +931,10 @@ func handleIncomingMessages(ctx context.Context, edgeRouter *EdgeRouter, wg *syn
 							{
 								edgeRouter.mrnToAgentMu.RLock()
 								for _, recipient := range subjectOrRecipient.Recipients.GetRecipients() {
-									agent := edgeRouter.mrnToAgent[recipient]
-									if agent.directMessages {
+									log.Debugf("recipient %s, hex: %x", recipient, recipient)
+									agent, ok := edgeRouter.mrnToAgent[recipient]
+									log.Debugf("agent: %s, ok: %b", agent, ok)
+									if ok && agent.directMessages {
 										err = agent.QueueMessage(incomingMessage)
 										if err != nil {
 											log.Error("Could not queue message for Agent:", err)
