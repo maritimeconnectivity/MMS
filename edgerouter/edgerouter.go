@@ -1048,8 +1048,7 @@ func main() {
 	httpClient := &http.Client{
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
-				Certificates:       certificates,
-				InsecureSkipVerify: true,
+				Certificates: certificates,
 			},
 		},
 	}
