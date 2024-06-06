@@ -794,6 +794,11 @@ func handleSend(mmtpMessage *mmtp.MmtpMessage, outgoingChannel chan<- *mmtp.Mmtp
 			return
 		}
 
+		if len(send.GetApplicationMessage().GetHeader().GetSubject()) > 100 {
+			errMsg.SendErrorMessage(mmtpMessage.GetUuid(), "Subject string may not exceed 100 characters", request.Context(), c)
+			return
+		}
+
 		outgoingChannel <- mmtpMessage
 		header := send.GetApplicationMessage().GetHeader()
 		if len(header.GetRecipients().GetRecipients()) > 0 {
