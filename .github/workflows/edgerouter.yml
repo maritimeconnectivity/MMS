@@ -37,7 +37,6 @@ jobs:
       - name: Build and push Docker image
         uses: docker/build-push-action@v3
         with:
-          context: docker
-          file: ${context}/Dockerfile.edgerouter
+          file: docker/Dockerfile.edgerouter
           tags: ghcr.io/gla-rad/mc-mms-edgerouter
           push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
