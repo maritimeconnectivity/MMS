@@ -1,0 +1,66 @@
+# Build like this:
+#     docker build -t <version> -f Dockerfile ..
+# e.g.
+#     docker build -t glarad/mc-mms-edgerouter:latest -f Dockerfile ..
+#
+# Run like this:
+#     sudo docker run -t -i --rm -p 8080:8080 -p 9000:9000 -v /path/to/config-directory/on/machine:/conf 
+#       -e PORT="8080" \
+#       -e LIBP2P_PORT="9000" \
+#       -e PRIVKEY="custom_privkey_value" \
+#       -e CERT_PATH="custom_cert_path" \
+#       -e CERT_KEY_PATH="custom_cert_key_path" \
+#       -e CLIENT_CA="custom_client_ca" \
+#       <image-id>
+#
+# You can also push to docker-hub like:
+#     docker push glarad/mc-mms-edgerouter:tagname
+#
+# A customized conf file (application.properties) can be made available in the folder mounted to /conf.
+# When using in non-local environment it is recommended to generate new trust and keystores and place them in
+# the conf-folder and point to them in application.properties.
+#
+
+# Start with the official Golang image
+FROM golang:1.22 as builder
+
+# Set the Current Working Directory inside the container
+WORKDIR /router
+
+# Copy the go.mod and go.sum files
+COPY router/go.mod router/go.sum ./
+
+# Copy the source code into the container
+ADD router .
+
+# Copy the utility sources
+COPY ./mmtp/ ../mmtp/
+COPY ./utils/ ../utils/
+COPY ./consumer/ ../consumer/
+
+# Build the Go app
+RUN go build -o router .
+
+# Start a new stage from scratch
+FROM alpine:latest
+
+# Set the Current Working Directory inside the container
+WORKDIR /router
+
+# Copy the Pre-built binary file from the previous stage
+COPY --from=builder /router/router .
+
+# Expose ports
+EXPOSE 8080
+EXPOSE 9000
+
+# Set default environment variables
+ENV PORT="8080"
+ENV LIBP2P_PORT="9000"
+ENV PRIVKEY="default_privkey_value"
+ENV CERT_PATH="default_cert_path"
+ENV CERT_KEY_PATH="default_cert_key_path"
+ENV CLIENT_CA="default_client_ca"
+
+# Command to run the executable with environment variables as input parameters
+CMD ["sh", "-c", "./router --port $PORT --libp2p-port $LIBP2P_PORT --privkey $PRIVKEY --cert-path $CERT_PATH --cert-key-path $CERT_KEY_PATH --client-ca $CLIENT_CA"]
