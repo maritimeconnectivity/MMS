@@ -19,6 +19,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/ecdsa"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
@@ -842,7 +843,16 @@ func setupLibP2P(ctx context.Context, libp2pPort *int, privKeyFilePath *string) 
 		keyData, _ := pem.Decode(privKeyFile)
 		privKey, err := x509.ParseECPrivateKey(keyData.Bytes)
 		if err != nil {
-			return nil, nil, fmt.Errorf("could not parse the provided private key file as an ECDSA key: %w", err)
+			privKeyPkcs8, err := x509.ParsePKCS8PrivateKey(keyData.Bytes)
+			if err != nil {
+				return nil, nil, fmt.Errorf("could not parse the provided private key file as an ECDSA key: %w", err)
+			}
+			v, ok := privKeyPkcs8.(*ecdsa.PrivateKey)
+			if !ok {
+				return nil, nil, fmt.Errorf("Error on type assertion of provided key as ecdsa Privatekey")
+			}
+			//After dynamic assertion set privKey
+			privKey = v
 		}
 
 		privEc, _, err := crypto.ECDSAKeyPairFromKey(privKey)
@@ -910,8 +920,14 @@ func main() {
 	certPath := flag.String("cert-path", "", "Path to a TLS certificate file. If none is provided, TLS will be disabled.")
 	certKeyPath := flag.String("cert-key-path", "", "Path to a TLS certificate private key. If none is provided, TLS will be disabled.")
 	clientCAs := flag.String("client-ca", "", "Path to a file containing a list of client CAs that can connect to this Router.")
+	beacons := flag.String("beacons", "beacons.txt", "Path to a file containing beacons, who this router can use to connect to the libp2p network.")
 
 	flag.Parse()
+
+	if _, err := os.Stat(*beacons); err != nil {
+		log.Fatal(err)
+		return
+	}
 
 	node, rd, err := setupLibP2P(ctx, libp2pPort, privKeyFilePath)
 	if err != nil {
