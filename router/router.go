@@ -26,6 +26,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/charmbracelet/log"
 	"github.com/google/uuid"
 	"github.com/libp2p/go-libp2p"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
@@ -43,7 +44,6 @@ import (
 	"github.com/maritimeconnectivity/MMS/utils/revocation"
 	"github.com/maritimeconnectivity/MMS/utils/rw"
 	"google.golang.org/protobuf/proto"
-	"log"
 	"net/http"
 	"nhooyr.io/websocket"
 	"os"
@@ -154,17 +154,17 @@ func NewMMSRouter(p2p *host.Host, pubSub *pubsub.PubSub, listeningAddr string, i
 }
 
 func (r *MMSRouter) StartRouter(ctx context.Context, wg *sync.WaitGroup, certPath *string, certKeyPath *string) {
-	log.Println("Starting MMS Router")
+	log.Info("Starting MMS Router")
 	wg.Add(4)
 	go func() {
-		log.Println("Websocket listening on:", r.httpServer.Addr)
+		log.Infof("Websocket listening on: %v", r.httpServer.Addr)
 		if *certPath != "" && *certKeyPath != "" {
 			if err := r.httpServer.ListenAndServeTLS(*certPath, *certKeyPath); err != nil {
-				log.Println(err)
+				log.Error(err)
 			}
 		} else {
 			if err := r.httpServer.ListenAndServe(); err != nil {
-				log.Println(err)
+				log.Error(err)
 			}
 		}
 		wg.Done()
@@ -173,11 +173,11 @@ func (r *MMSRouter) StartRouter(ctx context.Context, wg *sync.WaitGroup, certPat
 	go handleOutgoingMessages(ctx, r, wg)
 	go r.messageGC(ctx, wg)
 	<-ctx.Done()
-	log.Println("Shutting down MMS router")
+	log.Warn("Shutting down MMS router")
 	close(r.incomingChannel)
 	close(r.outgoingChannel)
 	if err := r.httpServer.Shutdown(context.Background()); err != nil {
-		log.Println(err)
+		log.Error(err)
 	}
 	wg.Done()
 }
@@ -212,14 +212,14 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 		wg.Add(1)
 		c, err := websocket.Accept(writer, request, &websocket.AcceptOptions{CompressionMode: websocket.CompressionContextTakeover})
 		if err != nil {
-			log.Println("Could not establish websocket connection", err)
+			log.Errorf("Could not establish websocket connection: %v", err)
 			wg.Done()
 			return
 		}
 		defer func(c *websocket.Conn, code websocket.StatusCode, reason string) {
 			err := c.Close(code, reason)
 			if err != nil {
-				log.Println("Could not close connection:", err)
+				log.Errorf("Could not close connection: %v", err)
 			}
 			wg.Done()
 		}(c, websocket.StatusInternalError, "PANIC!!!")
@@ -229,9 +229,9 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 
 		mmtpMessage, _, err := rw.ReadMessage(ctx, c)
 		if err != nil {
-			log.Println("Could not read message:", err)
+			log.Warnf("Could not read message: %v", err)
 			if err = c.Close(websocket.StatusUnsupportedData, "The first message could not be parsed as an MMTP message"); err != nil {
-				log.Println(err)
+				log.Error(err)
 			}
 			return
 		}
@@ -239,7 +239,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 		protoMessage := mmtpMessage.GetProtocolMessage()
 		if mmtpMessage.MsgType != mmtp.MsgType_PROTOCOL_MESSAGE || protoMessage == nil {
 			if err = c.Close(websocket.StatusUnsupportedData, "The first message needs to be a Protocol Message containing a Connect message with the MRN of the Edge Router"); err != nil {
-				log.Println(err)
+				log.Error(err)
 			}
 			return
 		}
@@ -247,7 +247,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 		connect := protoMessage.GetConnectMessage()
 		if connect == nil {
 			if err = c.Close(websocket.StatusUnsupportedData, "The first message needs to contain a Connect message with the MRN of the Edge Router"); err != nil {
-				log.Println(err)
+				log.Error(err)
 			}
 			return
 		}
@@ -255,7 +255,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 		erMrn := connect.GetOwnMrn()
 		if erMrn == "" {
 			if err = c.Close(websocket.StatusUnsupportedData, "The first message needs to be a Connect message with the MRN of the Edge Router"); err != nil {
-				log.Println(err)
+				log.Error(err)
 			}
 			return
 		}
@@ -272,19 +272,19 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 			case errors.As(err, &certErr):
 			case errors.As(err, &sigAlgErr):
 				if wsErr := c.Close(websocket.StatusPolicyViolation, err.Error()); wsErr != nil {
-					log.Println(wsErr)
+					log.Error(wsErr)
 				}
 			case errors.As(err, &mrnErr):
 				if wsErr := c.Close(websocket.StatusUnsupportedData, err.Error()); wsErr != nil {
-					log.Println(wsErr)
+					log.Error(wsErr)
 				}
 			default:
-				log.Printf("Unknown error occured: %s\n", err.Error())
+				log.Errorf("Unknown error occured: %s\n", err.Error())
 			}
 			return
 		} else if !authenticated {
 			if wsErr := c.Close(websocket.StatusPolicyViolation, "Could not authenticate Edge Router"); wsErr != nil {
-				log.Println(wsErr)
+				log.Error(wsErr)
 			}
 			return
 		}
@@ -308,7 +308,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 				}
 				err = rw.WriteMessage(request.Context(), c, resp)
 				if err != nil {
-					log.Println("Could not send response message:", err)
+					log.Errorf("Could not send response message: %v", err)
 					return
 				}
 			}
@@ -326,7 +326,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 				}
 				err = rw.WriteMessage(request.Context(), c, resp)
 				if err != nil {
-					log.Println("Could not send response message:", err)
+					log.Errorf("Could not send response message: %v", err)
 					return
 				}
 			}
@@ -361,7 +361,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 		}
 		err = rw.WriteMessage(request.Context(), c, resp)
 		if err != nil {
-			log.Println("Could not send response message:", err)
+			log.Errorf("Could not send response message: %v", err)
 			return
 		}
 
@@ -391,7 +391,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 					return
 				}
 				if err = c.Close(websocket.StatusUnsupportedData, reasonText); err != nil {
-					log.Println("Closing websocket failed after sending error response:", err)
+					log.Errorf("Closing websocket failed after sending error response: %v", err)
 				}
 				return
 			}
@@ -408,14 +408,14 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 						{
 							err, errorText := handleSubscribe(mmtpMessage, subMu, subs, topicHandles, pubSub, e, wg, ctx, p2p, incomingChannel, request, c)
 							if err != nil {
-								log.Println("Failed handling Subscribe message:", err)
+								log.Error("Failed handling Subscribe message:", err)
 								errMsg.SendErrorMessage(mmtpMessage.GetUuid(), errorText, request.Context(), c)
 							}
 						}
 					case mmtp.ProtocolMessageType_UNSUBSCRIBE_MESSAGE:
 						{
 							if err = handleUnsubscribe(mmtpMessage, subMu, subs, e, request, c); err != nil {
-								log.Println("Failed handling Unsubscribe message:", err)
+								log.Error("Failed handling Unsubscribe message:", err)
 							}
 						}
 					case mmtp.ProtocolMessageType_SEND_MESSAGE:
@@ -429,19 +429,19 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 					case mmtp.ProtocolMessageType_RECEIVE_MESSAGE:
 						{
 							if err = e.HandleReceive(mmtpMessage, request, c); err != nil {
-								log.Println("Failed handling Receive message:", err)
+								log.Error("Failed handling Receive message:", err)
 							}
 						}
 					case mmtp.ProtocolMessageType_FETCH_MESSAGE:
 						{
 							if err = e.HandleFetch(mmtpMessage, request, c); err != nil {
-								log.Println("Failed handling Fetch message:", err)
+								log.Error("Failed handling Fetch message:", err)
 							}
 						}
 					case mmtp.ProtocolMessageType_DISCONNECT_MESSAGE:
 						{
 							if err = e.HandleDisconnect(mmtpMessage, request, c); err != nil {
-								log.Println("Failed handling Disconnect message:", err)
+								log.Error("Failed handling Disconnect message:", err)
 							}
 							return
 						}
@@ -476,7 +476,7 @@ func handleSubscribe(mmtpMessage *mmtp.MmtpMessage, subMu *sync.RWMutex, subs ma
 				t, err := pubSub.Join(subject)
 				if err != nil {
 					subMu.Unlock()
-					return fmt.Errorf("was not able to join topic: %w", err), "Subscription failed"
+					return fmt.Errorf("was not able to join topic: %v", err), "Subscription failed"
 				}
 				topic = t
 				topicHandles[subject] = topic
@@ -486,7 +486,7 @@ func handleSubscribe(mmtpMessage *mmtp.MmtpMessage, subMu *sync.RWMutex, subs ma
 			subscription, err := topic.Subscribe()
 			if err != nil {
 				subMu.Unlock()
-				return fmt.Errorf("was not able to subscribe to topic: %w", err), "Subscription failed"
+				return fmt.Errorf("was not able to subscribe to topic: %v", err), "Subscription failed"
 			}
 			wg.Add(1)
 			go handleSubscription(ctx, subscription, p2p, incomingChannel, wg)
@@ -507,7 +507,7 @@ func handleSubscribe(mmtpMessage *mmtp.MmtpMessage, subMu *sync.RWMutex, subs ma
 				}},
 		}
 		if err := rw.WriteMessage(request.Context(), c, resp); err != nil {
-			log.Println("Could not send subscribe response to Edge Router:", err)
+			log.Errorf("Could not send subscribe response to Edge Router: %v", err)
 		}
 	}
 	return nil, ""
@@ -582,7 +582,7 @@ func handleSend(mmtpMessage *mmtp.MmtpMessage, outgoingChannel chan<- *mmtp.Mmtp
 					for _, er := range sub.Subscribers {
 						if er.Mrn != e.Mrn { // Do not send the message back to where it came from
 							if err := er.QueueMessage(mmtpMessage); err != nil {
-								log.Println("Could not queue message to Edge Router:", err)
+								log.Errorf("Could not queue message to Edge Router: %v", err)
 							}
 						}
 					}
@@ -597,7 +597,7 @@ func handleSend(mmtpMessage *mmtp.MmtpMessage, outgoingChannel chan<- *mmtp.Mmtp
 				for _, subscriber := range sub.Subscribers {
 					if subscriber.Mrn != e.Mrn {
 						if err := subscriber.QueueMessage(mmtpMessage); err != nil {
-							log.Println("Could not queue message to Edge Router:", err)
+							log.Errorf("Could not queue message to Edge Router: %v", err)
 						}
 					}
 				}
@@ -646,18 +646,18 @@ func handleSubscription(ctx context.Context, sub *pubsub.Subscription, host *hos
 		default:
 			m, err := sub.Next(ctx)
 			if err != nil {
-				log.Println("Could not get message from subscription:", err)
+				log.Errorf("Could not get message from subscription: %v", err)
 				continue
 			}
 			if m.GetFrom() != (*host).ID() {
 				var mmtpMessage mmtp.MmtpMessage
 				if err = proto.Unmarshal(m.Data, &mmtpMessage); err != nil {
-					log.Println("Could not unmarshal received message as an mmtp message:", err)
+					log.Errorf("Could not unmarshal received message as an mmtp message: %v", err)
 					continue
 				}
 				uid, err := uuid.Parse(mmtpMessage.GetUuid())
 				if err != nil || uid.Version() != 4 {
-					log.Println("The UUID of the message is not a valid version 4 UUID")
+					log.Error("The UUID of the message is not a valid version 4 UUID")
 					continue
 				}
 				switch mmtpMessage.GetMsgType() {
@@ -701,7 +701,7 @@ func handleIncomingMessages(ctx context.Context, router *MMSRouter, wg *sync.Wai
 								router.subMu.RLock()
 								for _, subscriber := range router.subscriptions[subjectOrRecipient.Subject].Subscribers {
 									if err := subscriber.QueueMessage(incomingMessage); err != nil {
-										log.Println("Could not queue message:", err)
+										log.Errorf("Could not queue message: %v", err)
 										continue
 									}
 								}
@@ -715,7 +715,7 @@ func handleIncomingMessages(ctx context.Context, router *MMSRouter, wg *sync.Wai
 									for _, er := range sub.Subscribers {
 										err := er.QueueMessage(incomingMessage)
 										if err != nil {
-											log.Println("Could not queue message for Edge Router:", err)
+											log.Errorf("Could not queue message for Edge Router: %v", err)
 										}
 									}
 									router.subMu.RUnlock()
@@ -748,7 +748,7 @@ func handleOutgoingMessages(ctx context.Context, router *MMSRouter, wg *sync.Wai
 						}
 						msgBytes, err := proto.Marshal(outgoingMessage)
 						if err != nil {
-							log.Println("Could not marshal outgoing message:", err)
+							log.Errorf("Could not marshal outgoing message: %v", err)
 							continue
 						}
 						switch subjectOrRecipient := appMsg.GetHeader().GetSubjectOrRecipient().(type) {
@@ -758,14 +758,14 @@ func handleOutgoingMessages(ctx context.Context, router *MMSRouter, wg *sync.Wai
 								if !ok {
 									topic, err = router.pubSub.Join(subjectOrRecipient.Subject)
 									if err != nil {
-										log.Println("Could not join topic:", err)
+										log.Error("Could not join topic:", err)
 										continue
 									}
 									router.topicHandles[subjectOrRecipient.Subject] = topic
 								}
 								err = topic.Publish(ctx, msgBytes)
 								if err != nil {
-									log.Println("Could not publish message to topic:", err)
+									log.Errorf("Could not publish message to topic: %v", err)
 									continue
 								}
 							}
@@ -776,14 +776,14 @@ func handleOutgoingMessages(ctx context.Context, router *MMSRouter, wg *sync.Wai
 									if !ok {
 										topic, err = router.pubSub.Join(recipient)
 										if err != nil {
-											log.Println("Could not join topic:", err)
+											log.Errorf("Could not join topic: %v", err)
 											continue
 										}
 										router.topicHandles[recipient] = topic
 									}
 									err = topic.Publish(ctx, msgBytes)
 									if err != nil {
-										log.Println("Could not publish message to topic:", err)
+										log.Errorf("Could not publish message to topic: %v", err)
 										continue
 									}
 								}
@@ -825,7 +825,7 @@ func setupLibP2P(ctx context.Context, libp2pPort *int, privKeyFilePath *string) 
 		for fileScanner.Scan() {
 			addrInfo, err := peerstore.AddrInfoFromString(fileScanner.Text())
 			if err != nil {
-				log.Println("Failed to parse beacon address:", err)
+				log.Errorf("Failed to parse beacon address: %v", err)
 				continue
 			}
 			beacons = append(beacons, *addrInfo)
@@ -906,7 +906,7 @@ func setupLibP2P(ctx context.Context, libp2pPort *int, privKeyFilePath *string) 
 		Addrs: node.Addrs(),
 	}
 	addrs, err := peerstore.AddrInfoToP2pAddrs(&peerInfo)
-	log.Println("libp2p node addresses:", addrs)
+	log.Infof("libp2p node addresses: %v", addrs)
 	return node, rd, nil
 }
 
@@ -931,7 +931,7 @@ func main() {
 
 	node, rd, err := setupLibP2P(ctx, libp2pPort, privKeyFilePath)
 	if err != nil {
-		log.Println("Could not setup the libp2p backend:", err)
+		log.Errorf("Could not setup the libp2p backend: %v", err)
 		return
 	}
 
@@ -944,7 +944,7 @@ func main() {
 	anyConnected := false
 	attempts := 0
 	for !anyConnected && attempts < 10 {
-		log.Println("Searching for peers...")
+		log.Warn("Searching for peers...")
 		peerChan, err := rd.FindPeers(ctx, "over here")
 		if err != nil {
 			panic(err)
@@ -953,19 +953,19 @@ func main() {
 			if p.ID == node.ID() {
 				continue // No self connection
 			}
-			log.Println("Peer:", p)
+			log.Infof("Peer: %v", p)
 			err := node.Connect(ctx, p)
 			if err != nil {
-				log.Println("Failed connecting to ", p.ID.String(), ", error:", err)
+				log.Errorf("Failed connecting to %v", p.ID.String(), ", error: %v", err)
 			} else {
-				log.Println("Connected to:", p.ID.String())
+				log.Infof("Connected to: %v", p.ID.String())
 				anyConnected = true
 			}
 		}
 		attempts++
 		time.Sleep(2 * time.Second)
 	}
-	log.Println("Peer discovery complete")
+	log.Info("Peer discovery complete")
 
 	incomingChannel := make(chan *mmtp.MmtpMessage, ChannelBufSize)
 	outgoingChannel := make(chan *mmtp.MmtpMessage, ChannelBufSize)
@@ -974,7 +974,7 @@ func main() {
 
 	router, err := NewMMSRouter(&node, pubSub, ":"+strconv.Itoa(*listeningPort), incomingChannel, outgoingChannel, ctx, wg, clientCAs)
 	if err != nil {
-		log.Println("Could not create MMS Router instance:", err)
+		log.Fatal("Could not create MMS Router instance:", err)
 		return
 	}
 
@@ -985,12 +985,12 @@ func main() {
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
 	<-ch
-	log.Println("Received signal, shutting down...")
+	log.Warn("Received signal, shutting down...")
 
 	cancel()
 	wg.Wait()
 	// shut the libp2p node down
 	if err = node.Close(); err != nil {
-		log.Println("libp2p node could not be shut down correctly")
+		log.Fatal("libp2p node could not be shut down correctly")
 	}
 }
