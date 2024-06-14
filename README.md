@@ -65,7 +65,7 @@ The followings flags can be provided to the MMS router. Note that not specifying
 * `cert-path` Path to the router's TLS-certificate. **Does not have to be an MCP-certificate. In many cases it will be from a trusted TLS-ca, such as Let's Encrypt**
 * `cert-key-path` Path to the TLS-certificate private key
 * `client-ca` Path to a file containing a list of client CAs that can connect to this router. This is necessary for proper validation of client (edgerouter) certificates
-
+* `beacons` Path to a file containing beacons, who this router can use to connect to the libp2p network. If not set the router will search for a `beacons.txt` file in its own directory.
 
 
 
