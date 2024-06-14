@@ -374,7 +374,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 		for {
 			mmtpMessage, n, err := rw.ReadMessage(ctx, c)
 			if err != nil {
-				log.Println("Could not receive message:", err)
+				log.Errorf("Could not receive message: %v", err)
 				reasonText := "Message could not be correctly parsed"
 				resp = &mmtp.MmtpMessage{
 					MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
