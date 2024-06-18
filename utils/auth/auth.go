@@ -19,7 +19,6 @@ package auth
 import (
 	"crypto/ecdsa"
 	"crypto/x509"
-	"encoding/base64"
 	"fmt"
 	"github.com/maritimeconnectivity/MMS/mmtp"
 	"net/http"
@@ -108,10 +107,7 @@ func VerifySignatureOnMessage(mmtpMessage *mmtp.MmtpMessage, signatureAlgorithm 
 	appMessage := mmtpMessage.GetProtocolMessage().GetSendMessage().GetApplicationMessage()
 
 	// verify signature on message
-	signatureBytes, err := base64.StdEncoding.DecodeString(appMessage.GetSignature())
-	if err != nil {
-		return fmt.Errorf("signature could be not decoded from base64: %w", err)
-	}
+	signatureBytes := appMessage.GetSignature()
 
 	toBeVerified := make([]byte, 0)
 	switch content := appMessage.GetHeader().GetSubjectOrRecipient().(type) {
@@ -137,7 +133,7 @@ func VerifySignatureOnMessage(mmtpMessage *mmtp.MmtpMessage, signatureAlgorithm 
 		return fmt.Errorf("a suitable signature algorithm could not be found for verifying signature on message")
 	}
 
-	if err = request.TLS.PeerCertificates[0].CheckSignature(signatureAlgorithm, toBeVerified, signatureBytes); err != nil {
+	if err := request.TLS.PeerCertificates[0].CheckSignature(signatureAlgorithm, toBeVerified, signatureBytes); err != nil {
 		// return an error saying that the signature is not valid over the body of the message
 		return fmt.Errorf("the signature on the message could not be verified: %w", err)
 	}
