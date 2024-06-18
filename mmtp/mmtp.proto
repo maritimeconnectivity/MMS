@@ -5,7 +5,7 @@ option go_package = "./mmtp";
 message ApplicationMessage {
   ApplicationMessageHeader header = 1;
   bytes body = 2;
-  string signature = 3;
+  bytes signature = 3;
 }
 
 message ApplicationMessageHeader {
