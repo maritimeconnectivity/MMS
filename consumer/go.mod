@@ -9,7 +9,7 @@ require (
 	nhooyr.io/websocket v1.8.11
 )
 
-require google.golang.org/protobuf v1.33.0 // indirect
+require google.golang.org/protobuf v1.34.2 // indirect
 
 replace github.com/maritimeconnectivity/MMS/utils => ../utils
 

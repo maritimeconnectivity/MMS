@@ -11,7 +11,7 @@ require (
 	github.com/maritimeconnectivity/MMS/consumer v0.0.0
 	github.com/maritimeconnectivity/MMS/mmtp v0.0.0
 	github.com/maritimeconnectivity/MMS/utils v0.0.0
-	google.golang.org/protobuf v1.33.0
+	google.golang.org/protobuf v1.34.2
 	nhooyr.io/websocket v1.8.11
 )
 
