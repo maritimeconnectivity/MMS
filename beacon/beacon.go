@@ -61,6 +61,8 @@ func main() {
 			beacons = append(beacons, *addrInfo)
 		}
 	}
+	
+	defer beaconsFile.Close() 
 
 	node, err := libp2p.New(
 		libp2p.ListenAddrStrings("/ip4/0.0.0.0/tcp/27000", "/ip4/0.0.0.0/udp/27000/quic-v1", "/ip6/::/tcp/27000", "/ip6/::/udp/27000/quic-v1"),
