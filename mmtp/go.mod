@@ -2,4 +2,4 @@ module github.com/maritimeconnectivity/MMS/mmtp
 
 go 1.21
 
-require google.golang.org/protobuf v1.33.0
+require google.golang.org/protobuf v1.34.2
