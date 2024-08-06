@@ -410,9 +410,6 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 			var mrnErr *auth.MrnMismatchErr
 			switch {
 			case errors.As(err, &certErr):
-				if wsErr := c.Close(websocket.StatusPolicyViolation, err.Error()); wsErr != nil {
-					log.Error(wsErr)
-				}
 			case errors.As(err, &sigAlgErr):
 				if wsErr := c.Close(websocket.StatusPolicyViolation, err.Error()); wsErr != nil {
 					log.Error(wsErr)
