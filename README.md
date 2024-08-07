@@ -31,10 +31,12 @@ The proper certificates are required for router and edgerouter operation with TL
 * A TLS certificate, including the private key
 
 ### Beacons
-A `beacons.txt` file and the `beacon` module has been provided as a convenience for bootstrapping a libp2p-network. When starting an MMS router, it will attempt to 
+A `beacons.txt` file has been provided as a convenience for bootstrapping a libp2p-network. When starting an MMS router, it will attempt to 
 connect to router identities specified in the `beacons.txt`
-* Example `/ip4/127.0.0.1/udp/27000/quic-v1/p2p/QmcUKyMuepvXqZhpMSBP59KKBymRNstk41qGMPj38QStfx` specifies a localhost router, listening on the QUIC protocol UDP port 27000. It has the libp2p-identify 
+* Example `/ip4/127.0.0.1/udp/27000/quic-v1/p2p/QmcUKyMuepvXqZhpMSBP59KKBymRNstk41qGMPj38QStfx` specifies a localhost router, listening on the QUIC protocol on UDP port 27000. It has the libp2p-identity 
 `QmcUKyMuepvXqZhpMSBP59KKBymRNstk41qGMPj38QStfx`, which is derived from the private key.
+
+The `beacon` module is provided to be able to set up a node in the network that does not participate in routing and whose only purpose is to provide a static entrypoint to the libp2p-network. 
 
 ## How to run
 ### Edgerouter
@@ -65,7 +67,7 @@ The followings flags can be provided to the MMS router. Note that not specifying
 * `cert-path` Path to the router's TLS-certificate. **Does not have to be an MCP-certificate. In many cases it will be from a trusted TLS-ca, such as Let's Encrypt**
 * `cert-key-path` Path to the TLS-certificate private key
 * `client-ca` Path to a file containing a list of client CAs that can connect to this router. This is necessary for proper validation of client (edgerouter) certificates
-* `beacons` Path to a file containing beacons, who this router can use to connect to the libp2p network. If not set the router will search for a `beacons.txt` file in its own directory.
+* `beacons` Path to a file containing known routers that this router can use to connect to the libp2p network. If not set the router will search for a `beacons.txt` file in its own directory.
 
 
 
