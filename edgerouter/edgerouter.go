@@ -1049,6 +1049,7 @@ func recordMetrics(ctx context.Context, wg *sync.WaitGroup, reg *prometheus.Regi
 			er.agentsMu.Lock()
 			rcTokens.Set(float64(len(er.agents)))
 			er.agentsMu.Unlock()
+			time.After(5 * time.Second)
 		}
 	}
 }
