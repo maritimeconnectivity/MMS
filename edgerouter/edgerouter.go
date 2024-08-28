@@ -32,6 +32,9 @@ import (
 	"github.com/maritimeconnectivity/MMS/utils/errMsg"
 	"github.com/maritimeconnectivity/MMS/utils/revocation"
 	"github.com/maritimeconnectivity/MMS/utils/rw"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"net/http"
 	"nhooyr.io/websocket"
 	"os"
@@ -368,6 +371,7 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 			if err != nil {
 				log.Errorf("Could not close connection: %s", err.Error())
 			}
+
 			wg.Done()
 		}(c, websocket.StatusInternalError, "PANIC!!!")
 
@@ -543,8 +547,18 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 						}
 					case mmtp.ProtocolMessageType_DISCONNECT_MESSAGE:
 						{
+							log.Info("Disconnect")
 							if err = agent.HandleDisconnect(mmtpMessage, request, c); err != nil {
 								log.Error("Failed handling Disconnect message:", err)
+							} else {
+								//Sucess, remove agent from edgerouters map of agents and list of reconnecttokens
+								mrnToAgentMu.Lock()
+								delete(mrnToAgent, agent.Mrn)
+								mrnToAgentMu.Unlock()
+
+								agentsMu.Lock()
+								delete(agents, agent.ReconnectToken)
+								agentsMu.Unlock()
 							}
 							return
 						}
@@ -1009,6 +1023,62 @@ func handleOutgoingMessages(ctx context.Context, edgeRouter *EdgeRouter, wg *syn
 	}
 }
 
+func recordMetrics(ctx context.Context, wg *sync.WaitGroup, reg *prometheus.Registry, er *EdgeRouter) {
+	defer wg.Done()
+	var connAgents = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "edgerouter_num_connected_agents",
+		Help: "The total number of agents connected to the edgerouter",
+	})
+	var rcTokens = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "edgerouter_num_agent_stored_reconnectTokens",
+		Help: "The total number of stored reconnectTokens",
+	})
+
+	reg.MustRegister(connAgents)
+	reg.MustRegister(rcTokens)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			er.mrnToAgentMu.Lock()
+			connAgents.Set(float64(len(er.mrnToAgent)))
+			er.mrnToAgentMu.Unlock()
+
+			er.agentsMu.Lock()
+			rcTokens.Set(float64(len(er.agents)))
+			er.agentsMu.Unlock()
+		}
+	}
+}
+
+func runPrometheusServer(ctx context.Context, wg *sync.WaitGroup, reg *prometheus.Registry) {
+	defer wg.Done()
+
+	// Start the Prometheus metrics server
+	server := &http.Server{
+		Addr:    ":2112",
+		Handler: http.DefaultServeMux,
+	}
+
+	http.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
+
+	go func() {
+		if err := server.ListenAndServe(); err != http.ErrServerClosed {
+			log.Fatalf("ListenAndServe(): %s", err)
+		}
+	}()
+
+	// Listen for context cancellation to gracefully shutdown the server
+	<-ctx.Done()
+	log.Warn("Shutting down Prometheus server...")
+
+	if err := server.Shutdown(context.Background()); err != nil {
+		log.Fatalf("Server Shutdown: %s", err)
+	}
+}
+
 func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -1080,6 +1150,12 @@ func main() {
 
 	wg.Add(1)
 	go er.StartEdgeRouter(ctx, wg, certPath, certKeyPath)
+
+	//Start monitoring
+	wg.Add(2)
+	reg := prometheus.NewRegistry()
+	go recordMetrics(ctx, wg, reg, er)
+	go runPrometheusServer(ctx, wg, reg)
 
 	mdnsServer, err := zeroconf.Register("MMS Edge Router", "_mms-edgerouter._tcp", "local.", *listeningPort, nil, nil)
 	if err != nil {
