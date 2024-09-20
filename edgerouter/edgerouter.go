@@ -1025,11 +1025,11 @@ func handleOutgoingMessages(ctx context.Context, edgeRouter *EdgeRouter, wg *syn
 
 func recordMetrics(ctx context.Context, wg *sync.WaitGroup, reg *prometheus.Registry, er *EdgeRouter) {
 	defer wg.Done()
-	var connAgents = promauto.NewGauge(prometheus.GaugeOpts{
+	connAgents := promauto.NewGauge(prometheus.GaugeOpts{
 		Name: "edgerouter_num_connected_agents",
 		Help: "The total number of agents connected to the edgerouter",
 	})
-	var rcTokens = promauto.NewGauge(prometheus.GaugeOpts{
+	rcTokens := promauto.NewGauge(prometheus.GaugeOpts{
 		Name: "edgerouter_num_agent_stored_reconnectTokens",
 		Help: "The total number of stored reconnectTokens",
 	})
@@ -1054,7 +1054,7 @@ func recordMetrics(ctx context.Context, wg *sync.WaitGroup, reg *prometheus.Regi
 	}
 }
 
-func runPrometheusServer(ctx context.Context, wg *sync.WaitGroup, reg *prometheus.Registry) {
+func runPrometheusMetricsServer(ctx context.Context, wg *sync.WaitGroup, reg *prometheus.Registry) {
 	defer wg.Done()
 
 	// Start the Prometheus metrics server
@@ -1065,9 +1065,11 @@ func runPrometheusServer(ctx context.Context, wg *sync.WaitGroup, reg *prometheu
 
 	http.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
 
+	wg.Add(1)
 	go func() {
-		if err := server.ListenAndServe(); err != http.ErrServerClosed {
-			log.Fatalf("ListenAndServe(): %s", err)
+		defer wg.Done()
+		if err := server.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+			log.Errorf("ListenAndServe(): %s", err)
 		}
 	}()
 
@@ -1076,7 +1078,7 @@ func runPrometheusServer(ctx context.Context, wg *sync.WaitGroup, reg *prometheu
 	log.Warn("Shutting down Prometheus server...")
 
 	if err := server.Shutdown(context.Background()); err != nil {
-		log.Fatalf("Server Shutdown: %s", err)
+		log.Errorf("Server Shutdown: %s", err)
 	}
 }
 
@@ -1156,7 +1158,7 @@ func main() {
 	wg.Add(2)
 	reg := prometheus.NewRegistry()
 	go recordMetrics(ctx, wg, reg, er)
-	go runPrometheusServer(ctx, wg, reg)
+	go runPrometheusMetricsServer(ctx, wg, reg)
 
 	mdnsServer, err := zeroconf.Register("MMS Edge Router", "_mms-edgerouter._tcp", "local.", *listeningPort, nil, nil)
 	if err != nil {
