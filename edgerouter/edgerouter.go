@@ -39,6 +39,7 @@ import (
 	"nhooyr.io/websocket"
 	"os"
 	"os/signal"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -105,9 +106,10 @@ type EdgeRouter struct {
 	routerAddr      *string                      // Address of initial router to connect to, if provided
 	httpClient      *http.Client                 // The EdgeRouters http client if provided
 	wsMu            *sync.RWMutex                // Mutex for locking the WS upon send/recv, to properly handle if socket was closed
+	geoLocation     string                       //Lookup code for the actual position of the running instance
 }
 
-func NewEdgeRouter(listeningAddr string, mrn string, outgoingChannel chan *mmtp.MmtpMessage, routerWs *websocket.Conn, ctx context.Context, wg *sync.WaitGroup, clientCAs *string, routerAddr *string, httpClient *http.Client) (*EdgeRouter, error) {
+func NewEdgeRouter(listeningAddr string, mrn string, outgoingChannel chan *mmtp.MmtpMessage, routerWs *websocket.Conn, ctx context.Context, wg *sync.WaitGroup, clientCAs *string, routerAddr *string, httpClient *http.Client, geoLoc string) (*EdgeRouter, error) {
 	subs := make(map[string]*Subscription)
 	subMu := &sync.RWMutex{}
 	agents := make(map[string]*Agent)
@@ -157,6 +159,7 @@ func NewEdgeRouter(listeningAddr string, mrn string, outgoingChannel chan *mmtp.
 		routerAddr:      routerAddr,
 		httpClient:      httpClient,
 		wsMu:            wsMu,
+		geoLocation:     geoLoc,
 	}, nil
 }
 
@@ -1033,23 +1036,65 @@ func recordMetrics(ctx context.Context, wg *sync.WaitGroup, reg *prometheus.Regi
 		Name: "edgerouter_num_agent_stored_reconnectTokens",
 		Help: "The total number of stored reconnectTokens",
 	})
+	memAlloc := promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "edgerouter_heap_mem_alloc",
+		Help: "The amount of heap allocated memory in KB",
+	})
+	var m runtime.MemStats
+
+	var geo = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "loc_export",                                // Name of the metric
+			Help: "A metric to store geo-location as a label", // Description of the metric
+		},
+		[]string{"lookup"}, // Define the label key (in this case "location")
+	)
+
+	var geoDataFlow = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "loc_export2",                                       // Name of the metric
+			Help: "A metric mapping geo_Location and active dataflow", // Description of the metric
+		},
+		[]string{"lookup2"}, // Define the label key (in this case "location")
+	)
+
+	var numConnClientsFlow = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "loc_export3",                                                // Name of the metric
+			Help: "A metric mapping geo_Location and number of clients served", // Description of the metric
+		},
+		[]string{"lookup3"}, // Define the label key (in this case "location")
+	)
 
 	reg.MustRegister(connAgents)
 	reg.MustRegister(rcTokens)
+	reg.MustRegister(memAlloc)
+	if er.geoLocation != "" {
+		reg.MustRegister(geo)
+		reg.MustRegister(geoDataFlow)
+		reg.MustRegister(numConnClientsFlow)
+	} else {
+		log.Fatal("NOT SET")
+	}
+	geo.With(prometheus.Labels{"lookup": er.geoLocation}).Set(1)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		default:
-			er.mrnToAgentMu.Lock()
-			connAgents.Set(float64(len(er.mrnToAgent)))
-			er.mrnToAgentMu.Unlock()
-
+		case <-time.After(5 * time.Second):
 			er.agentsMu.Lock()
 			rcTokens.Set(float64(len(er.agents)))
 			er.agentsMu.Unlock()
-			time.After(5 * time.Second)
+
+			runtime.ReadMemStats(&m)
+			memAlloc.Set(float64(m.Alloc / 1024))
+			geoDataFlow.With(prometheus.Labels{"lookup2": er.geoLocation}).Set(float64(m.Alloc / 1024))
+
+			er.mrnToAgentMu.Lock()
+			connAgents.Set(float64(len(er.mrnToAgent)))
+			numConnClientsFlow.With(prometheus.Labels{"lookup3": er.geoLocation}).Set(float64(len(er.mrnToAgent)))
+			er.mrnToAgentMu.Unlock()
 		}
 	}
 }
@@ -1098,6 +1143,7 @@ func main() {
 	certKeyPath := flag.String("cert-key-path", "", "Path to a TLS certificate private key. If none is provided, TLS will be disabled.")
 	clientCAs := flag.String("client-ca", "", "Path to a file containing a list of client CAs that can connect to this Edge Router.")
 	debug := flag.Bool("d", false, "Indicates whether debugging should be enabled, false by default")
+	geoLoc := flag.String("l", "", "Lookup code indicating the geo location of the running instance")
 
 	flag.Parse()
 	if *debug {
@@ -1139,7 +1185,7 @@ func main() {
 
 	wg := &sync.WaitGroup{}
 
-	er, err := NewEdgeRouter(":"+strconv.Itoa(*listeningPort), *ownMrn, outgoingChannel, routerWs, ctx, wg, clientCAs, routerAddr, httpClient)
+	er, err := NewEdgeRouter(":"+strconv.Itoa(*listeningPort), *ownMrn, outgoingChannel, routerWs, ctx, wg, clientCAs, routerAddr, httpClient, *geoLoc)
 	if err != nil {
 		log.Error("Could not create MMS Edge Router instance:", err)
 		return
