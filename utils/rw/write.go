@@ -19,9 +19,9 @@ package rw
 import (
 	"context"
 	"fmt"
+	"github.com/coder/websocket"
 	"github.com/maritimeconnectivity/MMS/mmtp"
 	"google.golang.org/protobuf/proto"
-	"nhooyr.io/websocket"
 )
 
 func WriteMessage(ctx context.Context, c *websocket.Conn, mmtpMessage *mmtp.MmtpMessage) error {

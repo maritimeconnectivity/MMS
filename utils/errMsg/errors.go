@@ -18,11 +18,11 @@ package errMsg
 
 import (
 	"context"
+	"github.com/coder/websocket"
 	"github.com/google/uuid"
 	"github.com/maritimeconnectivity/MMS/mmtp"
 	"github.com/maritimeconnectivity/MMS/utils/rw"
 	"log"
-	"nhooyr.io/websocket"
 )
 
 func SendErrorMessage(uid string, errorText string, ctx context.Context, c *websocket.Conn) {

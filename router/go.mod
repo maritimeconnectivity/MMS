@@ -4,6 +4,7 @@ go 1.22.2
 
 require (
 	github.com/charmbracelet/log v0.4.0
+	github.com/coder/websocket v1.8.12
 	github.com/google/uuid v1.6.0
 	github.com/libp2p/go-libp2p v0.35.4
 	github.com/libp2p/go-libp2p-kad-dht v0.25.2
@@ -12,7 +13,6 @@ require (
 	github.com/maritimeconnectivity/MMS/mmtp v0.0.0
 	github.com/maritimeconnectivity/MMS/utils v0.0.0
 	google.golang.org/protobuf v1.34.2
-	nhooyr.io/websocket v1.8.11
 )
 
 require (

@@ -4,12 +4,13 @@ go 1.22.2
 
 require (
 	github.com/charmbracelet/log v0.4.0
+	github.com/coder/websocket v1.8.12
 	github.com/google/uuid v1.6.0
 	github.com/libp2p/zeroconf/v2 v2.2.0
 	github.com/maritimeconnectivity/MMS/consumer v0.0.0
 	github.com/maritimeconnectivity/MMS/mmtp v0.0.0
 	github.com/maritimeconnectivity/MMS/utils v0.0.0
-	nhooyr.io/websocket v1.8.11
+	github.com/prometheus/client_golang v1.20.2
 
 )
 
@@ -27,7 +28,6 @@ require (
 	github.com/muesli/reflow v0.3.0 // indirect
 	github.com/muesli/termenv v0.15.2 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
-	github.com/prometheus/client_golang v1.20.2 // indirect
 	github.com/prometheus/client_model v0.6.1 // indirect
 	github.com/prometheus/common v0.55.0 // indirect
 	github.com/prometheus/procfs v0.15.1 // indirect

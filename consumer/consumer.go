@@ -19,13 +19,13 @@ package consumer
 import (
 	"context"
 	"fmt"
+	"github.com/coder/websocket"
 	"github.com/google/uuid"
 	"github.com/maritimeconnectivity/MMS/mmtp"
 	"github.com/maritimeconnectivity/MMS/utils/errMsg"
 	"github.com/maritimeconnectivity/MMS/utils/rw"
 	"log"
 	"net/http"
-	"nhooyr.io/websocket"
 	"sync"
 	"time"
 )
