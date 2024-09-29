@@ -163,7 +163,7 @@ func (c *Consumer) HandleReceive(mmtpMessage *mmtp.MmtpMessage, request *http.Re
 			c.MsgMu.Lock()
 			msgsLen := len(c.Messages)
 			appMsgs := make([]*mmtp.ApplicationMessage, 0, msgsLen)
-			now := time.Now().UnixMilli()
+			now := time.Now().Unix()
 			c.NotifyMu.Lock()
 			for msgUuid, mmtpMsg := range c.Messages {
 				msg := mmtpMsg.GetProtocolMessage().GetSendMessage().GetApplicationMessage()
@@ -227,7 +227,7 @@ func (c *Consumer) HandleFetch(mmtpMessage *mmtp.MmtpMessage, request *http.Requ
 		c.MsgMu.Lock()
 		defer c.MsgMu.Unlock()
 		metadata := make([]*mmtp.MessageMetadata, 0, len(c.Messages))
-		now := time.Now().UnixMilli()
+		now := time.Now().Unix()
 		for _, msg := range c.Messages {
 			msgHeader := msg.GetProtocolMessage().GetSendMessage().GetApplicationMessage().GetHeader()
 			// If the message has expired, we might as well just delete it

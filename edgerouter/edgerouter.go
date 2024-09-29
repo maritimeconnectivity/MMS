@@ -313,7 +313,7 @@ func (er *EdgeRouter) messageGC(ctx context.Context, wg *sync.WaitGroup) {
 			return
 		case <-time.After(5 * time.Minute): // run every 5 minutes
 			er.agentsMu.RLock()
-			now := time.Now().UnixMilli()
+			now := time.Now().Unix()
 			for _, a := range er.agents {
 				a.MsgMu.Lock()
 				for _, m := range a.Messages {
@@ -913,10 +913,10 @@ func handleIncomingMessages(ctx context.Context, edgeRouter *EdgeRouter, wg *syn
 					}
 
 					now := time.Now()
-					nowMilli := now.UnixMilli()
+					nowSeconds := now.Unix()
 					for _, appMsg := range responseMsg.GetApplicationMessages() {
 						msgExpires := appMsg.GetHeader().GetExpires()
-						if appMsg == nil || nowMilli > msgExpires || msgExpires > now.Add(ExpirationLimit).UnixMilli() {
+						if appMsg == nil || nowSeconds > msgExpires || msgExpires > now.Add(ExpirationLimit).Unix() {
 							// message is nil, expired or has a too long expiration, so we discard it
 							continue
 						}

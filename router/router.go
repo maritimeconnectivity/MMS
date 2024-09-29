@@ -191,7 +191,7 @@ func (r *MMSRouter) messageGC(ctx context.Context, wg *sync.WaitGroup) {
 			return
 		case <-time.After(5 * time.Minute): // run every 5 minutes
 			r.erMu.RLock()
-			now := time.Now().UnixMilli()
+			now := time.Now().Unix()
 			for _, er := range r.edgeRouters {
 				er.MsgMu.Lock()
 				for _, m := range er.Messages {
@@ -688,10 +688,10 @@ func handleIncomingMessages(ctx context.Context, router *MMSRouter, wg *sync.Wai
 				case mmtp.MsgType_PROTOCOL_MESSAGE:
 					{
 						now := time.Now()
-						nowMilli := now.UnixMilli()
+						nowSeconds := now.Unix()
 						appMsg := incomingMessage.GetProtocolMessage().GetSendMessage().GetApplicationMessage()
 						msgExpires := appMsg.GetHeader().GetExpires()
-						if appMsg == nil || nowMilli > msgExpires || msgExpires > now.Add(ExpirationLimit).UnixMilli() {
+						if appMsg == nil || nowSeconds > msgExpires || msgExpires > now.Add(ExpirationLimit).Unix() {
 							// message is nil, expired or has a too long expiration, so we discard it
 							continue
 						}
