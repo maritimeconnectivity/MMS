@@ -1040,7 +1040,6 @@ func recordMetrics(ctx context.Context, wg *sync.WaitGroup, reg *prometheus.Regi
 		Name: "edgerouter_heap_mem_alloc",
 		Help: "The amount of heap allocated memory in KB",
 	})
-	var m runtime.MemStats
 
 	geo := prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
@@ -1078,6 +1077,7 @@ func recordMetrics(ctx context.Context, wg *sync.WaitGroup, reg *prometheus.Regi
 	}
 	geo.With(prometheus.Labels{"lookup": er.geoLocation}).Set(1)
 
+	var m runtime.MemStats
 	for {
 		select {
 		case <-ctx.Done():
