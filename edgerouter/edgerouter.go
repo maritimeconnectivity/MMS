@@ -1042,7 +1042,7 @@ func recordMetrics(ctx context.Context, wg *sync.WaitGroup, reg *prometheus.Regi
 	})
 	var m runtime.MemStats
 
-	var geo = prometheus.NewGaugeVec(
+	geo := prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "loc_export",                                // Name of the metric
 			Help: "A metric to store geo-location as a label", // Description of the metric
@@ -1050,7 +1050,7 @@ func recordMetrics(ctx context.Context, wg *sync.WaitGroup, reg *prometheus.Regi
 		[]string{"lookup"}, // Define the label key (in this case "location")
 	)
 
-	var geoDataFlow = prometheus.NewGaugeVec(
+	geoDataFlow := prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "loc_export2",                                       // Name of the metric
 			Help: "A metric mapping geo_Location and active dataflow", // Description of the metric
@@ -1058,7 +1058,7 @@ func recordMetrics(ctx context.Context, wg *sync.WaitGroup, reg *prometheus.Regi
 		[]string{"lookup2"}, // Define the label key (in this case "location")
 	)
 
-	var numConnClientsFlow = prometheus.NewGaugeVec(
+	numConnClientsFlow := prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "loc_export3",                                                // Name of the metric
 			Help: "A metric mapping geo_Location and number of clients served", // Description of the metric
