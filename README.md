@@ -78,6 +78,7 @@ restrictions on the allowed operations.
 * `cert-key-path` Path to the TLS-certificate private key
 * `client-ca` Path to a file containing a list of client CAs that can connect to this Edge Router. This is necessary for
   proper validation of client (Agent) certificates
+* `l` Location of the actual instance in ISO 3166 country code format. This is to be used for monitoring.
 
 #### Usage example
 
@@ -107,6 +108,7 @@ restrictions on the allowed operations.
   proper validation of client (edgerouter) certificates
 * `beacons` Path to a file containing known routers that this router can use to connect to the libp2p network. If not
   set the router will search for a `beacons.txt` file in its own directory.
+* `l` Location of the actual instance in ISO 3166 country code format. This is to be used for monitoring.
 
 #### Usage example
 
