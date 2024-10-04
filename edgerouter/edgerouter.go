@@ -313,7 +313,7 @@ func (er *EdgeRouter) messageGC(ctx context.Context, wg *sync.WaitGroup) {
 			return
 		case <-time.After(5 * time.Minute): // run every 5 minutes
 			er.agentsMu.RLock()
-			now := time.Now().UnixMilli()
+			now := time.Now().Unix()
 			for _, a := range er.agents {
 				a.MsgMu.Lock()
 				for _, m := range a.Messages {
@@ -913,10 +913,10 @@ func handleIncomingMessages(ctx context.Context, edgeRouter *EdgeRouter, wg *syn
 					}
 
 					now := time.Now()
-					nowMilli := now.UnixMilli()
+					nowSeconds := now.Unix()
 					for _, appMsg := range responseMsg.GetApplicationMessages() {
 						msgExpires := appMsg.GetHeader().GetExpires()
-						if appMsg == nil || nowMilli > msgExpires || msgExpires > now.Add(ExpirationLimit).UnixMilli() {
+						if appMsg == nil || nowSeconds > msgExpires || msgExpires > now.Add(ExpirationLimit).Unix() {
 							// message is nil, expired or has a too long expiration, so we discard it
 							continue
 						}
@@ -1040,9 +1040,8 @@ func recordMetrics(ctx context.Context, wg *sync.WaitGroup, reg *prometheus.Regi
 		Name: "edgerouter_heap_mem_alloc",
 		Help: "The amount of heap allocated memory in KB",
 	})
-	var m runtime.MemStats
 
-	var geo = prometheus.NewGaugeVec(
+	geo := prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "loc_export",                                // Name of the metric
 			Help: "A metric to store geo-location as a label", // Description of the metric
@@ -1050,7 +1049,7 @@ func recordMetrics(ctx context.Context, wg *sync.WaitGroup, reg *prometheus.Regi
 		[]string{"lookup"}, // Define the label key (in this case "location")
 	)
 
-	var geoDataFlow = prometheus.NewGaugeVec(
+	geoDataFlow := prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "loc_export2",                                       // Name of the metric
 			Help: "A metric mapping geo_Location and active dataflow", // Description of the metric
@@ -1058,7 +1057,7 @@ func recordMetrics(ctx context.Context, wg *sync.WaitGroup, reg *prometheus.Regi
 		[]string{"lookup2"}, // Define the label key (in this case "location")
 	)
 
-	var numConnClientsFlow = prometheus.NewGaugeVec(
+	numConnClientsFlow := prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "loc_export3",                                                // Name of the metric
 			Help: "A metric mapping geo_Location and number of clients served", // Description of the metric
@@ -1078,6 +1077,7 @@ func recordMetrics(ctx context.Context, wg *sync.WaitGroup, reg *prometheus.Regi
 	}
 	geo.With(prometheus.Labels{"lookup": er.geoLocation}).Set(1)
 
+	var m runtime.MemStats
 	for {
 		select {
 		case <-ctx.Done():
@@ -1104,12 +1104,12 @@ func runPrometheusMetricsServer(ctx context.Context, wg *sync.WaitGroup, reg *pr
 
 	// Start the Prometheus metrics server
 	server := &http.Server{
-		Addr:    ":2113",
+		Addr:    ":2112",
 		Handler: http.DefaultServeMux,
 	}
 
 	http.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
-	log.Warn("Start server on port 2113")
+
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -1169,8 +1169,8 @@ func main() {
 	httpClient := &http.Client{
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
-				Certificates:       certificates,
-				InsecureSkipVerify: true},
+				Certificates: certificates,
+			},
 		},
 	}
 
