@@ -1003,7 +1003,7 @@ func main() {
 	certKeyPath := flag.String("cert-key-path", "", "Path to a TLS certificate private key. If none is provided, TLS will be disabled.")
 	clientCAs := flag.String("client-ca", "", "Path to a file containing a list of client CAs that can connect to this Router.")
 	beacons := flag.String("beacons", "beacons.txt", "Path to a file containing beacons, who this router can use to connect to the libp2p network.")
-	geoLoc := flag.String("l", "", "Lookup code indicating the geo location of the running instance")
+	geoLoc := flag.String("l", "DNK", "Lookup code indicating the geo location of the running instance")
 
 	flag.Parse()
 
