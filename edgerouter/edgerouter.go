@@ -193,9 +193,6 @@ func (er *EdgeRouter) connectMMTPToRouter(ctx context.Context, wg *sync.WaitGrou
 		return fmt.Errorf("the MMS Router did not accept Connect: %s", connectResp.GetReasonText())
 	}
 
-	wg.Add(2)
-	go handleIncomingMessages(ctx, er, wg)
-	go handleOutgoingMessages(ctx, er, wg)
 	return nil
 }
 
@@ -231,6 +228,11 @@ func (er *EdgeRouter) StartEdgeRouter(ctx context.Context, wg *sync.WaitGroup, c
 	}()
 
 	go er.messageGC(ctx, wg)
+
+	wg.Add(2)
+	log.Debug("Spawning message threads")
+	go handleIncomingMessages(ctx, er, wg)
+	go handleOutgoingMessages(ctx, er, wg)
 
 	<-ctx.Done()
 	log.Warn("Shutting down Edge Router")
@@ -275,6 +277,11 @@ func (er *EdgeRouter) TryConnectRouter(ctx context.Context, wg *sync.WaitGroup) 
 			return
 		}
 	}
+	if err := er.routerWs.CloseNow(); err != nil {
+		log.Warn(err)
+	}
+	//Make sure old connection is completely cleaned up
+
 	//Runs until a router has been found
 	log.Info("Probing for a router connection")
 	for {
@@ -892,7 +899,6 @@ func handleIncomingMessages(ctx context.Context, edgeRouter *EdgeRouter, wg *syn
 				// message UUID is invalid, so we discard it
 				continue
 			}
-
 			switch response.GetBody().(type) {
 			case *mmtp.MmtpMessage_ResponseMessage:
 				{
