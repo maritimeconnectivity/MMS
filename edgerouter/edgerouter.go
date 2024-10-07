@@ -881,10 +881,11 @@ func handleIncomingMessages(ctx context.Context, edgeRouter *EdgeRouter, wg *syn
 		default:
 			response, _, err := rw.ReadMessage(ctx, edgeRouter.routerWs) //Block until receive from socket
 			if err != nil {
-				log.Warn("Could not receive response from MMS Router:", err)
+				log.Warnf("Could not receive response from MMS Router: %w", err)
 				edgeRouter.wsMu.Lock()
 				edgeRouter.TryConnectRouter(ctx, wg)
 				edgeRouter.wsMu.Unlock()
+				continue
 			}
 
 			if _, err := uuid.Parse(response.GetUuid()); err != nil {
