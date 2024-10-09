@@ -888,7 +888,7 @@ func handleIncomingMessages(ctx context.Context, edgeRouter *EdgeRouter, wg *syn
 		default:
 			response, _, err := rw.ReadMessage(ctx, edgeRouter.routerWs) //Block until receive from socket
 			if err != nil {
-				log.Warnf("Could not receive response from MMS Router: %w", err)
+				log.Warn("Could not receive response from MMS Router:", err)
 				edgeRouter.wsMu.Lock()
 				edgeRouter.TryConnectRouter(ctx, wg)
 				edgeRouter.wsMu.Unlock()
@@ -959,7 +959,7 @@ func handleIncomingMessages(ctx context.Context, edgeRouter *EdgeRouter, wg *syn
 								for _, recipient := range subjectOrRecipient.Recipients.GetRecipients() {
 									log.Debugf("recipient %s, hex: %x", recipient, recipient)
 									agent, ok := edgeRouter.mrnToAgent[recipient]
-									log.Debugf("agent: %s, ok: %b", agent, ok)
+									log.Debugf("agent: %v, ok: %t", agent, ok)
 									if ok && agent.directMessages {
 										err = agent.QueueMessage(incomingMessage)
 										if err != nil {

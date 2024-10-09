@@ -1039,7 +1039,7 @@ func main() {
 			log.Infof("Peer: %v", p)
 			err := node.Connect(ctx, p)
 			if err != nil {
-				log.Errorf("Failed connecting to %v", p.ID.String(), ", error: %v", err)
+				log.Errorf("Failed connecting to %v: %s", p.ID.String(), err)
 			} else {
 				log.Infof("Connected to: %v", p.ID.String())
 				anyConnected = true
