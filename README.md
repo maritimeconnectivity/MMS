@@ -82,7 +82,7 @@ restrictions on the allowed operations.
 
 #### Usage example
 
-`./edgerouter -raddr "wss://127.0.0.1:8080" -port 7000 -client-cert cc.pem -client-cert-key ccpk.pem -cert-path tls.crt -cert-key-path tlspk.key -client-ca ca-chain.pem -mrn urn:mrn:mcp:device:mcc-test:testedgerouter`
+`./edgerouter -raddr "wss://127.0.0.1:8080" -port 7000 -client-cert cc.pem -client-cert-key ccpk.pem -cert-path tls.crt -cert-key-path tlspk.key -client-ca ca-chain.pem -mrn urn:mrn:mcp:device:mcc-test:testedgerouter -l "SWE"`
 
 #### Note:
 
@@ -112,7 +112,7 @@ restrictions on the allowed operations.
 
 #### Usage example
 
-`./router -libp2p-port 27000 -privkey pk.key -cert-path tls.crt -cert-key-path tlspk.key -client-ca ca-chain.pem`
+`./router -libp2p-port 27000 -privkey pk.key -cert-path tls.crt -cert-key-path tlspk.key -client-ca ca-chain.pem -l "SWE"`
 
 <a id="agent"></a>
 
