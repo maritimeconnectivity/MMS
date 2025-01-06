@@ -6,7 +6,7 @@ toolchain go1.23.1
 
 require (
 	github.com/libp2p/go-libp2p v0.38.1
-	github.com/libp2p/go-libp2p-kad-dht v0.25.2
+	github.com/libp2p/go-libp2p-kad-dht v0.28.1
 )
 
 require (
