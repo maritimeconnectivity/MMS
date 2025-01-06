@@ -13,7 +13,7 @@ require (
 	github.com/maritimeconnectivity/MMS/mmtp v0.0.0
 	github.com/maritimeconnectivity/MMS/utils v0.0.0
 	github.com/prometheus/client_golang v1.20.0
-	google.golang.org/protobuf v1.34.2
+	google.golang.org/protobuf v1.36.1
 )
 
 require (

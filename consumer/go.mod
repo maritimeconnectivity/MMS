@@ -9,7 +9,7 @@ require (
 	github.com/maritimeconnectivity/MMS/utils v0.0.0
 )
 
-require google.golang.org/protobuf v1.34.2 // indirect
+require google.golang.org/protobuf v1.36.1 // indirect
 
 replace github.com/maritimeconnectivity/MMS/utils => ../utils
 
