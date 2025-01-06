@@ -1171,6 +1171,12 @@ func main() {
 			return
 		}
 		certificates = append(certificates, cert)
+
+		parsedCert, err := x509.ParseCertificate(certificates[0].Certificate[0])
+		if err != nil {
+			log.Fatalf("Could not parse certificate to x509")
+		}
+		*ownMrn = auth.GetMrnFromCertificate(parsedCert)
 	}
 
 	httpClient := &http.Client{
@@ -1196,12 +1202,6 @@ func main() {
 	if err != nil {
 		log.Error("Could not create MMS Edge Router instance:", err)
 		return
-	}
-
-	//Start thread to probe for a router connection, but only if a routerAddr was given
-	if routerWs == nil && routerAddr != nil {
-		wg.Add(1)
-		go er.TryConnectRouterRoutine(ctx, wg)
 	}
 
 	wg.Add(1)

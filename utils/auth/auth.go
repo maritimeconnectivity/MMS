@@ -139,3 +139,16 @@ func VerifySignatureOnMessage(mmtpMessage *mmtp.MmtpMessage, signatureAlgorithm 
 	}
 	return nil
 }
+
+func GetMrnFromCertificate(cert *x509.Certificate) string {
+	ownMrn := ""
+	uidOid := []int{0, 9, 2342, 19200300, 100, 1, 1} //According to specification for MCP certificates
+	for _, n := range cert.Subject.Names {
+		if n.Type.Equal(uidOid) {
+			if v, ok := n.Value.(string); ok {
+				ownMrn = v
+			}
+		}
+	}
+	return ownMrn
+}
