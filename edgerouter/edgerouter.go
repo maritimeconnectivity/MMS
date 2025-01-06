@@ -164,6 +164,8 @@ func NewEdgeRouter(listeningAddr string, mrn string, outgoingChannel chan *mmtp.
 }
 
 func (er *EdgeRouter) connectMMTPToRouter(ctx context.Context, wg *sync.WaitGroup) error {
+	log.Debugf("Own mrn is %v", er.ownMrn)
+
 	connect := &mmtp.MmtpMessage{
 		MsgType: mmtp.MsgType_PROTOCOL_MESSAGE,
 		Uuid:    uuid.NewString(),
@@ -277,20 +279,25 @@ func (er *EdgeRouter) TryConnectRouter(ctx context.Context, wg *sync.WaitGroup) 
 			return
 		}
 	}
-	if err := er.routerWs.CloseNow(); err != nil {
-		log.Warn(err)
+	if er.routerWs != nil {
+		if err := er.routerWs.CloseNow(); err != nil {
+			log.Warn(err)
+		}
 	}
+
 	//Make sure old connection is completely cleaned up
 
 	//Runs until a router has been found
 	log.Info("Probing for a router connection")
 	for {
+		log.Debugf("Attempt connect to %v", *er.routerAddr)
 		select {
 		case <-ctx.Done():
 			return
 		case <-time.After(5 * time.Second):
 			routerWs, _, err := websocket.Dial(ctx, *er.routerAddr, &websocket.DialOptions{HTTPClient: er.httpClient, CompressionMode: websocket.CompressionContextTakeover})
 			if err != nil {
+				log.Debugf("Could not connect to router: %v", err)
 				continue
 			}
 			er.routerWs = routerWs
