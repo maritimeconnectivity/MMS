@@ -10,7 +10,7 @@ require (
 	github.com/maritimeconnectivity/MMS/consumer v0.0.0
 	github.com/maritimeconnectivity/MMS/mmtp v0.0.0
 	github.com/maritimeconnectivity/MMS/utils v0.0.0
-	github.com/prometheus/client_golang v1.20.2
+	github.com/prometheus/client_golang v1.20.5
 
 )
 
