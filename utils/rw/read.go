@@ -18,6 +18,7 @@ package rw
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/coder/websocket"
 	"github.com/maritimeconnectivity/MMS/mmtp"
@@ -25,6 +26,10 @@ import (
 )
 
 func ReadMessage(ctx context.Context, c *websocket.Conn) (*mmtp.MmtpMessage, int, error) {
+	if c == nil {
+		return nil, -1, errors.New("No websocket connection")
+	}
+
 	_, b, err := c.Read(ctx)
 	if err != nil {
 		return nil, -1, fmt.Errorf("could not read message from Agent: %w", err)
