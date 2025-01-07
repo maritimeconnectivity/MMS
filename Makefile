@@ -1,9 +1,6 @@
-.PHONY: all beacon edgerouter router       
+.PHONY: all edgerouter router
 
-all: beacon edgerouter router
-
-beacon:
-	cd beacon && go build -o ../bin/beacon beacon.go
+all: edgerouter router
 
 edgerouter:
 	cd edgerouter && go build -o ../bin/edgerouter edgerouter.go
