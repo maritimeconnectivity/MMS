@@ -48,10 +48,10 @@ import (
 )
 
 const (
-	WsReadLimit      int64         = -1                  // 1 MiB = 1048576 B
-	MessageSizeLimit int           = 50 * (1 << 10)      // 50 KiB = 51200 B
-	ExpirationLimit  time.Duration = time.Hour * 24 * 30 // 30 days
-	ChannelBufSize   int           = 1048576
+	WsReadLimit      int64 = -1                  // 1 MiB = 1048576 B
+	MessageSizeLimit int   = 50 * (1 << 10)      // 50 KiB = 51200 B
+	ExpirationLimit        = time.Hour * 24 * 30 // 30 days
+	ChannelBufSize   int   = 1048576
 )
 
 // Agent type representing a connected Edge Router
@@ -163,7 +163,7 @@ func NewEdgeRouter(listeningAddr string, mrn string, outgoingChannel chan *mmtp.
 	}, nil
 }
 
-func (er *EdgeRouter) connectMMTPToRouter(ctx context.Context, wg *sync.WaitGroup) error {
+func (er *EdgeRouter) connectMMTPToRouter(ctx context.Context) error {
 	log.Debugf("Own mrn is %v", er.ownMrn)
 
 	connect := &mmtp.MmtpMessage{
@@ -208,7 +208,7 @@ func (er *EdgeRouter) StartEdgeRouter(ctx context.Context, wg *sync.WaitGroup, c
 
 	// TODO store reconnect token and handle reconnection in case of disconnect
 	if er.routerWs != nil {
-		err := er.connectMMTPToRouter(ctx, wg)
+		err := er.connectMMTPToRouter(ctx)
 		if err != nil {
 			log.Error(err)
 		}
@@ -270,7 +270,7 @@ func (er *EdgeRouter) StartEdgeRouter(ctx context.Context, wg *sync.WaitGroup, c
 	}
 }
 
-func (er *EdgeRouter) TryConnectRouter(ctx context.Context, wg *sync.WaitGroup) {
+func (er *EdgeRouter) TryConnectRouter(ctx context.Context) {
 	if er.routerWs != nil {
 		wsCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -302,7 +302,7 @@ func (er *EdgeRouter) TryConnectRouter(ctx context.Context, wg *sync.WaitGroup) 
 			}
 			er.routerWs = routerWs
 			er.routerWs.SetReadLimit(WsReadLimit)
-			err = er.connectMMTPToRouter(ctx, wg)
+			err = er.connectMMTPToRouter(ctx)
 			if err != nil {
 				log.Error(err)
 			}
@@ -315,7 +315,7 @@ func (er *EdgeRouter) TryConnectRouter(ctx context.Context, wg *sync.WaitGroup) 
 // TryConnectRouterRoutine is a wrapper function called when starting TryConnectRouter in a new thread
 func (er *EdgeRouter) TryConnectRouterRoutine(ctx context.Context, wg *sync.WaitGroup) {
 	defer wg.Done()
-	er.TryConnectRouter(ctx, wg)
+	er.TryConnectRouter(ctx)
 }
 
 // Function for garbage collection of expired messages
@@ -897,7 +897,7 @@ func handleIncomingMessages(ctx context.Context, edgeRouter *EdgeRouter, wg *syn
 			if err != nil {
 				log.Warn("Could not receive response from MMS Router:", err)
 				edgeRouter.wsMu.Lock()
-				edgeRouter.TryConnectRouter(ctx, wg)
+				edgeRouter.TryConnectRouter(ctx)
 				edgeRouter.wsMu.Unlock()
 				continue
 			}
@@ -1018,7 +1018,7 @@ func handleOutgoingMessages(ctx context.Context, edgeRouter *EdgeRouter, wg *syn
 							log.Warn("Could not send outgoing message to MMS Router, will try again later:", err)
 							edgeRouter.outgoingChannel <- outgoingMessage
 							edgeRouter.wsMu.Lock()
-							edgeRouter.TryConnectRouter(ctx, wg)
+							edgeRouter.TryConnectRouter(ctx)
 							edgeRouter.wsMu.Unlock()
 							continue
 						}
