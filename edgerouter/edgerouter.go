@@ -1023,6 +1023,10 @@ func handleOutgoingMessages(ctx context.Context, edgeRouter *EdgeRouter, wg *syn
 							continue
 						}
 
+						//Send OK sucessful to Agent, once we are sure it has been forwarded
+						//This routine should communicate to handleSend which should send the response
+						// This is in order to achieve a non-blocking behaviour for forwarding messages to Router network
+
 						protoMsgType := outgoingMessage.GetProtocolMessage().GetProtocolMsgType()
 						if protoMsgType == mmtp.ProtocolMessageType_SUBSCRIBE_MESSAGE ||
 							protoMsgType == mmtp.ProtocolMessageType_UNSUBSCRIBE_MESSAGE {
