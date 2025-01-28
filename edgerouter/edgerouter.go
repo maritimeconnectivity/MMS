@@ -826,7 +826,6 @@ func handleSend(mmtpMessage *mmtp.MmtpMessage, outgoingChannel chan<- *mmtp.Mmtp
 			errMsg.SendErrorMessage(mmtpMessage.GetUuid(), "Subject string may not exceed 100 characters", request.Context(), c)
 			return
 		}
-
 		outgoingChannel <- mmtpMessage
 		header := send.GetApplicationMessage().GetHeader()
 		if len(header.GetRecipients().GetRecipients()) > 0 {
@@ -853,6 +852,18 @@ func handleSend(mmtpMessage *mmtp.MmtpMessage, outgoingChannel chan<- *mmtp.Mmtp
 				}
 			}
 			subMu.RUnlock()
+		}
+		resp := &mmtp.MmtpMessage{
+			MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+			Uuid:    uuid.NewString(),
+			Body: &mmtp.MmtpMessage_ResponseMessage{
+				ResponseMessage: &mmtp.ResponseMessage{
+					ResponseToUuid: mmtpMessage.GetUuid(),
+					Response:       mmtp.ResponseEnum_GOOD,
+				}},
+		}
+		if err := rw.WriteMessage(request.Context(), c, resp); err != nil {
+			log.Error("Could not send Send OK response:", err)
 		}
 	}
 }
@@ -1022,10 +1033,6 @@ func handleOutgoingMessages(ctx context.Context, edgeRouter *EdgeRouter, wg *syn
 							edgeRouter.wsMu.Unlock()
 							continue
 						}
-
-						//Send OK sucessful to Agent, once we are sure it has been forwarded
-						//This routine should communicate to handleSend which should send the response
-						// This is in order to achieve a non-blocking behaviour for forwarding messages to Router network
 
 						protoMsgType := outgoingMessage.GetProtocolMessage().GetProtocolMsgType()
 						if protoMsgType == mmtp.ProtocolMessageType_SUBSCRIBE_MESSAGE ||
