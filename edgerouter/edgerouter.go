@@ -218,7 +218,14 @@ func (er *EdgeRouter) StartEdgeRouter(ctx context.Context, wg *sync.WaitGroup, c
 	go func() {
 		log.Infof("Websocket listening on %s", er.httpServer.Addr)
 		if *certPath != "" && *certKeyPath != "" {
-			if err := er.httpServer.ListenAndServeTLS(*certPath, *certKeyPath); err != nil {
+			er.httpServer.TLSConfig.GetCertificate = func(clientHello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+				cert, err := tls.LoadX509KeyPair(*certPath, *certKeyPath)
+				if err != nil {
+					return nil, err
+				}
+				return &cert, nil
+			}
+			if err := er.httpServer.ListenAndServeTLS("", ""); err != nil {
 				log.Warn(err)
 			}
 		} else {
