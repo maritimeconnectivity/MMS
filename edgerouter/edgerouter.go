@@ -1187,27 +1187,28 @@ func main() {
 
 	outgoingChannel := make(chan *mmtp.MmtpMessage, ChannelBufSize)
 
-	certificates := make([]tls.Certificate, 0, 1)
+	var clientCertFunc func(*tls.CertificateRequestInfo) (*tls.Certificate, error)
 
 	if *clientCertPath != "" && *clientCertKeyPath != "" {
-		cert, err := tls.LoadX509KeyPair(*clientCertPath, *clientCertKeyPath)
-		if err != nil {
-			log.Error("Could not read the provided client certificate:", err)
-			return
+		clientCertFunc = func(_ *tls.CertificateRequestInfo) (*tls.Certificate, error) {
+			cert, err := tls.LoadX509KeyPair(*clientCertPath, *clientCertKeyPath)
+			if err != nil {
+				log.Error("Could not read the provided client certificate:", err)
+				return nil, err
+			}
+			parsedCert, err := x509.ParseCertificate(cert.Certificate[0])
+			if err != nil {
+				log.Error("Could not parse the provided client certificate:", err)
+				*ownMrn = auth.GetMrnFromCertificate(parsedCert)
+			}
+			return &cert, nil
 		}
-		certificates = append(certificates, cert)
-
-		parsedCert, err := x509.ParseCertificate(certificates[0].Certificate[0])
-		if err != nil {
-			log.Fatalf("Could not parse certificate to x509")
-		}
-		*ownMrn = auth.GetMrnFromCertificate(parsedCert)
 	}
 
 	httpClient := &http.Client{
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
-				Certificates: certificates,
+				GetClientCertificate: clientCertFunc,
 			},
 		},
 	}
