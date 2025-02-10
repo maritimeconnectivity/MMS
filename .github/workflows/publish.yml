@@ -37,6 +37,6 @@ jobs:
       uses: docker/build-push-action@v6
       with:
         context: images/edgerouter
-        tags: ghcr.io/maritimeconnectivity/MMS/edgerouter
+        tags: ghcr.io/maritimeconnectivity/mms/edgerouter
         push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
   
