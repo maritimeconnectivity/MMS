@@ -946,7 +946,8 @@ func handleIncomingMessages(ctx context.Context, edgeRouter *EdgeRouter, wg *syn
 
 					now := time.Now()
 					nowSeconds := now.Unix()
-					for _, appMsg := range responseMsg.GetApplicationMessages() {
+					for _, msgContent := range responseMsg.GetMessageContent() {
+						appMsg := msgContent.GetMsg()
 						msgExpires := appMsg.GetHeader().GetExpires()
 						if appMsg == nil || nowSeconds > msgExpires || msgExpires > now.Add(ExpirationLimit).Unix() {
 							// message is nil, expired or has a too long expiration, so we discard it
