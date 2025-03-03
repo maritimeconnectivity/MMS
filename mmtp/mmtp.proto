@@ -112,7 +112,7 @@ message ResponseMessage {
   ResponseEnum response = 2;
   optional string reasonText = 3;
   repeated MessageMetadata messageMetadata = 4;
-  repeated ApplicationMessage applicationMessages = 5;
+  repeated MessageContent messageContent = 5;
   optional string reconnectToken = 6;
 }
 
@@ -125,4 +125,9 @@ enum ResponseEnum {
 message MessageMetadata {
   string uuid = 1;
   ApplicationMessageHeader header = 2;
+}
+
+message MessageContent {
+  string uuid = 1;
+  ApplicationMessage msg = 2;
 }
