@@ -79,6 +79,8 @@ restrictions on the allowed operations.
 * `client-ca` Path to a file containing a list of client CAs that can connect to this Edge Router. This is necessary for
   proper validation of client (Agent) certificates
 * `l` Location of the actual instance in ISO 3166 country code format. This is to be used for monitoring.
+* `i` Allow insecure TLS, i.e. no validation of CA.
+* `d` Debug statements are printed
 
 #### Usage example
 
