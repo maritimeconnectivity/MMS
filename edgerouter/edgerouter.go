@@ -1106,7 +1106,7 @@ func recordMetrics(ctx context.Context, wg *sync.WaitGroup, reg *prometheus.Regi
 		reg.MustRegister(geoDataFlow)
 		reg.MustRegister(numConnClientsFlow)
 	} else {
-		log.Fatal("NOT SET")
+		log.Warn("Geolocation not set")
 	}
 	geo.With(prometheus.Labels{"lookup": er.geoLocation}).Set(1)
 
@@ -1177,6 +1177,7 @@ func main() {
 	clientCAs := flag.String("client-ca", "", "Path to a file containing a list of client CAs that can connect to this Edge Router.")
 	debug := flag.Bool("d", false, "Indicates whether debugging should be enabled, false by default")
 	geoLoc := flag.String("l", "", "Lookup code indicating the geo location of the running instance")
+	insecure := flag.Bool("i", false, "Allow insecure TLS (No validation of certificate CA)")
 
 	flag.Parse()
 	if *debug {
@@ -1212,6 +1213,12 @@ func main() {
 				GetClientCertificate: clientCertFunc,
 			},
 		},
+	}
+
+	if *insecure {
+		log.Warn("Insecure TLS Allowed for this Session")
+		transport := httpClient.Transport.(*http.Transport)
+		transport.TLSClientConfig.InsecureSkipVerify = true
 	}
 
 	routerWs, _, err := websocket.Dial(ctx, *routerAddr, &websocket.DialOptions{HTTPClient: httpClient, CompressionMode: websocket.CompressionContextTakeover})
