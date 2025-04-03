@@ -17,7 +17,7 @@ incurred from its use.
 
 ## Prerequisites
 
-* Go version 1.22 or higher
+* Go version 1.23 or higher
 
 ## Build
 
