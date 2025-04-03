@@ -1,0 +1,3 @@
+[submodule "mmtp"]
+	path = mmtp
+	url = git@github.com:maritimeconnectivity/mmtp.git
