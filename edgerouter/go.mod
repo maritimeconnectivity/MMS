@@ -6,7 +6,7 @@ toolchain go1.23.1
 
 require (
 	github.com/charmbracelet/log v0.4.0
-	github.com/coder/websocket v1.8.12
+	github.com/coder/websocket v1.8.13
 	github.com/google/uuid v1.6.0
 	github.com/libp2p/zeroconf/v2 v2.2.0
 	github.com/maritimeconnectivity/MMS/consumer v0.0.0
