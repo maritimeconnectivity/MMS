@@ -26,6 +26,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -232,7 +233,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 		}
 		defer func(c *websocket.Conn, code websocket.StatusCode, reason string) {
 			err := c.Close(code, reason)
-			if err != nil {
+			if err != nil && !errors.Is(err, net.ErrClosed) {
 				log.Errorf("Could not close connection: %v", err)
 			}
 			wg.Done()

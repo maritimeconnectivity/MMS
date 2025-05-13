@@ -36,6 +36,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -392,7 +393,7 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 		}
 		defer func(c *websocket.Conn, code websocket.StatusCode, reason string) {
 			err := c.Close(code, reason)
-			if err != nil {
+			if err != nil && !errors.Is(err, net.ErrClosed) {
 				log.Errorf("Could not close connection: %s", err.Error())
 			}
 
