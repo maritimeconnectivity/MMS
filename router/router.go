@@ -439,7 +439,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 								errMsg.SendErrorMessage(mmtpMessage.GetUuid(), "The message size exceeds the allowed 50 KiB", request.Context(), c)
 								break
 							}
-							handleSend(mmtpMessage, outgoingChannel, erMu, subMu, subs, e)
+							handleSend(mmtpMessage, outgoingChannel, erMu, subMu, subs, e, request, c)
 						}
 					case mmtp.ProtocolMessageType_RECEIVE_MESSAGE:
 						{
@@ -582,7 +582,7 @@ func handleUnsubscribe(mmtpMessage *mmtp.MmtpMessage, subMu *sync.RWMutex, subs 
 	return err
 }
 
-func handleSend(mmtpMessage *mmtp.MmtpMessage, outgoingChannel chan<- *mmtp.MmtpMessage, erMu *sync.RWMutex, subMu *sync.RWMutex, subs map[string]*Subscription, e *EdgeRouter) {
+func handleSend(mmtpMessage *mmtp.MmtpMessage, outgoingChannel chan<- *mmtp.MmtpMessage, erMu *sync.RWMutex, subMu *sync.RWMutex, subs map[string]*Subscription, e *EdgeRouter, request *http.Request, c *websocket.Conn) {
 	if send := mmtpMessage.GetProtocolMessage().GetSendMessage(); send != nil {
 		outgoingChannel <- mmtpMessage
 		header := send.GetApplicationMessage().GetHeader()
@@ -598,6 +598,7 @@ func handleSend(mmtpMessage *mmtp.MmtpMessage, outgoingChannel chan<- *mmtp.Mmtp
 						if er.Mrn != e.Mrn { // Do not send the message back to where it came from
 							if err := er.QueueMessage(mmtpMessage); err != nil {
 								log.Errorf("Could not queue message to Edge Router: %v", err)
+								return
 							}
 						}
 					}
@@ -613,11 +614,24 @@ func handleSend(mmtpMessage *mmtp.MmtpMessage, outgoingChannel chan<- *mmtp.Mmtp
 					if subscriber.Mrn != e.Mrn {
 						if err := subscriber.QueueMessage(mmtpMessage); err != nil {
 							log.Errorf("Could not queue message to Edge Router: %v", err)
+							return
 						}
 					}
 				}
 			}
 			subMu.RUnlock()
+		}
+		resp := &mmtp.MmtpMessage{
+			MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
+			Uuid:    uuid.NewString(),
+			Body: &mmtp.MmtpMessage_ResponseMessage{
+				ResponseMessage: &mmtp.ResponseMessage{
+					ResponseToUuid: mmtpMessage.GetUuid(),
+					Response:       mmtp.ResponseEnum_GOOD,
+				}},
+		}
+		if err := rw.WriteMessage(request.Context(), c, resp); err != nil {
+			log.Error("Could not send Send OK response:", err)
 		}
 	}
 }
