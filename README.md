@@ -56,9 +56,6 @@ connect to router identities specified in the `beacons.txt`
   router, listening on the QUIC protocol on UDP port 27000. It has the libp2p-identity
   `QmcUKyMuepvXqZhpMSBP59KKBymRNstk41qGMPj38QStfx`, which is derived from the private key.
 
-The `beacon` module is provided to be able to set up a node in the network that does not participate in routing and
-whose only purpose is to provide a static entrypoint to the libp2p-network.
-
 ## How to run
 
 ### Edgerouter
