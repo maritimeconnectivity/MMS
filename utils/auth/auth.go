@@ -20,10 +20,11 @@ import (
 	"crypto/ecdsa"
 	"crypto/x509"
 	"fmt"
-	"github.com/maritimeconnectivity/MMS/mmtp"
 	"net/http"
 	"strconv"
 	"strings"
+
+	"github.com/maritimeconnectivity/MMS/mmtp"
 )
 
 type AuthenticationErr struct {

@@ -19,15 +19,16 @@ package consumer
 import (
 	"context"
 	"fmt"
+	"log"
+	"net/http"
+	"sync"
+	"time"
+
 	"github.com/coder/websocket"
 	"github.com/google/uuid"
 	"github.com/maritimeconnectivity/MMS/mmtp"
 	"github.com/maritimeconnectivity/MMS/utils/errMsg"
 	"github.com/maritimeconnectivity/MMS/utils/rw"
-	"log"
-	"net/http"
-	"sync"
-	"time"
 )
 
 type Consumer struct {

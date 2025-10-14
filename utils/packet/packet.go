@@ -16,6 +16,7 @@ package packet
 
 import (
 	"fmt"
+
 	"github.com/maritimeconnectivity/MMS/mmtp"
 )
 

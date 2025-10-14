@@ -20,10 +20,11 @@ import (
 	"bytes"
 	"crypto/x509"
 	"fmt"
-	"golang.org/x/crypto/ocsp"
 	"io"
 	"net/http"
 	"time"
+
+	"golang.org/x/crypto/ocsp"
 )
 
 func PerformOCSPCheck(clientCert *x509.Certificate, issuingCert *x509.Certificate, httpClient *http.Client) error {
