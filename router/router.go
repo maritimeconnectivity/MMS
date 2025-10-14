@@ -48,7 +48,7 @@ import (
 	peerstore "github.com/libp2p/go-libp2p/core/peer"
 	drouting "github.com/libp2p/go-libp2p/p2p/discovery/routing"
 	dutil "github.com/libp2p/go-libp2p/p2p/discovery/util"
-	"github.com/libp2p/go-libp2p/p2p/protocol/identify"
+	"github.com/libp2p/go-libp2p/p2p/host/observedaddrs"
 	"github.com/maritimeconnectivity/MMS/consumer"
 	"github.com/maritimeconnectivity/MMS/mmtp"
 	"github.com/maritimeconnectivity/MMS/utils/auth"
@@ -936,7 +936,7 @@ func setupLibP2P(ctx context.Context, libp2pPort *int, privKeyFilePath *string) 
 		}
 	}
 
-	identify.ActivationThresh = 3
+	observedaddrs.ActivationThresh = 3
 
 	var node host.Host
 	if *privKeyFilePath != "" {
