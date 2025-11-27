@@ -93,7 +93,7 @@ func (sub *Subscription) DeleteSubscriber(agent *Agent) {
 
 // EdgeRouter type representing an MMS Edge Router
 type EdgeRouter struct {
-	ownMrn          string                       // The MRN of this EdgeRouter
+	ownMrn          *string                      // The MRN of this EdgeRouter
 	subscriptions   map[string]*Subscription     // a mapping from Interest names to Subscription slices
 	subMu           *sync.RWMutex                // a Mutex for locking the subscriptions map
 	agents          map[string]*Agent            // a map of connected Agents
@@ -111,7 +111,7 @@ type EdgeRouter struct {
 	geoLocation     string                       //Lookup code for the actual position of the running instance
 }
 
-func NewEdgeRouter(listeningAddr string, mrn string, outgoingChannel chan *mmtp.MmtpMessage, routerWs *websocket.Conn, ctx context.Context, wg *sync.WaitGroup, clientCAs *string, routerAddr *string, httpClient *http.Client, geoLoc string) (*EdgeRouter, error) {
+func NewEdgeRouter(listeningAddr string, mrn *string, outgoingChannel chan *mmtp.MmtpMessage, routerWs *websocket.Conn, ctx context.Context, wg *sync.WaitGroup, clientCAs *string, routerAddr *string, httpClient *http.Client, geoLoc string) (*EdgeRouter, error) {
 	subs := make(map[string]*Subscription)
 	subMu := &sync.RWMutex{}
 	agents := make(map[string]*Agent)
@@ -166,7 +166,7 @@ func NewEdgeRouter(listeningAddr string, mrn string, outgoingChannel chan *mmtp.
 }
 
 func (er *EdgeRouter) connectMMTPToRouter(ctx context.Context) error {
-	log.Debugf("Own mrn is %v", er.ownMrn)
+	log.Debugf("Own mrn is %s", *er.ownMrn)
 
 	connect := &mmtp.MmtpMessage{
 		MsgType: mmtp.MsgType_PROTOCOL_MESSAGE,
@@ -176,7 +176,7 @@ func (er *EdgeRouter) connectMMTPToRouter(ctx context.Context) error {
 				ProtocolMsgType: mmtp.ProtocolMessageType_CONNECT_MESSAGE,
 				Body: &mmtp.ProtocolMessage_ConnectMessage{
 					ConnectMessage: &mmtp.Connect{
-						OwnMrn: &er.ownMrn,
+						OwnMrn: er.ownMrn,
 					},
 				},
 			},
@@ -1203,6 +1203,7 @@ func main() {
 			parsedCert, err := x509.ParseCertificate(cert.Certificate[0])
 			if err != nil {
 				log.Error("Could not parse the provided client certificate:", err)
+			} else {
 				*ownMrn = auth.GetMrnFromCertificate(parsedCert)
 			}
 			return &cert, nil
@@ -1234,7 +1235,7 @@ func main() {
 
 	wg := &sync.WaitGroup{}
 
-	er, err := NewEdgeRouter(":"+strconv.Itoa(*listeningPort), *ownMrn, outgoingChannel, routerWs, ctx, wg, clientCAs, routerAddr, httpClient, *geoLoc)
+	er, err := NewEdgeRouter(":"+strconv.Itoa(*listeningPort), ownMrn, outgoingChannel, routerWs, ctx, wg, clientCAs, routerAddr, httpClient, *geoLoc)
 	if err != nil {
 		log.Error("Could not create MMS Edge Router instance:", err)
 		return
