@@ -193,7 +193,7 @@ func (er *EdgeRouter) connectMMTPToRouter(ctx context.Context) error {
 	}
 
 	connectResp := response.GetResponseMessage()
-	if connectResp.Response != mmtp.ResponseEnum_GOOD {
+	if connectResp.GetResponse() != mmtp.ResponseEnum_GOOD {
 		return fmt.Errorf("the MMS Router did not accept Connect: %s", connectResp.GetReasonText())
 	}
 
