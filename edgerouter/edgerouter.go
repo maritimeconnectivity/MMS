@@ -916,9 +916,11 @@ func handleIncomingMessages(ctx context.Context, edgeRouter *EdgeRouter, wg *syn
 			response, _, err := rw.ReadMessage(ctx, edgeRouter.routerWs) //Block until receive from socket
 			if err != nil {
 				log.Warn("Could not receive response from MMS Router:", err)
-				edgeRouter.wsMu.Lock()
-				edgeRouter.TryConnectRouter(ctx)
-				edgeRouter.wsMu.Unlock()
+				if !errors.Is(err, context.Canceled) {
+					edgeRouter.wsMu.Lock()
+					edgeRouter.TryConnectRouter(ctx)
+					edgeRouter.wsMu.Unlock()
+				}
 				continue
 			}
 
@@ -1224,7 +1226,7 @@ func main() {
 		transport.TLSClientConfig.InsecureSkipVerify = true
 	}
 
-	routerWs, _, err := websocket.Dial(ctx, *routerAddr, &websocket.DialOptions{HTTPClient: httpClient, CompressionMode: websocket.CompressionContextTakeover})
+	routerWs, _, err := websocket.Dial(context.Background(), *routerAddr, &websocket.DialOptions{HTTPClient: httpClient, CompressionMode: websocket.CompressionContextTakeover})
 	if err != nil {
 		log.Warn("Could not connect to MMS Router")
 		log.Warn("Starting EdgeRouter without connection to Router")
