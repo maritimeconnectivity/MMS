@@ -50,7 +50,7 @@ import (
 )
 
 const (
-	WsReadLimit      int64 = -1                  // 1 MiB = 1048576 B
+	WsReadLimit      int64 = -1
 	MessageSizeLimit int   = 50 * (1 << 10)      // 50 KiB = 51200 B
 	ExpirationLimit        = time.Hour * 24 * 30 // 30 days
 	ChannelBufSize   int   = 1048576
@@ -61,7 +61,7 @@ type Agent struct {
 	consumer.Consumer        // A base struct that applies both to Agent and Edge Router consumers
 	agentUuid         string // UUID for uniquely identifying this Agent
 	directMessages    bool   // bool indicating whether the Agent is subscribing to direct messages
-	authenticated     bool   // bool indicating whther the Agent is authenticated
+	authenticated     bool   // bool indicating whether the Agent is authenticated
 }
 
 // Subscription type representing a subscription
@@ -352,7 +352,7 @@ func (er *EdgeRouter) messageGC(ctx context.Context, wg *sync.WaitGroup) {
 	}
 }
 
-// This function adds a request to the outgoing ch to receive messages from the router upon receiving a notify from the router
+// This function adds a request to the outgoing ch to receive messages from the router upon receiving a Notify message from the router
 func (er *EdgeRouter) handleNotify(metadata []*mmtp.MessageMetadata) error {
 
 	//Filter such that we only request to receive messages we were notified about
@@ -501,7 +501,7 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 			return
 		}
 
-		//Start thread that checks for incoming messages and notfies agents
+		//Start thread that checks for incoming messages and notifies agents
 		wg.Add(1)
 		agCtx, cancel := context.WithCancel(ctx)
 		defer cancel() //When done handling client
@@ -577,7 +577,7 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 							if err = agent.HandleDisconnect(mmtpMessage, request, c); err != nil {
 								log.Error("Failed handling Disconnect message:", err)
 							} else {
-								//Sucess, remove agent from edgerouters map of agents and list of reconnecttokens
+								//Success, remove agent from edgerouter's map of agents and list of reconnect tokens
 								mrnToAgentMu.Lock()
 								delete(mrnToAgent, agent.Mrn)
 								mrnToAgentMu.Unlock()
