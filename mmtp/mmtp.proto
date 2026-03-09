@@ -114,7 +114,10 @@ message ResponseMessage {
   repeated MessageMetadata messageMetadata = 4;
   repeated MessageContent messageContent = 5;
   optional string reconnectToken = 6;
+  optional TypedResponse typedResponse = 7;
 }
+
+
 
 enum ResponseEnum {
   UNSPECIFIED_RESPONSE = 0;
@@ -130,4 +133,68 @@ message MessageMetadata {
 message MessageContent {
   string uuid = 1;
   ApplicationMessage msg = 2;
+}
+
+message TypedResponse {
+  oneof typedResponse {
+    SubscribeResponse subscribeResponse = 1;
+    UnsubscribeResponse unsubscribeResponse = 2;
+    SendResponse sendResponse = 3;
+    ReceiveResponse receiveResponse = 4;
+    FetchResponse fetchResponse = 5;
+    DisconnectResponse disconnectResponse = 6;
+    ConnectResponse connectResponse = 7;
+    NotifyResponse notifyResponse = 8;
+  }
+}
+
+enum SubscribeResponse {
+  SUBSCRIBE_RESPONSE_UNSPECIFIED = 0;
+  SUBSCRIBE_RESPONSE_NOT_CONNECTED = 1;
+  SUBSCRIBED_RESPONSE_NOT_AUTHENTICATED = 2;
+}
+
+enum UnsubscribeResponse {
+  UNSUBSCRIBE_RESPONSE_UNSPECIFIED = 0;
+  UNSUBSCRIBE_RESPONSE_NOT_CONNECTED = 1;
+  UNSUBSCRIBE_RESPONSE_NOT_SUBSCRIBED = 2;
+}
+
+enum SendResponse {
+  SEND_RESPONSE_UNSPECIFIED = 0;
+  SEND_RESPONSE_NOT_CONNECTED = 1;
+  SEND_RESPONSE_NOT_AUTHENTICATED = 2;
+  SEND_RESPONSE_MAX_MSG_SIZE_EXCEEDED = 3;
+  SEND_RESPONSE_RATE_EXCEEDED = 4;
+}
+
+enum ReceiveResponse {
+  RECEIVE_RESPONSE_UNSPECIFIED = 0;
+  RECEIVE_RESPONSE_NOT_CONNECTED = 1;
+  RECEIVE_RESPONSE_RATE_EXCEEDED = 3;
+}
+
+enum FetchResponse {
+  FETCH_RESPONSE_UNSPECIFIED = 0;
+  FETCH_RESPONSE_NOT_CONNECTED = 1;
+  FETCH_RESPONSE_RATE_EXCEEDED = 3;
+
+}
+
+enum DisconnectResponse {
+  DISCONNECT_RESPONSE_UNSPECIFIED = 0;
+  DISCONNECT_RESPONSE_NOT_CONNECTED = 1;
+}
+
+enum ConnectResponse {
+  CONNECT_RESPONSE_UNSPECIFIED = 0;
+  CONNECT_RESPONSE_ALREADY_CONNECTED = 1;
+  CONNECT_RESPONSE_TOKEN_ERROR = 2;
+  CONNECT_RESPONSE_AUTHENTICATION_FAILURE = 3;
+  CONNECT_RESPONSE_CONNECTION_FAILURE = 4;
+}
+
+enum NotifyResponse {
+  NOTIFY_RESPONSE_UNSPECIFIED = 0;
+  NOTIFY_RESPONSE_NOT_CONNECTED = 1;
 }
