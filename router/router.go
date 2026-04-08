@@ -902,7 +902,7 @@ func runPrometheusMetricsServer(ctx context.Context, wg *sync.WaitGroup, reg *pr
 	}
 }
 
-func setupLibP2P(ctx context.Context, libp2pPort *int, privKeyFilePath *string) (host.Host, *drouting.RoutingDiscovery, error) {
+func setupLibP2P(ctx context.Context, libp2pPort *int, privKeyFilePath *string, beaconsFilePath *string) (host.Host, *drouting.RoutingDiscovery, error) {
 	port := *libp2pPort
 	var addrStrings []string
 	if port != 0 {
@@ -923,7 +923,7 @@ func setupLibP2P(ctx context.Context, libp2pPort *int, privKeyFilePath *string) 
 	// TODO make the router discover its public IP address so it can be published
 
 	beacons := make([]peerstore.AddrInfo, 0, 1)
-	beaconsFile, err := os.Open("beacons.txt")
+	beaconsFile, err := os.Open(*beaconsFilePath)
 	if err == nil {
 		fileScanner := bufio.NewScanner(beaconsFile)
 		for fileScanner.Scan() {
@@ -1034,7 +1034,7 @@ func main() {
 		return
 	}
 
-	node, rd, err := setupLibP2P(ctx, libp2pPort, privKeyFilePath)
+	node, rd, err := setupLibP2P(ctx, libp2pPort, privKeyFilePath, beacons)
 	if err != nil {
 		log.Errorf("Could not setup the libp2p backend: %v", err)
 		return
