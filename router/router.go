@@ -52,6 +52,7 @@ import (
 	"github.com/maritimeconnectivity/MMS/consumer"
 	"github.com/maritimeconnectivity/MMS/mmtp"
 	"github.com/maritimeconnectivity/MMS/utils/auth"
+	"github.com/maritimeconnectivity/MMS/utils/cert"
 	"github.com/maritimeconnectivity/MMS/utils/errMsg"
 	"github.com/maritimeconnectivity/MMS/utils/revocation"
 	"github.com/maritimeconnectivity/MMS/utils/rw"
@@ -116,23 +117,16 @@ type MMSRouter struct {
 	geoLocation     string                   //Lookup code for the actual position of the running instance
 }
 
-func NewMMSRouter(p2p *host.Host, pubSub *pubsub.PubSub, listeningAddr string, incomingChannel chan *mmtp.MmtpMessage, outgoingChannel chan *mmtp.MmtpMessage, ctx context.Context, wg *sync.WaitGroup, clientCAs *string, geoloc string) (*MMSRouter, error) {
+func NewMMSRouter(p2p *host.Host, pubSub *pubsub.PubSub, listeningAddr string, incomingChannel chan *mmtp.MmtpMessage, outgoingChannel chan *mmtp.MmtpMessage, ctx context.Context, wg *sync.WaitGroup, clientCAs *string, geoloc string, skipRevocationCheck bool) (*MMSRouter, error) {
 	subs := make(map[string]*Subscription)
 	subMu := &sync.RWMutex{}
 	edgeRouters := make(map[string]*EdgeRouter)
 	erMu := &sync.RWMutex{}
 	topicHandles := make(map[string]*pubsub.Topic)
 
-	var certPool *x509.CertPool = nil
-	if *clientCAs != "" {
-		certPool = x509.NewCertPool()
-		certFile, err := os.ReadFile(*clientCAs)
-		if err != nil {
-			return nil, fmt.Errorf("could not read the given client CA file")
-		}
-		if !certPool.AppendCertsFromPEM(certFile) {
-			return nil, fmt.Errorf("could not read the given client CA file")
-		}
+	clientCaPool, err := cert.LoadCertPool(*clientCAs)
+	if err != nil {
+		return nil, err
 	}
 
 	httpServer := http.Server{
@@ -140,9 +134,9 @@ func NewMMSRouter(p2p *host.Host, pubSub *pubsub.PubSub, listeningAddr string, i
 		Handler: handleHttpConnection(p2p, pubSub, incomingChannel, outgoingChannel, subs, subMu, edgeRouters, erMu, topicHandles, ctx, wg),
 		TLSConfig: &tls.Config{
 			ClientAuth:            tls.RequireAndVerifyClientCert,
-			ClientCAs:             certPool, // this should come from a file containing the CAs we trust
+			ClientCAs:             clientCaPool,
 			MinVersion:            tls.VersionTLS12,
-			VerifyPeerCertificate: verifyEdgeRouterCertificate(),
+			VerifyPeerCertificate: verifyEdgeRouterCertificate(skipRevocationCheck),
 		},
 	}
 
@@ -630,13 +624,14 @@ func handleSend(mmtpMessage *mmtp.MmtpMessage, outgoingChannel chan<- *mmtp.Mmtp
 					Response:       mmtp.ResponseEnum_GOOD,
 				}},
 		}
+		log.Debugf("Sending message %v", resp)
 		if err := rw.WriteMessage(request.Context(), c, resp); err != nil {
 			log.Error("Could not send Send OK response:", err)
 		}
 	}
 }
 
-func verifyEdgeRouterCertificate() func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+func verifyEdgeRouterCertificate(skipRevocationCheck bool) func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
 	return func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
 		// we did not receive a certificate from the client, so we just return early
 		if len(rawCerts) == 0 || len(verifiedChains) == 0 {
@@ -657,6 +652,8 @@ func verifyEdgeRouterCertificate() func(rawCerts [][]byte, verifiedChains [][]*x
 			if err != nil {
 				return err
 			}
+		} else if skipRevocationCheck {
+			log.Warn("was not able to check revocation status of client certificate")
 		} else {
 			return fmt.Errorf("was not able to check revocation status of client certificate")
 		}
@@ -855,7 +852,7 @@ func recordMetrics(ctx context.Context, wg *sync.WaitGroup, reg *prometheus.Regi
 		reg.MustRegister(geo)
 		reg.MustRegister(geoDataFlow)
 	} else {
-		log.Fatal("NOT SET")
+		log.Warn("Geolocation not set")
 	}
 	geo.With(prometheus.Labels{"lookup": r.geoLocation}).Set(1)
 
@@ -873,15 +870,16 @@ func recordMetrics(ctx context.Context, wg *sync.WaitGroup, reg *prometheus.Regi
 	}
 }
 
-func runPrometheusMetricsServer(ctx context.Context, wg *sync.WaitGroup, reg *prometheus.Registry) {
+func runPrometheusMetricsServer(ctx context.Context, wg *sync.WaitGroup, reg *prometheus.Registry, port int) {
 	defer wg.Done()
 
 	// Start the Prometheus metrics server
+	addr := ":" + strconv.Itoa(port)
 	server := &http.Server{
-		Addr:    ":2113",
+		Addr:    addr,
 		Handler: http.DefaultServeMux,
 	}
-	log.Info("Start prometheus server port 2113")
+	log.Infof("Start prometheus server on port %d", port)
 
 	http.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
 
@@ -900,15 +898,19 @@ func runPrometheusMetricsServer(ctx context.Context, wg *sync.WaitGroup, reg *pr
 	}
 }
 
-func setupLibP2P(ctx context.Context, libp2pPort *int, privKeyFilePath *string, beaconsFilePath *string) (host.Host, *drouting.RoutingDiscovery, *dht.IpfsDHT, error) {
-	port := *libp2pPort
+func setupLibP2P(ctx context.Context, libp2pPort *int, libp2pTcpPort *int, privKeyFilePath *string, beaconsFilePath *string) (host.Host, *drouting.RoutingDiscovery, *dht.IpfsDHT, error) {
+	udpPort := *libp2pPort
+	tcpPort := *libp2pTcpPort
+	if tcpPort == 0 {
+		tcpPort = udpPort
+	}
 	var addrStrings []string
-	if port != 0 {
+	if udpPort != 0 {
 		addrStrings = []string{
-			fmt.Sprintf("/ip4/0.0.0.0/udp/%d/quic-v1", port),
-			fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", port),
-			fmt.Sprintf("/ip6/::/udp/%d/quic-v1", port),
-			fmt.Sprintf("/ip6/::/tcp/%d", port),
+			fmt.Sprintf("/ip4/0.0.0.0/udp/%d/quic-v1", udpPort),
+			fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", tcpPort),
+			fmt.Sprintf("/ip6/::/udp/%d/quic-v1", udpPort),
+			fmt.Sprintf("/ip6/::/tcp/%d", tcpPort),
 		}
 	} else {
 		addrStrings = []string{
@@ -1018,14 +1020,17 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	listeningPort := flag.Int("port", 8080, "The port number that this Router should listen on.")
-	libp2pPort := flag.Int("libp2p-port", 0, "The port number that this Router should use to "+
-		"open up to the Router Network. If not set, a random port is chosen.")
+	libp2pPort := flag.Int("libp2p-port", 0, "The port number that this Router should use for UDP/QUIC "+
+		"to the Router Network. If not set, a random port is chosen.")
+	libp2pTcpPort := flag.Int("libp2p-tcp-port", 0, "The TCP port for libp2p. Defaults to the same as -libp2p-port if not set.")
 	privKeyFilePath := flag.String("privkey", "", "Path to a file containing a private key. If none is provided, a new private key will be generated every time the program is run.")
 	certPath := flag.String("cert-path", "", "Path to a TLS certificate file. If none is provided, TLS will be disabled.")
 	certKeyPath := flag.String("cert-key-path", "", "Path to a TLS certificate private key. If none is provided, TLS will be disabled.")
 	clientCAs := flag.String("client-ca", "", "Path to a file containing a list of client CAs that can connect to this Router.")
 	beacons := flag.String("beacons", "beacons.txt", "Path to a file containing beacons, who this router can use to connect to the libp2p network.")
 	geoLoc := flag.String("l", "DNK", "Lookup code indicating the geo location of the running instance")
+	prometheusPort := flag.Int("prometheus-port", 2113, "The port number for the Prometheus metrics server.")
+	skipRevocationCheck := flag.Bool("skip-revocation-check", false, "Allow client certificates that do not have OCSP or CRL endpoints for revocation checking.")
 
 	flag.Parse()
 
@@ -1034,7 +1039,7 @@ func main() {
 		return
 	}
 
-	node, rd, kademlia, err := setupLibP2P(ctx, libp2pPort, privKeyFilePath, beacons)
+	node, rd, kademlia, err := setupLibP2P(ctx, libp2pPort, libp2pTcpPort, privKeyFilePath, beacons)
 	if err != nil {
 		log.Errorf("Could not setup the libp2p backend: %v", err)
 		return
@@ -1077,7 +1082,7 @@ func main() {
 
 	wg := &sync.WaitGroup{}
 
-	router, err := NewMMSRouter(&node, pubSub, ":"+strconv.Itoa(*listeningPort), incomingChannel, outgoingChannel, ctx, wg, clientCAs, *geoLoc)
+	router, err := NewMMSRouter(&node, pubSub, ":"+strconv.Itoa(*listeningPort), incomingChannel, outgoingChannel, ctx, wg, clientCAs, *geoLoc, *skipRevocationCheck)
 	if err != nil {
 		log.Fatal("Could not create MMS Router instance:", err)
 		return
@@ -1086,7 +1091,7 @@ func main() {
 	wg.Add(2)
 	reg := prometheus.NewRegistry()
 	go recordMetrics(ctx, wg, reg, router)
-	go runPrometheusMetricsServer(ctx, wg, reg)
+	go runPrometheusMetricsServer(ctx, wg, reg, *prometheusPort)
 
 	wg.Add(1)
 	go router.StartRouter(ctx, wg, certPath, certKeyPath)

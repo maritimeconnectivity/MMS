@@ -41,6 +41,7 @@ import (
 	"github.com/maritimeconnectivity/MMS/consumer"
 	"github.com/maritimeconnectivity/MMS/mmtp"
 	"github.com/maritimeconnectivity/MMS/utils/auth"
+	"github.com/maritimeconnectivity/MMS/utils/cert"
 	"github.com/maritimeconnectivity/MMS/utils/errMsg"
 	"github.com/maritimeconnectivity/MMS/utils/revocation"
 	"github.com/maritimeconnectivity/MMS/utils/rw"
@@ -111,7 +112,7 @@ type EdgeRouter struct {
 	geoLocation     string                       //Lookup code for the actual position of the running instance
 }
 
-func NewEdgeRouter(listeningAddr string, mrn *string, outgoingChannel chan *mmtp.MmtpMessage, routerWs *websocket.Conn, ctx context.Context, wg *sync.WaitGroup, clientCAs *string, routerAddr *string, httpClient *http.Client, geoLoc string) (*EdgeRouter, error) {
+func NewEdgeRouter(listeningAddr string, mrn *string, outgoingChannel chan *mmtp.MmtpMessage, routerWs *websocket.Conn, ctx context.Context, wg *sync.WaitGroup, clientCAs *string, routerAddr *string, httpClient *http.Client, geoLoc string, skipRevocationCheck bool) (*EdgeRouter, error) {
 	subs := make(map[string]*Subscription)
 	subMu := &sync.RWMutex{}
 	agents := make(map[string]*Agent)
@@ -122,16 +123,9 @@ func NewEdgeRouter(listeningAddr string, mrn *string, outgoingChannel chan *mmtp
 	responseMu := &sync.RWMutex{}
 	wsMu := &sync.RWMutex{}
 
-	var certPool *x509.CertPool = nil
-	if *clientCAs != "" {
-		certPool = x509.NewCertPool()
-		certFile, err := os.ReadFile(*clientCAs)
-		if err != nil {
-			return nil, fmt.Errorf("could not read the given client CA file")
-		}
-		if !certPool.AppendCertsFromPEM(certFile) {
-			return nil, fmt.Errorf("could not read the given client CA file")
-		}
+	clientCaPool, err := cert.LoadCertPool(*clientCAs)
+	if err != nil {
+		return nil, err
 	}
 
 	httpServer := http.Server{
@@ -139,9 +133,9 @@ func NewEdgeRouter(listeningAddr string, mrn *string, outgoingChannel chan *mmtp
 		Handler: handleHttpConnection(outgoingChannel, subs, subMu, agents, agentsMu, mrnToAgent, mrnToAgentMu, ctx, wg),
 		TLSConfig: &tls.Config{
 			ClientAuth:            tls.VerifyClientCertIfGiven,
-			ClientCAs:             certPool,
+			ClientCAs:             clientCaPool,
 			MinVersion:            tls.VersionTLS12,
-			VerifyPeerCertificate: verifyAgentCertificate(),
+			VerifyPeerCertificate: verifyAgentCertificate(skipRevocationCheck),
 		},
 	}
 
@@ -877,7 +871,7 @@ func handleSend(mmtpMessage *mmtp.MmtpMessage, outgoingChannel chan<- *mmtp.Mmtp
 	}
 }
 
-func verifyAgentCertificate() func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+func verifyAgentCertificate(skipRevocationCheck bool) func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
 	return func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
 		// we did not receive a certificate from the client, so we just return early
 		if len(rawCerts) == 0 || len(verifiedChains) == 0 {
@@ -898,6 +892,8 @@ func verifyAgentCertificate() func(rawCerts [][]byte, verifiedChains [][]*x509.C
 			if err != nil {
 				return err
 			}
+		} else if skipRevocationCheck {
+			log.Warn("was not able to check revocation status of client certificate")
 		} else {
 			return fmt.Errorf("was not able to check revocation status of client certificate")
 		}
@@ -1136,14 +1132,17 @@ func recordMetrics(ctx context.Context, wg *sync.WaitGroup, reg *prometheus.Regi
 	}
 }
 
-func runPrometheusMetricsServer(ctx context.Context, wg *sync.WaitGroup, reg *prometheus.Registry) {
+func runPrometheusMetricsServer(ctx context.Context, wg *sync.WaitGroup, reg *prometheus.Registry, port int) {
 	defer wg.Done()
 
 	// Start the Prometheus metrics server
+	addr := ":" + strconv.Itoa(port)
 	server := &http.Server{
-		Addr:    ":2112",
+		Addr:    addr,
 		Handler: http.DefaultServeMux,
 	}
+
+	log.Infof("Start prometheus server on port %d", port)
 
 	http.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
 
@@ -1177,9 +1176,12 @@ func main() {
 	certPath := flag.String("cert-path", "", "Path to a TLS certificate file. If none is provided, TLS will be disabled.")
 	certKeyPath := flag.String("cert-key-path", "", "Path to a TLS certificate private key. If none is provided, TLS will be disabled.")
 	clientCAs := flag.String("client-ca", "", "Path to a file containing a list of client CAs that can connect to this Edge Router.")
+	tlsCAs := flag.String("tlsca", "", "Path to a file containing trusted TLS CA certificates.")
 	debug := flag.Bool("d", false, "Indicates whether debugging should be enabled, false by default")
 	geoLoc := flag.String("l", "", "Lookup code indicating the geo location of the running instance")
 	insecure := flag.Bool("i", false, "Allow insecure TLS (No validation of certificate CA)")
+	prometheusPort := flag.Int("prometheus-port", 2112, "The port number for the Prometheus metrics server.")
+	skipRevocationCheck := flag.Bool("skip-revocation-check", false, "Allow client certificates that do not have OCSP or CRL endpoints for revocation checking.")
 
 	flag.Parse()
 	if *debug {
@@ -1210,10 +1212,16 @@ func main() {
 		}
 	}
 
+	certPool, err := cert.LoadCertPool(*tlsCAs)
+	if err != nil {
+		log.Fatal("Could not load configured TLS CAs:", err)
+	}
+
 	httpClient := &http.Client{
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
 				GetClientCertificate: clientCertFunc,
+				RootCAs:              certPool,
 			},
 		},
 	}
@@ -1235,7 +1243,7 @@ func main() {
 
 	wg := &sync.WaitGroup{}
 
-	er, err := NewEdgeRouter(":"+strconv.Itoa(*listeningPort), ownMrn, outgoingChannel, routerWs, ctx, wg, clientCAs, routerAddr, httpClient, *geoLoc)
+	er, err := NewEdgeRouter(":"+strconv.Itoa(*listeningPort), ownMrn, outgoingChannel, routerWs, ctx, wg, clientCAs, routerAddr, httpClient, *geoLoc, *skipRevocationCheck)
 	if err != nil {
 		log.Error("Could not create MMS Edge Router instance:", err)
 		return
@@ -1248,7 +1256,7 @@ func main() {
 	wg.Add(2)
 	reg := prometheus.NewRegistry()
 	go recordMetrics(ctx, wg, reg, er)
-	go runPrometheusMetricsServer(ctx, wg, reg)
+	go runPrometheusMetricsServer(ctx, wg, reg, *prometheusPort)
 
 	mdnsServer, err := zeroconf.Register("MMS Edge Router", "_mms-edgerouter._tcp", "local.", *listeningPort, nil, nil)
 	if err != nil {
