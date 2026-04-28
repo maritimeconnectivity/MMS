@@ -226,6 +226,11 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 			return
 		}
 		defer func(c *websocket.Conn, code websocket.StatusCode, reason string) {
+			if err != nil {
+				log.Info("Closing connection", "err", err.Error())
+			} else {
+				log.Debug("Closing connection, err=nil")
+			}
 			err := c.Close(code, reason)
 			if err != nil && !errors.Is(err, net.ErrClosed) {
 				log.Errorf("Could not close connection: %v", err)
@@ -237,6 +242,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 		c.SetReadLimit(WsReadLimit)
 
 		mmtpMessage, _, err := rw.ReadMessage(ctx, c)
+		log.Debugf("Handling incoming message %v", mmtpMessage)
 		if err != nil {
 			log.Warnf("Could not read message: %v", err)
 			if err = c.Close(websocket.StatusUnsupportedData, "The first message could not be parsed as an MMTP message"); err != nil {
@@ -315,6 +321,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 							ReasonText:     &errorMsg,
 						}},
 				}
+				log.Debugf("Sending message %v", resp)
 				err = rw.WriteMessage(request.Context(), c, resp)
 				if err != nil {
 					log.Errorf("Could not send response message: %v", err)
@@ -333,6 +340,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 							ReasonText:     &errorMsg,
 						}},
 				}
+				log.Debugf("Sending message %v", resp)
 				err = rw.WriteMessage(request.Context(), c, resp)
 				if err != nil {
 					log.Errorf("Could not send response message: %v", err)
@@ -368,6 +376,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 					Response:       mmtp.ResponseEnum_GOOD,
 				}},
 		}
+		log.Debugf("Sending message %v", resp)
 		err = rw.WriteMessage(request.Context(), c, resp)
 		if err != nil {
 			log.Errorf("Could not send response message: %v", err)
@@ -382,6 +391,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 
 		for {
 			mmtpMessage, n, err := rw.ReadMessage(ctx, c)
+			log.Debugf("Handling received message %v", mmtpMessage)
 			if err != nil {
 				log.Errorf("Could not receive message: %v", err)
 				reasonText := "Message could not be correctly parsed"
@@ -396,6 +406,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 						},
 					},
 				}
+				log.Debugf("Sending message %v", resp)
 				if err = rw.WriteMessage(request.Context(), c, resp); err != nil {
 					return
 				}
@@ -515,6 +526,7 @@ func handleSubscribe(mmtpMessage *mmtp.MmtpMessage, subMu *sync.RWMutex, subs ma
 					Response:       mmtp.ResponseEnum_GOOD,
 				}},
 		}
+		log.Debugf("Sending message %v", resp)
 		if err := rw.WriteMessage(request.Context(), c, resp); err != nil {
 			log.Errorf("Could not send subscribe response to Edge Router: %v", err)
 		}
@@ -540,6 +552,7 @@ func handleUnsubscribe(mmtpMessage *mmtp.MmtpMessage, subMu *sync.RWMutex, subs 
 			reasonText := "Tried to unsubscribe to empty subject"
 			resp.GetResponseMessage().Response = mmtp.ResponseEnum_ERROR
 			resp.GetResponseMessage().ReasonText = &reasonText
+			log.Debugf("Sending message %v", resp)
 			err := rw.WriteMessage(request.Context(), c, resp)
 			if err != nil {
 				err = fmt.Errorf("could not write response to unsubscribe message: %w", err)
@@ -568,6 +581,7 @@ func handleUnsubscribe(mmtpMessage *mmtp.MmtpMessage, subMu *sync.RWMutex, subs 
 		resp.GetResponseMessage().ReasonText = &reasonText
 	}
 
+	log.Debugf("Sending message %v", resp)
 	err := rw.WriteMessage(request.Context(), c, resp)
 	if err != nil {
 		err = fmt.Errorf("could not write response to unsubscribe message: %w", err)
@@ -577,6 +591,7 @@ func handleUnsubscribe(mmtpMessage *mmtp.MmtpMessage, subMu *sync.RWMutex, subs 
 }
 
 func handleSend(mmtpMessage *mmtp.MmtpMessage, outgoingChannel chan<- *mmtp.MmtpMessage, erMu *sync.RWMutex, subMu *sync.RWMutex, subs map[string]*Subscription, e *EdgeRouter, request *http.Request, c *websocket.Conn) {
+	log.Debugf("Sending message %v", mmtpMessage)
 	if send := mmtpMessage.GetProtocolMessage().GetSendMessage(); send != nil {
 		outgoingChannel <- mmtpMessage
 		header := send.GetApplicationMessage().GetHeader()
@@ -612,6 +627,8 @@ func handleSend(mmtpMessage *mmtp.MmtpMessage, outgoingChannel chan<- *mmtp.Mmtp
 						}
 					}
 				}
+			} else {
+				log.Debug("Not sending; no subscriber found for subject", header.GetSubject())
 			}
 			subMu.RUnlock()
 		}
@@ -710,15 +727,24 @@ func handleIncomingMessages(ctx context.Context, router *MMSRouter, wg *sync.Wai
 			return
 		default:
 			for incomingMessage := range router.incomingChannel {
+				log.Debugf("Handling incoming message %v", incomingMessage)
 				switch incomingMessage.GetMsgType() {
 				case mmtp.MsgType_PROTOCOL_MESSAGE:
 					{
 						now := time.Now()
 						nowSeconds := now.Unix()
 						appMsg := incomingMessage.GetProtocolMessage().GetSendMessage().GetApplicationMessage()
+						if appMsg == nil {
+							log.Warnf("Discarding message %s: application message is nil", incomingMessage.GetUuid())
+							continue
+						}
 						msgExpires := appMsg.GetHeader().GetExpires()
-						if appMsg == nil || nowSeconds > msgExpires || msgExpires > now.Add(ExpirationLimit).Unix() {
-							// message is nil, expired or has a too long expiration, so we discard it
+						if nowSeconds > msgExpires {
+							log.Warnf("Discarding message %s: expired at %v (now %v)", incomingMessage.GetUuid(), time.Unix(msgExpires, 0), now)
+							continue
+						}
+						if msgExpires > now.Add(ExpirationLimit).Unix() {
+							log.Warnf("Discarding message %s: expiration %v exceeds maximum allowed %v", incomingMessage.GetUuid(), time.Unix(msgExpires, 0), now.Add(ExpirationLimit))
 							continue
 						}
 						switch subjectOrRecipient := appMsg.GetHeader().GetSubjectOrRecipient().(type) {
@@ -765,6 +791,7 @@ func handleOutgoingMessages(ctx context.Context, router *MMSRouter, wg *sync.Wai
 			return
 		default:
 			for outgoingMessage := range router.outgoingChannel {
+				log.Debugf("Attempting to send message %v", outgoingMessage)
 				switch outgoingMessage.GetMsgType() {
 				case mmtp.MsgType_PROTOCOL_MESSAGE:
 					{
@@ -1027,12 +1054,19 @@ func main() {
 	certPath := flag.String("cert-path", "", "Path to a TLS certificate file. If none is provided, TLS will be disabled.")
 	certKeyPath := flag.String("cert-key-path", "", "Path to a TLS certificate private key. If none is provided, TLS will be disabled.")
 	clientCAs := flag.String("client-ca", "", "Path to a file containing a list of client CAs that can connect to this Router.")
+	debug := flag.Bool("d", false, "Indicates whether debugging should be enabled, false by default")
 	beacons := flag.String("beacons", "beacons.txt", "Path to a file containing beacons, who this router can use to connect to the libp2p network.")
 	geoLoc := flag.String("l", "DNK", "Lookup code indicating the geo location of the running instance")
 	prometheusPort := flag.Int("prometheus-port", 2113, "The port number for the Prometheus metrics server.")
 	skipRevocationCheck := flag.Bool("skip-revocation-check", false, "Allow client certificates that do not have OCSP or CRL endpoints for revocation checking.")
 
 	flag.Parse()
+	if *debug {
+		log.SetLevel(log.DebugLevel)
+		log.Info("Operating in Debug mode")
+	} else {
+		log.SetLevel(log.InfoLevel)
+	}
 
 	if _, err := os.Stat(*beacons); err != nil {
 		log.Fatal(err)

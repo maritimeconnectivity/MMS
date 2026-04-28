@@ -176,6 +176,7 @@ func (er *EdgeRouter) connectMMTPToRouter(ctx context.Context) error {
 			},
 		},
 	}
+	log.Debugf("Sending message %v", connect)
 	err := rw.WriteMessage(ctx, er.routerWs, connect)
 	if err != nil {
 		return fmt.Errorf("could not send connect message: %w", err)
@@ -256,6 +257,7 @@ func (er *EdgeRouter) StartEdgeRouter(ctx context.Context, wg *sync.WaitGroup, c
 	}
 
 	if er.routerWs != nil {
+		log.Debugf("Sending message %v", disconnectMsg)
 		if err := rw.WriteMessage(context.Background(), er.routerWs, disconnectMsg); err != nil {
 			log.Warn("Could not send disconnect to Router:", err)
 		}
@@ -387,6 +389,11 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 			return
 		}
 		defer func(c *websocket.Conn, code websocket.StatusCode, reason string) {
+			if err != nil {
+				log.Info("Closing connection", "err", err.Error())
+			} else {
+				log.Debug("Closing connection, err=nil")
+			}
 			err := c.Close(code, reason)
 			if err != nil && !errors.Is(err, net.ErrClosed) {
 				log.Errorf("Could not close connection: %s", err.Error())
@@ -489,6 +496,7 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 					Response:       mmtp.ResponseEnum_GOOD,
 				}},
 		}
+		log.Debugf("Sending message %v", resp)
 		err = rw.WriteMessage(request.Context(), c, resp)
 		if err != nil {
 			log.Error("Could not send response:", err)
@@ -517,6 +525,7 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 						},
 					},
 				}
+				log.Debugf("Sending message %v", resp)
 				if err = rw.WriteMessage(request.Context(), c, resp); err != nil {
 					return
 				}
@@ -606,6 +615,7 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 							},
 						},
 					}
+					log.Debugf("Sending message %v", resp)
 					if err = rw.WriteMessage(request.Context(), c, resp); err != nil {
 						log.Error("Could not send error message:", err)
 						return
@@ -660,6 +670,7 @@ func handleSubscribeSubject(mmtpMessage *mmtp.MmtpMessage, agent *Agent, subMu *
 				Response:       mmtp.ResponseEnum_GOOD,
 			}},
 	}
+	log.Debugf("Sending message %v", resp)
 	if err := rw.WriteMessage(request.Context(), c, resp); err != nil {
 		return fmt.Errorf("could not send subscribe response to Agent: %w", err)
 	}
@@ -706,6 +717,7 @@ func handleSubscribeDirect(mmtpMessage *mmtp.MmtpMessage, agent *Agent, subscrib
 				Response:       mmtp.ResponseEnum_GOOD,
 			}},
 	}
+	log.Debugf("Sending message %v", resp)
 	if err := rw.WriteMessage(request.Context(), c, resp); err != nil {
 		return fmt.Errorf("could not send subscribe response to Agent: %w", err)
 	}
@@ -756,6 +768,7 @@ func handleUnsubscribeSubject(mmtpMessage *mmtp.MmtpMessage, subMu *sync.RWMutex
 				Response:       mmtp.ResponseEnum_GOOD,
 			}},
 	}
+	log.Debugf("Sending message %v", resp)
 	if err := rw.WriteMessage(request.Context(), c, resp); err != nil {
 		return fmt.Errorf("could not write response to unsubscribe message: %w", err)
 	}
@@ -799,6 +812,7 @@ func handleUnsubscribeDirect(mmtpMessage *mmtp.MmtpMessage, unsubscribe *mmtp.Un
 					Response:       mmtp.ResponseEnum_GOOD,
 				}},
 		}
+		log.Debugf("Sending message %v", resp)
 		if err := rw.WriteMessage(request.Context(), c, resp); err != nil {
 			return fmt.Errorf("could not send unsubscribe response to Agent: %w", err)
 		}
@@ -865,6 +879,7 @@ func handleSend(mmtpMessage *mmtp.MmtpMessage, outgoingChannel chan<- *mmtp.Mmtp
 					Response:       mmtp.ResponseEnum_GOOD,
 				}},
 		}
+		log.Debugf("Sending message %v", resp)
 		if err := rw.WriteMessage(request.Context(), c, resp); err != nil {
 			log.Error("Could not send Send OK response:", err)
 		}
@@ -919,6 +934,7 @@ func handleIncomingMessages(ctx context.Context, edgeRouter *EdgeRouter, wg *syn
 				}
 				continue
 			}
+			log.Debugf("Handling received message %v", response.GetBody())
 
 			if _, err := uuid.Parse(response.GetUuid()); err != nil {
 				// message UUID is invalid, so we discard it
@@ -1030,6 +1046,7 @@ func handleOutgoingMessages(ctx context.Context, edgeRouter *EdgeRouter, wg *syn
 		default:
 
 			for outgoingMessage := range edgeRouter.outgoingChannel {
+				log.Debugf("Attempting to send message %v", outgoingMessage)
 				switch outgoingMessage.GetMsgType() {
 				case mmtp.MsgType_PROTOCOL_MESSAGE:
 					{
@@ -1215,6 +1232,9 @@ func main() {
 	certPool, err := cert.LoadCertPool(*tlsCAs)
 	if err != nil {
 		log.Fatal("Could not load configured TLS CAs:", err)
+	}
+	if certPool == nil {
+		log.Info("No TLS CA configured, using system CA store")
 	}
 
 	httpClient := &http.Client{
