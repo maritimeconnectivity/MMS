@@ -1178,6 +1178,39 @@ func runPrometheusMetricsServer(ctx context.Context, wg *sync.WaitGroup, reg *pr
 	}
 }
 
+func runHealthServer(ctx context.Context, wg *sync.WaitGroup, port int) {
+	defer wg.Done()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"healthy"}`))
+	})
+
+	addr := ":" + strconv.Itoa(port)
+	server := &http.Server{
+		Addr:    addr,
+		Handler: mux,
+	}
+	log.Infof("Health server listening on port %d", port)
+
+	go func() {
+		if err := server.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+			log.Errorf("Health server ListenAndServe(): %s", err)
+		}
+	}()
+
+	<-ctx.Done()
+	log.Warn("Shutting down health server...")
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		log.Errorf("Health server shutdown: %s", err)
+	}
+}
+
 func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -1198,6 +1231,7 @@ func main() {
 	geoLoc := flag.String("l", "", "Lookup code indicating the geo location of the running instance")
 	insecure := flag.Bool("i", false, "Allow insecure TLS (No validation of certificate CA)")
 	prometheusPort := flag.Int("prometheus-port", 2112, "The port number for the Prometheus metrics server.")
+	healthPort := flag.Int("health-port", 8889, "The port number for the plaintext health check server.")
 	skipRevocationCheck := flag.Bool("skip-revocation-check", false, "Allow client certificates that do not have OCSP or CRL endpoints for revocation checking.")
 
 	flag.Parse()
@@ -1277,6 +1311,9 @@ func main() {
 	reg := prometheus.NewRegistry()
 	go recordMetrics(ctx, wg, reg, er)
 	go runPrometheusMetricsServer(ctx, wg, reg, *prometheusPort)
+
+	wg.Add(1)
+	go runHealthServer(ctx, wg, *healthPort)
 
 	mdnsServer, err := zeroconf.Register("MMS Edge Router", "_mms-edgerouter._tcp", "local.", *listeningPort, nil, nil)
 	if err != nil {

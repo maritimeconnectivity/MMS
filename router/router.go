@@ -925,6 +925,39 @@ func runPrometheusMetricsServer(ctx context.Context, wg *sync.WaitGroup, reg *pr
 	}
 }
 
+func runHealthServer(ctx context.Context, wg *sync.WaitGroup, port int) {
+	defer wg.Done()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"healthy"}`))
+	})
+
+	addr := ":" + strconv.Itoa(port)
+	server := &http.Server{
+		Addr:    addr,
+		Handler: mux,
+	}
+	log.Infof("Health server listening on port %d", port)
+
+	go func() {
+		if err := server.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+			log.Errorf("Health server ListenAndServe(): %s", err)
+		}
+	}()
+
+	<-ctx.Done()
+	log.Warn("Shutting down health server...")
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		log.Errorf("Health server shutdown: %s", err)
+	}
+}
+
 func setupLibP2P(ctx context.Context, libp2pPort *int, libp2pTcpPort *int, privKeyFilePath *string, beaconsFilePath *string) (host.Host, *drouting.RoutingDiscovery, *dht.IpfsDHT, error) {
 	udpPort := *libp2pPort
 	tcpPort := *libp2pTcpPort
@@ -1058,6 +1091,7 @@ func main() {
 	beacons := flag.String("beacons", "beacons.txt", "Path to a file containing beacons, who this router can use to connect to the libp2p network.")
 	geoLoc := flag.String("l", "DNK", "Lookup code indicating the geo location of the running instance")
 	prometheusPort := flag.Int("prometheus-port", 2113, "The port number for the Prometheus metrics server.")
+	healthPort := flag.Int("health-port", 8081, "The port number for the plaintext health check server.")
 	skipRevocationCheck := flag.Bool("skip-revocation-check", false, "Allow client certificates that do not have OCSP or CRL endpoints for revocation checking.")
 
 	flag.Parse()
@@ -1126,6 +1160,9 @@ func main() {
 	reg := prometheus.NewRegistry()
 	go recordMetrics(ctx, wg, reg, router)
 	go runPrometheusMetricsServer(ctx, wg, reg, *prometheusPort)
+
+	wg.Add(1)
+	go runHealthServer(ctx, wg, *healthPort)
 
 	wg.Add(1)
 	go router.StartRouter(ctx, wg, certPath, certKeyPath)
