@@ -23,6 +23,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -90,6 +91,18 @@ func (sub *Subscription) DeleteSubscriber(agent *Agent) {
 	sub.subsMu.Lock()
 	delete(sub.Subscribers, agent.agentUuid)
 	sub.subsMu.Unlock()
+}
+
+func (sub *Subscription) SnapshotSubscribers() []*Agent {
+	sub.subsMu.RLock()
+	defer sub.subsMu.RUnlock()
+
+	subscribers := make([]*Agent, 0, len(sub.Subscribers))
+	for _, subscriber := range sub.Subscribers {
+		subscribers = append(subscribers, subscriber)
+	}
+
+	return subscribers
 }
 
 // EdgeRouter type representing an MMS Edge Router
@@ -860,7 +873,7 @@ func handleSend(mmtpMessage *mmtp.MmtpMessage, outgoingChannel chan<- *mmtp.Mmtp
 			subMu.RLock()
 			sub, exists := subs[header.GetSubject()]
 			if exists {
-				for _, subscriber := range sub.Subscribers {
+				for _, subscriber := range sub.SnapshotSubscribers() {
 					if subscriber.Mrn != agent.Mrn {
 						if err = subscriber.QueueMessage(mmtpMessage); err != nil {
 							log.Error("Could not queue message to agent:", err)
@@ -988,12 +1001,17 @@ func handleIncomingMessages(ctx context.Context, edgeRouter *EdgeRouter, wg *syn
 						case *mmtp.ApplicationMessageHeader_Subject:
 							{
 								edgeRouter.subMu.RLock()
-								for _, subscriber := range edgeRouter.subscriptions[subjectOrRecipient.Subject].Subscribers {
+								subscription := edgeRouter.subscriptions[subjectOrRecipient.Subject]
+								var subscribers []*Agent
+								if subscription != nil {
+									subscribers = subscription.SnapshotSubscribers()
+								}
+								edgeRouter.subMu.RUnlock()
+								for _, subscriber := range subscribers {
 									if err = subscriber.QueueMessage(incomingMessage); err != nil {
 										log.Error("Could not queue message:", err)
 									}
 								}
-								edgeRouter.subMu.RUnlock()
 							}
 						case *mmtp.ApplicationMessageHeader_Recipients:
 							{
@@ -1212,29 +1230,55 @@ func runHealthServer(ctx context.Context, wg *sync.WaitGroup, port int) {
 }
 
 func main() {
+	os.Exit(runMain(os.Args[1:]))
+}
+
+func runMain(args []string) int {
+	if err := run(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		log.Error(err)
+		return 1
+	}
+
+	return 0
+}
+
+func run(args []string) error {
+	return runWithStderr(args, os.Stderr)
+}
+
+func runWithStderr(args []string, stderr io.Writer) error {
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	// wait for a SIGINT or SIGTERM signal
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(ch)
 
-	routerAddr := flag.String("raddr", "ws://localhost:8080", "The websocket URL of the Router to connect to.")
-	listeningPort := flag.Int("port", 8888, "The port number that this Edge Router should listen on.")
-	ownMrn := flag.String("mrn", "urn:mrn:mcp:device:idp1:org1:er", "The MRN of this Edge Router")
-	clientCertPath := flag.String("client-cert", "", "Path to a client certificate which will be used to authenticate towards Router. If none is provided, mutual TLS will be disabled.")
-	clientCertKeyPath := flag.String("client-cert-key", "", "Path to a client certificate private key which will be used to authenticate towards Router. If none is provided, mutual TLS will be disabled.")
-	certPath := flag.String("cert-path", "", "Path to a TLS certificate file. If none is provided, TLS will be disabled.")
-	certKeyPath := flag.String("cert-key-path", "", "Path to a TLS certificate private key. If none is provided, TLS will be disabled.")
-	clientCAs := flag.String("client-ca", "", "Path to a file containing a list of client CAs that can connect to this Edge Router.")
-	tlsCAs := flag.String("tlsca", "", "Path to a file containing trusted TLS CA certificates.")
-	debug := flag.Bool("d", false, "Indicates whether debugging should be enabled, false by default")
-	geoLoc := flag.String("l", "", "Lookup code indicating the geo location of the running instance")
-	insecure := flag.Bool("i", false, "Allow insecure TLS (No validation of certificate CA)")
-	prometheusPort := flag.Int("prometheus-port", 2112, "The port number for the Prometheus metrics server.")
-	healthPort := flag.Int("health-port", 8889, "The port number for the plaintext health check server.")
-	skipRevocationCheck := flag.Bool("skip-revocation-check", false, "Allow client certificates that do not have OCSP or CRL endpoints for revocation checking.")
+	flagSet := flag.NewFlagSet("edgerouter", flag.ContinueOnError)
+	flagSet.SetOutput(stderr)
+	routerAddr := flagSet.String("raddr", "ws://localhost:8080", "The websocket URL of the Router to connect to.")
+	listeningPort := flagSet.Int("port", 8888, "The port number that this Edge Router should listen on.")
+	ownMrn := flagSet.String("mrn", "urn:mrn:mcp:device:idp1:org1:er", "The MRN of this Edge Router")
+	clientCertPath := flagSet.String("client-cert", "", "Path to a client certificate which will be used to authenticate towards Router. If none is provided, mutual TLS will be disabled.")
+	clientCertKeyPath := flagSet.String("client-cert-key", "", "Path to a client certificate private key which will be used to authenticate towards Router. If none is provided, mutual TLS will be disabled.")
+	certPath := flagSet.String("cert-path", "", "Path to a TLS certificate file. If none is provided, TLS will be disabled.")
+	certKeyPath := flagSet.String("cert-key-path", "", "Path to a TLS certificate private key. If none is provided, TLS will be disabled.")
+	clientCAs := flagSet.String("client-ca", "", "Path to a file containing a list of client CAs that can connect to this Edge Router.")
+	tlsCAs := flagSet.String("tlsca", "", "Path to a file containing trusted TLS CA certificates.")
+	debug := flagSet.Bool("d", false, "Indicates whether debugging should be enabled, false by default")
+	geoLoc := flagSet.String("l", "", "Lookup code indicating the geo location of the running instance")
+	insecure := flagSet.Bool("i", false, "Allow insecure TLS (No validation of certificate CA)")
+	prometheusPort := flagSet.Int("prometheus-port", 2112, "The port number for the Prometheus metrics server.")
+	healthPort := flagSet.Int("health-port", 8889, "The port number for the plaintext health check server.")
+	skipRevocationCheck := flagSet.Bool("skip-revocation-check", false, "Allow client certificates that do not have OCSP or CRL endpoints for revocation checking.")
 
-	flag.Parse()
+	if err := flagSet.Parse(args); err != nil {
+		return err
+	}
 	if *debug {
 		log.SetLevel(log.DebugLevel)
 		log.Info("Operating in Debug mode")
@@ -1265,7 +1309,7 @@ func main() {
 
 	certPool, err := cert.LoadCertPool(*tlsCAs)
 	if err != nil {
-		log.Fatal("Could not load configured TLS CAs:", err)
+		return fmt.Errorf("could not load configured TLS CAs: %w", err)
 	}
 	if certPool == nil {
 		log.Info("No TLS CA configured, using system CA store")
@@ -1299,8 +1343,7 @@ func main() {
 
 	er, err := NewEdgeRouter(":"+strconv.Itoa(*listeningPort), ownMrn, outgoingChannel, routerWs, ctx, wg, clientCAs, routerAddr, httpClient, *geoLoc, *skipRevocationCheck)
 	if err != nil {
-		log.Error("Could not create MMS Edge Router instance:", err)
-		return
+		return fmt.Errorf("could not create MMS Edge Router instance: %w", err)
 	}
 
 	wg.Add(1)
@@ -1318,12 +1361,18 @@ func main() {
 	mdnsServer, err := zeroconf.Register("MMS Edge Router", "_mms-edgerouter._tcp", "local.", *listeningPort, nil, nil)
 	if err != nil {
 		log.Error("Could not create mDNS service, shutting down", err)
-		ch <- os.Interrupt
+		// Queue shutdown, but don't block in case the channel is full.
+		select {
+		case ch <- os.Interrupt:
+		default:
+		}
+	} else {
+		defer mdnsServer.Shutdown()
 	}
-	defer mdnsServer.Shutdown()
 
 	<-ch
 	log.Warn("Received signal, shutting down...")
 	cancel()
 	wg.Wait()
+	return nil
 }
