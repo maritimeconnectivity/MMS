@@ -35,8 +35,13 @@ const (
 	SessionKindEdgeRouter = "edge-router"
 )
 
+// ErrNotFound indicates that a requested session, setting, or other state entry
+// does not exist in the selected store.
 var ErrNotFound = errors.New("persistent state not found")
 
+// Session is the backend-independent representation of a reconnectable MMS
+// consumer. Authentication state is deliberately not stored and must be
+// established again for every live connection.
 type Session struct {
 	ID             string
 	Kind           string
@@ -46,10 +51,75 @@ type Session struct {
 	ExpiresAt      time.Time
 }
 
+// Store defines the state operations used by Consumers, Routers, and Edge
+// Routers. Implementations must be safe for concurrent use.
+//
+// Messages are stored once and associated with sessions through deliveries.
+// Fetching does not remove a delivery; callers remove successfully transmitted
+// deliveries with DeleteDeliveries. Implementations must copy protobuf messages
+// at the storage boundary so callers cannot mutate stored state.
+type Store interface {
+	// Close releases backend resources. It is safe to call for in-memory stores.
+	Close() error
+	// UpsertSession creates a session or rotates the reconnect token of an
+	// existing session while preserving its original creation time.
+	UpsertSession(context.Context, Session, string) error
+	// RotateReconnectToken changes a session's bearer token and expiry.
+	RotateReconnectToken(context.Context, string, string, time.Time) error
+	// SessionByToken returns a non-expired session of the requested kind.
+	SessionByToken(context.Context, string, string) (*Session, error)
+	// SessionByID returns a session regardless of its expiry.
+	SessionByID(context.Context, string) (*Session, error)
+	// Sessions returns all non-expired sessions of the requested kind.
+	Sessions(context.Context, string) ([]Session, error)
+	// DeleteSession removes a session and its subscriptions and deliveries.
+	DeleteSession(context.Context, string) error
+	// SetDirectMessages changes the direct-message subscription flag.
+	SetDirectMessages(context.Context, string, bool) error
+	// Subscribe associates a subject with a session.
+	Subscribe(context.Context, string, string) error
+	// Unsubscribe removes a subject association from a session.
+	Unsubscribe(context.Context, string, string) error
+	// Subscriptions returns a session's subjects in stable order.
+	Subscriptions(context.Context, string) ([]string, error)
+	// QueueMessage atomically creates deliveries for all supplied sessions.
+	QueueMessage(context.Context, []string, *mmtp.MmtpMessage) error
+	// PendingNotifications returns unexpired deliveries not yet notified.
+	PendingNotifications(context.Context, string) ([]*mmtp.MmtpMessage, error)
+	// MarkNotified marks the supplied deliveries as notified.
+	MarkNotified(context.Context, string, []string) error
+	// FetchMessages returns unexpired messages for a session. An empty UUID
+	// slice selects every queued message.
+	FetchMessages(context.Context, string, []string) ([]*mmtp.MmtpMessage, error)
+	// DeleteDeliveries acknowledges successful delivery of the supplied UUIDs.
+	DeleteDeliveries(context.Context, string, []string) error
+	// PurgeExpired deletes expired and orphaned messages.
+	PurgeExpired(context.Context, time.Time) error
+	// PurgeExpiredSessions deletes expired sessions and their dependent state.
+	PurgeExpiredSessions(context.Context, time.Time) error
+	// PutOutbox inserts or replaces an outgoing message awaiting acknowledgement.
+	PutOutbox(context.Context, *mmtp.MmtpMessage) error
+	// DeleteOutbox removes an acknowledged outgoing message.
+	DeleteOutbox(context.Context, string) error
+	// Outbox returns outgoing messages in insertion order.
+	Outbox(context.Context) ([]*mmtp.MmtpMessage, error)
+	// SetSetting inserts or replaces a backend-independent string setting.
+	SetSetting(context.Context, string, string) error
+	// Setting returns a setting or ErrNotFound.
+	Setting(context.Context, string) (string, error)
+	// DeleteSetting removes a setting.
+	DeleteSetting(context.Context, string) error
+}
+
+// SQLiteStore implements Store using a local SQLite database.
 type SQLiteStore struct {
 	db *sql.DB
 }
 
+var _ Store = (*SQLiteStore)(nil)
+
+// Open opens or creates a SQLiteStore at path, configures it for durable WAL
+// operation, and applies all schema migrations.
 func Open(path string) (*SQLiteStore, error) {
 	if strings.TrimSpace(path) == "" {
 		return nil, fmt.Errorf("database path cannot be empty")
