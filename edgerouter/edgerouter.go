@@ -41,6 +41,7 @@ import (
 	"github.com/libp2p/zeroconf/v2"
 	"github.com/maritimeconnectivity/MMS/consumer"
 	"github.com/maritimeconnectivity/MMS/mmtp"
+	"github.com/maritimeconnectivity/MMS/persistence"
 	"github.com/maritimeconnectivity/MMS/utils/auth"
 	"github.com/maritimeconnectivity/MMS/utils/cert"
 	"github.com/maritimeconnectivity/MMS/utils/errMsg"
@@ -123,9 +124,10 @@ type EdgeRouter struct {
 	httpClient      *http.Client                 // The EdgeRouters http client if provided
 	wsMu            *sync.RWMutex                // Mutex for locking the WS upon send/recv, to properly handle if socket was closed
 	geoLocation     string                       //Lookup code for the actual position of the running instance
+	store           *persistence.SQLiteStore     // durable sessions, subscriptions, messages, and upstream outbox
 }
 
-func NewEdgeRouter(listeningAddr string, mrn *string, outgoingChannel chan *mmtp.MmtpMessage, routerWs *websocket.Conn, ctx context.Context, wg *sync.WaitGroup, clientCAs *string, routerAddr *string, httpClient *http.Client, geoLoc string, skipRevocationCheck bool) (*EdgeRouter, error) {
+func NewEdgeRouter(listeningAddr string, mrn *string, outgoingChannel chan *mmtp.MmtpMessage, routerWs *websocket.Conn, ctx context.Context, wg *sync.WaitGroup, clientCAs *string, routerAddr *string, httpClient *http.Client, geoLoc string, skipRevocationCheck bool, stores ...*persistence.SQLiteStore) (*EdgeRouter, error) {
 	subs := make(map[string]*Subscription)
 	subMu := &sync.RWMutex{}
 	agents := make(map[string]*Agent)
@@ -135,6 +137,52 @@ func NewEdgeRouter(listeningAddr string, mrn *string, outgoingChannel chan *mmtp
 	awaitResponse := make(map[string]*mmtp.MmtpMessage)
 	responseMu := &sync.RWMutex{}
 	wsMu := &sync.RWMutex{}
+	var store *persistence.SQLiteStore
+	if len(stores) > 0 {
+		store = stores[0]
+	}
+
+	if store != nil {
+		if err := store.PurgeExpiredSessions(ctx, time.Now()); err != nil {
+			return nil, fmt.Errorf("purge expired agent sessions: %w", err)
+		}
+		sessions, err := store.Sessions(ctx, persistence.SessionKindAgent)
+		if err != nil {
+			return nil, fmt.Errorf("restore agent sessions: %w", err)
+		}
+		for _, session := range sessions {
+			interests, listErr := store.Subscriptions(ctx, session.ID)
+			if listErr != nil {
+				return nil, fmt.Errorf("restore subscriptions for %s: %w", session.ID, listErr)
+			}
+			agent := &Agent{
+				Consumer: consumer.Consumer{
+					ID:            session.ID,
+					Store:         store,
+					Mrn:           session.MRN,
+					Interests:     interests,
+					Messages:      make(map[string]*mmtp.MmtpMessage),
+					MsgMu:         &sync.RWMutex{},
+					Notifications: make(map[string]*mmtp.MmtpMessage),
+					NotifyMu:      &sync.RWMutex{},
+				},
+				agentUuid:      session.ID,
+				directMessages: session.DirectMessages,
+			}
+			agents[agent.agentUuid] = agent
+			if agent.Mrn != "" {
+				mrnToAgent[agent.Mrn] = agent
+			}
+			for _, interest := range interests {
+				sub := subs[interest]
+				if sub == nil {
+					sub = NewSubscription(interest)
+					subs[interest] = sub
+				}
+				sub.AddSubscriber(agent)
+			}
+		}
+	}
 
 	clientCaPool, err := cert.LoadCertPool(*clientCAs)
 	if err != nil {
@@ -143,7 +191,7 @@ func NewEdgeRouter(listeningAddr string, mrn *string, outgoingChannel chan *mmtp
 
 	httpServer := http.Server{
 		Addr:    listeningAddr,
-		Handler: handleHttpConnection(outgoingChannel, subs, subMu, agents, agentsMu, mrnToAgent, mrnToAgentMu, ctx, wg),
+		Handler: handleHttpConnection(outgoingChannel, subs, subMu, agents, agentsMu, mrnToAgent, mrnToAgentMu, ctx, wg, store),
 		TLSConfig: &tls.Config{
 			ClientAuth:            tls.VerifyClientCertIfGiven,
 			ClientCAs:             clientCaPool,
@@ -169,12 +217,24 @@ func NewEdgeRouter(listeningAddr string, mrn *string, outgoingChannel chan *mmtp
 		httpClient:      httpClient,
 		wsMu:            wsMu,
 		geoLocation:     geoLoc,
+		store:           store,
 	}, nil
 }
 
 func (er *EdgeRouter) connectMMTPToRouter(ctx context.Context) error {
 	log.Debugf("Own mrn is %s", *er.ownMrn)
 
+	connectBody := &mmtp.Connect{OwnMrn: er.ownMrn}
+	usedReconnectToken := false
+	if er.store != nil {
+		token, err := er.store.Setting(ctx, "router_reconnect_token")
+		if err == nil {
+			connectBody.ReconnectToken = &token
+			usedReconnectToken = true
+		} else if !errors.Is(err, persistence.ErrNotFound) {
+			return fmt.Errorf("load Router reconnect token: %w", err)
+		}
+	}
 	connect := &mmtp.MmtpMessage{
 		MsgType: mmtp.MsgType_PROTOCOL_MESSAGE,
 		Uuid:    uuid.NewString(),
@@ -182,9 +242,7 @@ func (er *EdgeRouter) connectMMTPToRouter(ctx context.Context) error {
 			ProtocolMessage: &mmtp.ProtocolMessage{
 				ProtocolMsgType: mmtp.ProtocolMessageType_CONNECT_MESSAGE,
 				Body: &mmtp.ProtocolMessage_ConnectMessage{
-					ConnectMessage: &mmtp.Connect{
-						OwnMrn: er.ownMrn,
-					},
+					ConnectMessage: connectBody,
 				},
 			},
 		},
@@ -202,10 +260,66 @@ func (er *EdgeRouter) connectMMTPToRouter(ctx context.Context) error {
 
 	connectResp := response.GetResponseMessage()
 	if connectResp.GetResponse() != mmtp.ResponseEnum_GOOD {
+		if er.store != nil && usedReconnectToken {
+			if deleteErr := er.store.DeleteSetting(ctx, "router_reconnect_token"); deleteErr != nil {
+				log.Errorf("Could not discard rejected Router reconnect token: %v", deleteErr)
+			}
+		}
 		return fmt.Errorf("the MMS Router did not accept Connect: %s", connectResp.GetReasonText())
 	}
+	if er.store != nil && connectResp.GetReconnectToken() != "" {
+		if err = er.store.SetSetting(ctx, "router_reconnect_token", connectResp.GetReconnectToken()); err != nil {
+			return fmt.Errorf("persist Router reconnect token: %w", err)
+		}
+	}
+	er.queuePersistedSubscriptions()
 
 	return nil
+}
+
+func (er *EdgeRouter) queuePersistedSubscriptions() {
+	er.subMu.RLock()
+	subjects := make([]string, 0, len(er.subscriptions))
+	for subject := range er.subscriptions {
+		subjects = append(subjects, subject)
+	}
+	er.subMu.RUnlock()
+
+	er.mrnToAgentMu.RLock()
+	for mrn, agent := range er.mrnToAgent {
+		if agent.directMessages {
+			subjects = append(subjects, mrn)
+		}
+	}
+	er.mrnToAgentMu.RUnlock()
+
+	for _, subject := range subjects {
+		er.outgoingChannel <- newUpstreamSubscription(subject, true)
+	}
+}
+
+func newUpstreamSubscription(subject string, subscribe bool) *mmtp.MmtpMessage {
+	protocolMessage := &mmtp.ProtocolMessage{}
+	if subscribe {
+		protocolMessage.ProtocolMsgType = mmtp.ProtocolMessageType_SUBSCRIBE_MESSAGE
+		protocolMessage.Body = &mmtp.ProtocolMessage_SubscribeMessage{
+			SubscribeMessage: &mmtp.Subscribe{
+				SubjectOrDirectMessages: &mmtp.Subscribe_Subject{Subject: subject},
+			},
+		}
+	} else {
+		protocolMessage.ProtocolMsgType = mmtp.ProtocolMessageType_UNSUBSCRIBE_MESSAGE
+		protocolMessage.Body = &mmtp.ProtocolMessage_UnsubscribeMessage{
+			UnsubscribeMessage: &mmtp.Unsubscribe{
+				SubjectOrDirectMessages: &mmtp.Unsubscribe_Subject{Subject: subject},
+			},
+		}
+	}
+	return &mmtp.MmtpMessage{
+		MsgType: mmtp.MsgType_PROTOCOL_MESSAGE,
+		Uuid:    uuid.NewString(),
+		Body:    &mmtp.MmtpMessage_ProtocolMessage{ProtocolMessage: protocolMessage},
+	}
 }
 
 func (er *EdgeRouter) StartEdgeRouter(ctx context.Context, wg *sync.WaitGroup, certPath *string, certKeyPath *string) {
@@ -216,7 +330,6 @@ func (er *EdgeRouter) StartEdgeRouter(ctx context.Context, wg *sync.WaitGroup, c
 
 	log.Info("Starting Edge Router")
 
-	// TODO store reconnect token and handle reconnection in case of disconnect
 	if er.routerWs != nil {
 		err := er.connectMMTPToRouter(ctx)
 		if err != nil {
@@ -247,6 +360,17 @@ func (er *EdgeRouter) StartEdgeRouter(ctx context.Context, wg *sync.WaitGroup, c
 	}()
 
 	go er.messageGC(ctx, wg)
+
+	if er.store != nil {
+		pending, err := er.store.Outbox(ctx)
+		if err != nil {
+			log.Errorf("Could not restore persistent outbox: %v", err)
+		} else {
+			for _, message := range pending {
+				er.outgoingChannel <- message
+			}
+		}
+	}
 
 	wg.Add(2)
 	log.Debug("Spawning message threads")
@@ -323,6 +447,11 @@ func (er *EdgeRouter) TryConnectRouter(ctx context.Context) {
 			err = er.connectMMTPToRouter(ctx)
 			if err != nil {
 				log.Error(err)
+				if closeErr := er.routerWs.CloseNow(); closeErr != nil {
+					log.Warn(closeErr)
+				}
+				er.routerWs = nil
+				continue
 			}
 			log.Info("Router connected")
 			return
@@ -344,6 +473,12 @@ func (er *EdgeRouter) messageGC(ctx context.Context, wg *sync.WaitGroup) {
 		case <-ctx.Done():
 			return
 		case <-time.After(5 * time.Minute): // run every 5 minutes
+			if er.store != nil {
+				if err := er.store.PurgeExpired(ctx, time.Now()); err != nil {
+					log.Errorf("Could not purge expired persistent messages: %v", err)
+				}
+				continue
+			}
 			er.agentsMu.RLock()
 			now := time.Now().Unix()
 			for _, a := range er.agents {
@@ -392,7 +527,7 @@ func (er *EdgeRouter) handleNotify(metadata []*mmtp.MessageMetadata) error {
 	return nil
 }
 
-func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[string]*Subscription, subMu *sync.RWMutex, agents map[string]*Agent, agentsMu *sync.RWMutex, mrnToAgent map[string]*Agent, mrnToAgentMu *sync.RWMutex, ctx context.Context, wg *sync.WaitGroup) http.HandlerFunc {
+func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[string]*Subscription, subMu *sync.RWMutex, agents map[string]*Agent, agentsMu *sync.RWMutex, mrnToAgent map[string]*Agent, mrnToAgentMu *sync.RWMutex, ctx context.Context, wg *sync.WaitGroup, store *persistence.SQLiteStore) http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
 		wg.Add(1)
 		c, err := websocket.Accept(writer, request, &websocket.AcceptOptions{OriginPatterns: []string{"*"}})
@@ -469,14 +604,57 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 		}
 
 		var agent *Agent
-		agentsMu.RLock()
-		savedAgent, ok := agents[connect.GetReconnectToken()]
-		agentsMu.RUnlock()
+		var savedAgent *Agent
+		var ok bool
+		if store != nil && connect.GetReconnectToken() != "" {
+			session, sessionErr := store.SessionByToken(request.Context(), persistence.SessionKindAgent, connect.GetReconnectToken())
+			if sessionErr == nil && (session.MRN == "" || session.MRN == agentMrn) {
+				agentsMu.RLock()
+				savedAgent, ok = agents[session.ID]
+				agentsMu.RUnlock()
+			}
+		} else {
+			agentsMu.RLock()
+			for _, candidate := range agents {
+				if candidate.ReconnectToken == connect.GetReconnectToken() && connect.GetReconnectToken() != "" {
+					savedAgent, ok = candidate, true
+					break
+				}
+			}
+			agentsMu.RUnlock()
+		}
 		if ok {
 			agent = savedAgent
+			agent.authenticated = authenticated
 		} else {
+			if agentMrn != "" {
+				mrnToAgentMu.RLock()
+				previous := mrnToAgent[agentMrn]
+				mrnToAgentMu.RUnlock()
+				if previous != nil {
+					if store != nil {
+						if err = store.DeleteSession(request.Context(), previous.ID); err != nil {
+							log.Error("Could not replace previous Agent session:", err)
+							return
+						}
+					}
+					subMu.Lock()
+					for _, interest := range previous.Interests {
+						if sub := subs[interest]; sub != nil {
+							sub.DeleteSubscriber(previous)
+						}
+					}
+					subMu.Unlock()
+					agentsMu.Lock()
+					delete(agents, previous.agentUuid)
+					agentsMu.Unlock()
+				}
+			}
+			agentID := uuid.NewString()
 			agent = &Agent{
 				Consumer: consumer.Consumer{
+					ID:            agentID,
+					Store:         store,
 					Mrn:           agentMrn,
 					Interests:     make([]string, 0, 1),
 					Messages:      make(map[string]*mmtp.MmtpMessage),
@@ -484,7 +662,7 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 					Notifications: make(map[string]*mmtp.MmtpMessage),
 					NotifyMu:      &sync.RWMutex{},
 				},
-				agentUuid:      uuid.NewString(),
+				agentUuid:      agentID,
 				authenticated:  authenticated,
 				directMessages: false,
 			}
@@ -495,8 +673,22 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 			}
 		}
 		agent.ReconnectToken = uuid.NewString()
+		if store != nil {
+			session := persistence.Session{
+				ID:             agent.ID,
+				Kind:           persistence.SessionKindAgent,
+				MRN:            agent.Mrn,
+				DirectMessages: agent.directMessages,
+				CreatedAt:      time.Now(),
+				ExpiresAt:      time.Now().Add(30 * 24 * time.Hour),
+			}
+			if err = store.UpsertSession(request.Context(), session, agent.ReconnectToken); err != nil {
+				log.Error("Could not persist Agent session:", err)
+				return
+			}
+		}
 		agentsMu.Lock()
-		agents[agent.ReconnectToken] = agent
+		agents[agent.agentUuid] = agent
 		agentsMu.Unlock()
 
 		resp := &mmtp.MmtpMessage{
@@ -594,13 +786,42 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 								log.Error("Failed handling Disconnect message:", err)
 							} else {
 								//Success, remove agent from edgerouter's map of agents and list of reconnect tokens
+								unsubscribeSubjects := make([]string, 0, len(agent.Interests)+1)
+								subMu.Lock()
+								for _, interest := range agent.Interests {
+									sub := subs[interest]
+									if sub == nil {
+										continue
+									}
+									sub.DeleteSubscriber(agent)
+									sub.subsMu.RLock()
+									empty := len(sub.Subscribers) == 0
+									sub.subsMu.RUnlock()
+									if empty {
+										delete(subs, interest)
+										unsubscribeSubjects = append(unsubscribeSubjects, interest)
+									}
+								}
+								subMu.Unlock()
+								if agent.directMessages && agent.Mrn != "" {
+									unsubscribeSubjects = append(unsubscribeSubjects, agent.Mrn)
+								}
+								for _, subject := range unsubscribeSubjects {
+									outgoingChannel <- newUpstreamSubscription(subject, false)
+								}
+
 								mrnToAgentMu.Lock()
 								delete(mrnToAgent, agent.Mrn)
 								mrnToAgentMu.Unlock()
 
 								agentsMu.Lock()
-								delete(agents, agent.ReconnectToken)
+								delete(agents, agent.agentUuid)
 								agentsMu.Unlock()
+								if agent.Store != nil {
+									if err = agent.Store.DeleteSession(request.Context(), agent.ID); err != nil {
+										log.Error("Could not delete persistent Agent session:", err)
+									}
+								}
 							}
 							return
 						}
@@ -672,6 +893,14 @@ func handleSubscribeSubject(mmtpMessage *mmtp.MmtpMessage, agent *Agent, subMu *
 		sub.AddSubscriber(agent)
 	}
 	subMu.Unlock()
+	if agent.Store != nil {
+		if err := agent.Store.Subscribe(request.Context(), agent.ID, subject); err != nil {
+			subMu.Lock()
+			sub.DeleteSubscriber(agent)
+			subMu.Unlock()
+			return fmt.Errorf("could not persist subscription: %w", err)
+		}
+	}
 	agent.Interests = append(agent.Interests, subject)
 
 	resp := &mmtp.MmtpMessage{
@@ -720,6 +949,12 @@ func handleSubscribeDirect(mmtpMessage *mmtp.MmtpMessage, agent *Agent, subscrib
 	outgoingChannel <- sub
 
 	agent.directMessages = true
+	if agent.Store != nil {
+		if err := agent.Store.SetDirectMessages(request.Context(), agent.ID, true); err != nil {
+			agent.directMessages = false
+			return fmt.Errorf("could not persist direct-message subscription: %w", err)
+		}
+	}
 
 	resp := &mmtp.MmtpMessage{
 		MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
@@ -755,6 +990,11 @@ func handleUnsubscribeSubject(mmtpMessage *mmtp.MmtpMessage, subMu *sync.RWMutex
 		reasonText := "Tried to unsubscribe to empty subject"
 		errMsg.SendErrorMessage(mmtpMessage.GetUuid(), reasonText, request.Context(), c)
 		return nil
+	}
+	if agent.Store != nil {
+		if err := agent.Store.Unsubscribe(request.Context(), agent.ID, subject); err != nil {
+			return fmt.Errorf("could not persist unsubscribe: %w", err)
+		}
 	}
 	subMu.Lock()
 	sub, exists := subs[subject]
@@ -815,6 +1055,12 @@ func handleUnsubscribeDirect(mmtpMessage *mmtp.MmtpMessage, unsubscribe *mmtp.Un
 		outgoingChannel <- unsub
 
 		agent.directMessages = false
+		if agent.Store != nil {
+			if err := agent.Store.SetDirectMessages(request.Context(), agent.ID, false); err != nil {
+				agent.directMessages = true
+				return fmt.Errorf("could not persist direct-message unsubscribe: %w", err)
+			}
+		}
 
 		resp := &mmtp.MmtpMessage{
 			MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
@@ -966,6 +1212,11 @@ func handleIncomingMessages(ctx context.Context, edgeRouter *EdgeRouter, wg *syn
 							edgeRouter.outgoingChannel <- msg //Attempt re-send
 							continue
 						}
+						if edgeRouter.store != nil {
+							if err = edgeRouter.store.DeleteOutbox(ctx, msg.GetUuid()); err != nil {
+								log.Errorf("Could not remove acknowledged outbox message: %v", err)
+							}
+						}
 					} else {
 						if responseMsg.Response != mmtp.ResponseEnum_GOOD {
 							log.Warn("Received response with error:", responseMsg.GetReasonText())
@@ -985,7 +1236,7 @@ func handleIncomingMessages(ctx context.Context, edgeRouter *EdgeRouter, wg *syn
 
 						incomingMessage := &mmtp.MmtpMessage{
 							MsgType: mmtp.MsgType_PROTOCOL_MESSAGE,
-							Uuid:    uuid.NewString(),
+							Uuid:    msgContent.GetUuid(),
 							Body: &mmtp.MmtpMessage_ProtocolMessage{
 								ProtocolMessage: &mmtp.ProtocolMessage{
 									ProtocolMsgType: mmtp.ProtocolMessageType_SEND_MESSAGE,
@@ -1068,6 +1319,30 @@ func handleOutgoingMessages(ctx context.Context, edgeRouter *EdgeRouter, wg *syn
 				switch outgoingMessage.GetMsgType() {
 				case mmtp.MsgType_PROTOCOL_MESSAGE:
 					{
+						protoMsgType := outgoingMessage.GetProtocolMessage().GetProtocolMsgType()
+						if edgeRouter.store != nil &&
+							protoMsgType != mmtp.ProtocolMessageType_CONNECT_MESSAGE &&
+							protoMsgType != mmtp.ProtocolMessageType_DISCONNECT_MESSAGE {
+							if err := edgeRouter.store.PutOutbox(ctx, outgoingMessage); err != nil {
+								log.Errorf("Could not persist outgoing message: %v", err)
+								continue
+							}
+						}
+						expectsResponse := protoMsgType != mmtp.ProtocolMessageType_CONNECT_MESSAGE &&
+							protoMsgType != mmtp.ProtocolMessageType_DISCONNECT_MESSAGE
+						if expectsResponse {
+							edgeRouter.responseMu.Lock()
+							edgeRouter.awaitResponse[outgoingMessage.GetUuid()] = outgoingMessage
+							edgeRouter.responseMu.Unlock()
+						}
+						if edgeRouter.routerWs == nil {
+							edgeRouter.wsMu.Lock()
+							edgeRouter.TryConnectRouter(ctx)
+							edgeRouter.wsMu.Unlock()
+							if ctx.Err() != nil {
+								return
+							}
+						}
 						if err := rw.WriteMessage(ctx, edgeRouter.routerWs, outgoingMessage); err != nil {
 							log.Warn("Could not send outgoing message to MMS Router, will try again later:", err)
 							edgeRouter.outgoingChannel <- outgoingMessage
@@ -1075,14 +1350,6 @@ func handleOutgoingMessages(ctx context.Context, edgeRouter *EdgeRouter, wg *syn
 							edgeRouter.TryConnectRouter(ctx)
 							edgeRouter.wsMu.Unlock()
 							continue
-						}
-
-						protoMsgType := outgoingMessage.GetProtocolMessage().GetProtocolMsgType()
-						if protoMsgType == mmtp.ProtocolMessageType_SUBSCRIBE_MESSAGE ||
-							protoMsgType == mmtp.ProtocolMessageType_UNSUBSCRIBE_MESSAGE {
-							edgeRouter.responseMu.Lock()
-							edgeRouter.awaitResponse[outgoingMessage.GetUuid()] = outgoingMessage
-							edgeRouter.responseMu.Unlock()
 						}
 					}
 				default:
@@ -1277,9 +1544,24 @@ func runWithStderr(args []string, stderr io.Writer) error {
 	prometheusPort := flagSet.Int("prometheus-port", 2112, "The port number for the Prometheus metrics server.")
 	healthPort := flagSet.Int("health-port", 8889, "The port number for the plaintext health check server.")
 	skipRevocationCheck := flagSet.Bool("skip-revocation-check", false, "Allow client certificates that do not have OCSP or CRL endpoints for revocation checking.")
+	databasePath := flagSet.String("db", "edgerouter.db", "Path to the SQLite persistence database. Set empty to disable persistence.")
 
 	if err := flagSet.Parse(args); err != nil {
 		return err
+	}
+
+	var store *persistence.SQLiteStore
+	if *databasePath != "" {
+		openedStore, openErr := persistence.Open(*databasePath)
+		if openErr != nil {
+			return fmt.Errorf("could not open persistence database: %w", openErr)
+		}
+		store = openedStore
+		defer func() {
+			if closeErr := store.Close(); closeErr != nil {
+				log.Errorf("Could not close persistence database: %v", closeErr)
+			}
+		}()
 	}
 	if *debug {
 		log.SetLevel(log.DebugLevel)
@@ -1343,7 +1625,7 @@ func runWithStderr(args []string, stderr io.Writer) error {
 
 	wg := &sync.WaitGroup{}
 
-	er, err := NewEdgeRouter(":"+strconv.Itoa(*listeningPort), ownMrn, outgoingChannel, routerWs, ctx, wg, clientCAs, routerAddr, httpClient, *geoLoc, *skipRevocationCheck)
+	er, err := NewEdgeRouter(":"+strconv.Itoa(*listeningPort), ownMrn, outgoingChannel, routerWs, ctx, wg, clientCAs, routerAddr, httpClient, *geoLoc, *skipRevocationCheck, store)
 	if err != nil {
 		return fmt.Errorf("could not create MMS Edge Router instance: %w", err)
 	}
