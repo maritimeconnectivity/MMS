@@ -197,9 +197,9 @@ func (c *Consumer) HandleReceive(mmtpMessage *mmtp.MmtpMessage, request *http.Re
 			err := rw.WriteMessage(request.Context(), conn, resp)
 			if err != nil {
 				return fmt.Errorf("could not send messages to Consumer: %w", err)
-			} else {
-				clear(c.Messages)
 			}
+
+			clear(c.Messages)
 		}
 	}
 	return nil
