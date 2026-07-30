@@ -124,10 +124,10 @@ type EdgeRouter struct {
 	httpClient      *http.Client                 // The EdgeRouters http client if provided
 	wsMu            *sync.RWMutex                // Mutex for locking the WS upon send/recv, to properly handle if socket was closed
 	geoLocation     string                       //Lookup code for the actual position of the running instance
-	store           *persistence.SQLiteStore     // durable sessions, subscriptions, messages, and upstream outbox
+	store           persistence.Store            // sessions, subscriptions, messages, and upstream outbox
 }
 
-func NewEdgeRouter(listeningAddr string, mrn *string, outgoingChannel chan *mmtp.MmtpMessage, routerWs *websocket.Conn, ctx context.Context, wg *sync.WaitGroup, clientCAs *string, routerAddr *string, httpClient *http.Client, geoLoc string, skipRevocationCheck bool, stores ...*persistence.SQLiteStore) (*EdgeRouter, error) {
+func NewEdgeRouter(listeningAddr string, mrn *string, outgoingChannel chan *mmtp.MmtpMessage, routerWs *websocket.Conn, ctx context.Context, wg *sync.WaitGroup, clientCAs *string, routerAddr *string, httpClient *http.Client, geoLoc string, skipRevocationCheck bool, stores ...persistence.Store) (*EdgeRouter, error) {
 	subs := make(map[string]*Subscription)
 	subMu := &sync.RWMutex{}
 	agents := make(map[string]*Agent)
@@ -137,50 +137,48 @@ func NewEdgeRouter(listeningAddr string, mrn *string, outgoingChannel chan *mmtp
 	awaitResponse := make(map[string]*mmtp.MmtpMessage)
 	responseMu := &sync.RWMutex{}
 	wsMu := &sync.RWMutex{}
-	var store *persistence.SQLiteStore
+	var store persistence.Store
 	if len(stores) > 0 {
 		store = stores[0]
 	}
-
-	if store != nil {
-		if err := store.PurgeExpiredSessions(ctx, time.Now()); err != nil {
-			return nil, fmt.Errorf("purge expired agent sessions: %w", err)
+	if store == nil {
+		store = persistence.NewMemoryStore()
+	}
+	if err := store.PurgeExpiredSessions(ctx, time.Now()); err != nil {
+		return nil, fmt.Errorf("purge expired agent sessions: %w", err)
+	}
+	sessions, err := store.Sessions(ctx, persistence.SessionKindAgent)
+	if err != nil {
+		return nil, fmt.Errorf("restore agent sessions: %w", err)
+	}
+	for _, session := range sessions {
+		interests, listErr := store.Subscriptions(ctx, session.ID)
+		if listErr != nil {
+			return nil, fmt.Errorf("restore subscriptions for %s: %w", session.ID, listErr)
 		}
-		sessions, err := store.Sessions(ctx, persistence.SessionKindAgent)
-		if err != nil {
-			return nil, fmt.Errorf("restore agent sessions: %w", err)
+		agent := &Agent{
+			Consumer: consumer.Consumer{
+				ID:        session.ID,
+				Store:     store,
+				Mrn:       session.MRN,
+				Interests: interests,
+				MsgMu:     &sync.RWMutex{},
+				NotifyMu:  &sync.RWMutex{},
+			},
+			agentUuid:      session.ID,
+			directMessages: session.DirectMessages,
 		}
-		for _, session := range sessions {
-			interests, listErr := store.Subscriptions(ctx, session.ID)
-			if listErr != nil {
-				return nil, fmt.Errorf("restore subscriptions for %s: %w", session.ID, listErr)
+		agents[agent.agentUuid] = agent
+		if agent.Mrn != "" {
+			mrnToAgent[agent.Mrn] = agent
+		}
+		for _, interest := range interests {
+			sub := subs[interest]
+			if sub == nil {
+				sub = NewSubscription(interest)
+				subs[interest] = sub
 			}
-			agent := &Agent{
-				Consumer: consumer.Consumer{
-					ID:            session.ID,
-					Store:         store,
-					Mrn:           session.MRN,
-					Interests:     interests,
-					Messages:      make(map[string]*mmtp.MmtpMessage),
-					MsgMu:         &sync.RWMutex{},
-					Notifications: make(map[string]*mmtp.MmtpMessage),
-					NotifyMu:      &sync.RWMutex{},
-				},
-				agentUuid:      session.ID,
-				directMessages: session.DirectMessages,
-			}
-			agents[agent.agentUuid] = agent
-			if agent.Mrn != "" {
-				mrnToAgent[agent.Mrn] = agent
-			}
-			for _, interest := range interests {
-				sub := subs[interest]
-				if sub == nil {
-					sub = NewSubscription(interest)
-					subs[interest] = sub
-				}
-				sub.AddSubscriber(agent)
-			}
+			sub.AddSubscriber(agent)
 		}
 	}
 
@@ -226,14 +224,12 @@ func (er *EdgeRouter) connectMMTPToRouter(ctx context.Context) error {
 
 	connectBody := &mmtp.Connect{OwnMrn: er.ownMrn}
 	usedReconnectToken := false
-	if er.store != nil {
-		token, err := er.store.Setting(ctx, "router_reconnect_token")
-		if err == nil {
-			connectBody.ReconnectToken = &token
-			usedReconnectToken = true
-		} else if !errors.Is(err, persistence.ErrNotFound) {
-			return fmt.Errorf("load Router reconnect token: %w", err)
-		}
+	token, err := er.store.Setting(ctx, "router_reconnect_token")
+	if err == nil {
+		connectBody.ReconnectToken = &token
+		usedReconnectToken = true
+	} else if !errors.Is(err, persistence.ErrNotFound) {
+		return fmt.Errorf("load Router reconnect token: %w", err)
 	}
 	connect := &mmtp.MmtpMessage{
 		MsgType: mmtp.MsgType_PROTOCOL_MESSAGE,
@@ -248,7 +244,7 @@ func (er *EdgeRouter) connectMMTPToRouter(ctx context.Context) error {
 		},
 	}
 	log.Debugf("Sending message %v", connect)
-	err := rw.WriteMessage(ctx, er.routerWs, connect)
+	err = rw.WriteMessage(ctx, er.routerWs, connect)
 	if err != nil {
 		return fmt.Errorf("could not send connect message: %w", err)
 	}
@@ -260,14 +256,14 @@ func (er *EdgeRouter) connectMMTPToRouter(ctx context.Context) error {
 
 	connectResp := response.GetResponseMessage()
 	if connectResp.GetResponse() != mmtp.ResponseEnum_GOOD {
-		if er.store != nil && usedReconnectToken {
+		if usedReconnectToken {
 			if deleteErr := er.store.DeleteSetting(ctx, "router_reconnect_token"); deleteErr != nil {
 				log.Errorf("Could not discard rejected Router reconnect token: %v", deleteErr)
 			}
 		}
 		return fmt.Errorf("the MMS Router did not accept Connect: %s", connectResp.GetReasonText())
 	}
-	if er.store != nil && connectResp.GetReconnectToken() != "" {
+	if connectResp.GetReconnectToken() != "" {
 		if err = er.store.SetSetting(ctx, "router_reconnect_token", connectResp.GetReconnectToken()); err != nil {
 			return fmt.Errorf("persist Router reconnect token: %w", err)
 		}
@@ -361,14 +357,12 @@ func (er *EdgeRouter) StartEdgeRouter(ctx context.Context, wg *sync.WaitGroup, c
 
 	go er.messageGC(ctx, wg)
 
-	if er.store != nil {
-		pending, err := er.store.Outbox(ctx)
-		if err != nil {
-			log.Errorf("Could not restore persistent outbox: %v", err)
-		} else {
-			for _, message := range pending {
-				er.outgoingChannel <- message
-			}
+	pending, err := er.store.Outbox(ctx)
+	if err != nil {
+		log.Errorf("Could not restore outbox: %v", err)
+	} else {
+		for _, message := range pending {
+			er.outgoingChannel <- message
 		}
 	}
 
@@ -473,25 +467,9 @@ func (er *EdgeRouter) messageGC(ctx context.Context, wg *sync.WaitGroup) {
 		case <-ctx.Done():
 			return
 		case <-time.After(5 * time.Minute): // run every 5 minutes
-			if er.store != nil {
-				if err := er.store.PurgeExpired(ctx, time.Now()); err != nil {
-					log.Errorf("Could not purge expired persistent messages: %v", err)
-				}
-				continue
+			if err := er.store.PurgeExpired(ctx, time.Now()); err != nil {
+				log.Errorf("Could not purge expired messages: %v", err)
 			}
-			er.agentsMu.RLock()
-			now := time.Now().Unix()
-			for _, a := range er.agents {
-				a.MsgMu.Lock()
-				for _, m := range a.Messages {
-					expires := m.GetProtocolMessage().GetSendMessage().GetApplicationMessage().GetHeader().GetExpires()
-					if now > expires {
-						delete(a.Messages, m.Uuid)
-					}
-				}
-				a.MsgMu.Unlock()
-			}
-			er.agentsMu.RUnlock()
 		}
 	}
 }
@@ -527,7 +505,7 @@ func (er *EdgeRouter) handleNotify(metadata []*mmtp.MessageMetadata) error {
 	return nil
 }
 
-func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[string]*Subscription, subMu *sync.RWMutex, agents map[string]*Agent, agentsMu *sync.RWMutex, mrnToAgent map[string]*Agent, mrnToAgentMu *sync.RWMutex, ctx context.Context, wg *sync.WaitGroup, store *persistence.SQLiteStore) http.HandlerFunc {
+func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[string]*Subscription, subMu *sync.RWMutex, agents map[string]*Agent, agentsMu *sync.RWMutex, mrnToAgent map[string]*Agent, mrnToAgentMu *sync.RWMutex, ctx context.Context, wg *sync.WaitGroup, store persistence.Store) http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
 		wg.Add(1)
 		c, err := websocket.Accept(writer, request, &websocket.AcceptOptions{OriginPatterns: []string{"*"}})
@@ -606,22 +584,13 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 		var agent *Agent
 		var savedAgent *Agent
 		var ok bool
-		if store != nil && connect.GetReconnectToken() != "" {
+		if connect.GetReconnectToken() != "" {
 			session, sessionErr := store.SessionByToken(request.Context(), persistence.SessionKindAgent, connect.GetReconnectToken())
 			if sessionErr == nil && (session.MRN == "" || session.MRN == agentMrn) {
 				agentsMu.RLock()
 				savedAgent, ok = agents[session.ID]
 				agentsMu.RUnlock()
 			}
-		} else {
-			agentsMu.RLock()
-			for _, candidate := range agents {
-				if candidate.ReconnectToken == connect.GetReconnectToken() && connect.GetReconnectToken() != "" {
-					savedAgent, ok = candidate, true
-					break
-				}
-			}
-			agentsMu.RUnlock()
 		}
 		if ok {
 			agent = savedAgent
@@ -632,11 +601,9 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 				previous := mrnToAgent[agentMrn]
 				mrnToAgentMu.RUnlock()
 				if previous != nil {
-					if store != nil {
-						if err = store.DeleteSession(request.Context(), previous.ID); err != nil {
-							log.Error("Could not replace previous Agent session:", err)
-							return
-						}
+					if err = store.DeleteSession(request.Context(), previous.ID); err != nil {
+						log.Error("Could not replace previous Agent session:", err)
+						return
 					}
 					subMu.Lock()
 					for _, interest := range previous.Interests {
@@ -653,14 +620,12 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 			agentID := uuid.NewString()
 			agent = &Agent{
 				Consumer: consumer.Consumer{
-					ID:            agentID,
-					Store:         store,
-					Mrn:           agentMrn,
-					Interests:     make([]string, 0, 1),
-					Messages:      make(map[string]*mmtp.MmtpMessage),
-					MsgMu:         &sync.RWMutex{},
-					Notifications: make(map[string]*mmtp.MmtpMessage),
-					NotifyMu:      &sync.RWMutex{},
+					ID:        agentID,
+					Store:     store,
+					Mrn:       agentMrn,
+					Interests: make([]string, 0, 1),
+					MsgMu:     &sync.RWMutex{},
+					NotifyMu:  &sync.RWMutex{},
 				},
 				agentUuid:      agentID,
 				authenticated:  authenticated,
@@ -673,19 +638,17 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 			}
 		}
 		agent.ReconnectToken = uuid.NewString()
-		if store != nil {
-			session := persistence.Session{
-				ID:             agent.ID,
-				Kind:           persistence.SessionKindAgent,
-				MRN:            agent.Mrn,
-				DirectMessages: agent.directMessages,
-				CreatedAt:      time.Now(),
-				ExpiresAt:      time.Now().Add(30 * 24 * time.Hour),
-			}
-			if err = store.UpsertSession(request.Context(), session, agent.ReconnectToken); err != nil {
-				log.Error("Could not persist Agent session:", err)
-				return
-			}
+		session := persistence.Session{
+			ID:             agent.ID,
+			Kind:           persistence.SessionKindAgent,
+			MRN:            agent.Mrn,
+			DirectMessages: agent.directMessages,
+			CreatedAt:      time.Now(),
+			ExpiresAt:      time.Now().Add(30 * 24 * time.Hour),
+		}
+		if err = store.UpsertSession(request.Context(), session, agent.ReconnectToken); err != nil {
+			log.Error("Could not store Agent session:", err)
+			return
 		}
 		agentsMu.Lock()
 		agents[agent.agentUuid] = agent
@@ -817,10 +780,8 @@ func handleHttpConnection(outgoingChannel chan<- *mmtp.MmtpMessage, subs map[str
 								agentsMu.Lock()
 								delete(agents, agent.agentUuid)
 								agentsMu.Unlock()
-								if agent.Store != nil {
-									if err = agent.Store.DeleteSession(request.Context(), agent.ID); err != nil {
-										log.Error("Could not delete persistent Agent session:", err)
-									}
+								if err = agent.Store.DeleteSession(request.Context(), agent.ID); err != nil {
+									log.Error("Could not delete Agent session:", err)
 								}
 							}
 							return
@@ -893,13 +854,11 @@ func handleSubscribeSubject(mmtpMessage *mmtp.MmtpMessage, agent *Agent, subMu *
 		sub.AddSubscriber(agent)
 	}
 	subMu.Unlock()
-	if agent.Store != nil {
-		if err := agent.Store.Subscribe(request.Context(), agent.ID, subject); err != nil {
-			subMu.Lock()
-			sub.DeleteSubscriber(agent)
-			subMu.Unlock()
-			return fmt.Errorf("could not persist subscription: %w", err)
-		}
+	if err := agent.Store.Subscribe(request.Context(), agent.ID, subject); err != nil {
+		subMu.Lock()
+		sub.DeleteSubscriber(agent)
+		subMu.Unlock()
+		return fmt.Errorf("could not store subscription: %w", err)
 	}
 	agent.Interests = append(agent.Interests, subject)
 
@@ -949,11 +908,9 @@ func handleSubscribeDirect(mmtpMessage *mmtp.MmtpMessage, agent *Agent, subscrib
 	outgoingChannel <- sub
 
 	agent.directMessages = true
-	if agent.Store != nil {
-		if err := agent.Store.SetDirectMessages(request.Context(), agent.ID, true); err != nil {
-			agent.directMessages = false
-			return fmt.Errorf("could not persist direct-message subscription: %w", err)
-		}
+	if err := agent.Store.SetDirectMessages(request.Context(), agent.ID, true); err != nil {
+		agent.directMessages = false
+		return fmt.Errorf("could not store direct-message subscription: %w", err)
 	}
 
 	resp := &mmtp.MmtpMessage{
@@ -991,10 +948,8 @@ func handleUnsubscribeSubject(mmtpMessage *mmtp.MmtpMessage, subMu *sync.RWMutex
 		errMsg.SendErrorMessage(mmtpMessage.GetUuid(), reasonText, request.Context(), c)
 		return nil
 	}
-	if agent.Store != nil {
-		if err := agent.Store.Unsubscribe(request.Context(), agent.ID, subject); err != nil {
-			return fmt.Errorf("could not persist unsubscribe: %w", err)
-		}
+	if err := agent.Store.Unsubscribe(request.Context(), agent.ID, subject); err != nil {
+		return fmt.Errorf("could not store unsubscribe: %w", err)
 	}
 	subMu.Lock()
 	sub, exists := subs[subject]
@@ -1055,11 +1010,9 @@ func handleUnsubscribeDirect(mmtpMessage *mmtp.MmtpMessage, unsubscribe *mmtp.Un
 		outgoingChannel <- unsub
 
 		agent.directMessages = false
-		if agent.Store != nil {
-			if err := agent.Store.SetDirectMessages(request.Context(), agent.ID, false); err != nil {
-				agent.directMessages = true
-				return fmt.Errorf("could not persist direct-message unsubscribe: %w", err)
-			}
+		if err := agent.Store.SetDirectMessages(request.Context(), agent.ID, false); err != nil {
+			agent.directMessages = true
+			return fmt.Errorf("could not store direct-message unsubscribe: %w", err)
 		}
 
 		resp := &mmtp.MmtpMessage{
@@ -1212,10 +1165,8 @@ func handleIncomingMessages(ctx context.Context, edgeRouter *EdgeRouter, wg *syn
 							edgeRouter.outgoingChannel <- msg //Attempt re-send
 							continue
 						}
-						if edgeRouter.store != nil {
-							if err = edgeRouter.store.DeleteOutbox(ctx, msg.GetUuid()); err != nil {
-								log.Errorf("Could not remove acknowledged outbox message: %v", err)
-							}
+						if err = edgeRouter.store.DeleteOutbox(ctx, msg.GetUuid()); err != nil {
+							log.Errorf("Could not remove acknowledged outbox message: %v", err)
 						}
 					} else {
 						if responseMsg.Response != mmtp.ResponseEnum_GOOD {
@@ -1320,11 +1271,10 @@ func handleOutgoingMessages(ctx context.Context, edgeRouter *EdgeRouter, wg *syn
 				case mmtp.MsgType_PROTOCOL_MESSAGE:
 					{
 						protoMsgType := outgoingMessage.GetProtocolMessage().GetProtocolMsgType()
-						if edgeRouter.store != nil &&
-							protoMsgType != mmtp.ProtocolMessageType_CONNECT_MESSAGE &&
+						if protoMsgType != mmtp.ProtocolMessageType_CONNECT_MESSAGE &&
 							protoMsgType != mmtp.ProtocolMessageType_DISCONNECT_MESSAGE {
 							if err := edgeRouter.store.PutOutbox(ctx, outgoingMessage); err != nil {
-								log.Errorf("Could not persist outgoing message: %v", err)
+								log.Errorf("Could not store outgoing message: %v", err)
 								continue
 							}
 						}
@@ -1550,19 +1500,21 @@ func runWithStderr(args []string, stderr io.Writer) error {
 		return err
 	}
 
-	var store *persistence.SQLiteStore
+	var store persistence.Store
 	if *databasePath != "" {
 		openedStore, openErr := persistence.Open(*databasePath)
 		if openErr != nil {
 			return fmt.Errorf("could not open persistence database: %w", openErr)
 		}
 		store = openedStore
-		defer func() {
-			if closeErr := store.Close(); closeErr != nil {
-				log.Errorf("Could not close persistence database: %v", closeErr)
-			}
-		}()
+	} else {
+		store = persistence.NewMemoryStore()
 	}
+	defer func() {
+		if closeErr := store.Close(); closeErr != nil {
+			log.Errorf("Could not close state store: %v", closeErr)
+		}
+	}()
 	if *debug {
 		log.SetLevel(log.DebugLevel)
 		log.Info("Operating in Debug mode")

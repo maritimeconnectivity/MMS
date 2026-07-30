@@ -32,6 +32,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/google/uuid"
 	"github.com/maritimeconnectivity/MMS/mmtp"
+	"github.com/maritimeconnectivity/MMS/persistence"
 	"github.com/maritimeconnectivity/MMS/utils/rw"
 	"github.com/stretchr/testify/require"
 )
@@ -46,6 +47,7 @@ type testAgentConnection struct {
 	agentsMu     *sync.RWMutex
 	mrnToAgent   map[string]*Agent
 	mrnToAgentMu *sync.RWMutex
+	store        persistence.Store
 }
 
 func newConnectMessage() *mmtp.MmtpMessage {
@@ -176,8 +178,9 @@ func openTestAgentConnection(t *testing.T) *testAgentConnection {
 	agentsMu := &sync.RWMutex{}
 	mrnToAgentMu := &sync.RWMutex{}
 	wg := &sync.WaitGroup{}
+	store := persistence.NewMemoryStore()
 
-	server := httptest.NewServer(handleHttpConnection(receiveChannel, subs, subMu, agents, agentsMu, mrnToAgent, mrnToAgentMu, serverCtx, wg, nil))
+	server := httptest.NewServer(handleHttpConnection(receiveChannel, subs, subMu, agents, agentsMu, mrnToAgent, mrnToAgentMu, serverCtx, wg, store))
 	t.Cleanup(server.Close)
 	t.Cleanup(ioCancel)
 	t.Cleanup(cancel)
@@ -212,6 +215,7 @@ func openTestAgentConnection(t *testing.T) *testAgentConnection {
 		agentsMu:     agentsMu,
 		mrnToAgent:   mrnToAgent,
 		mrnToAgentMu: mrnToAgentMu,
+		store:        store,
 	}
 }
 
@@ -371,19 +375,15 @@ func TestSubscribeAndNotifyQueuesRouterMessageForSubscribedAgent(t *testing.T) {
 		return false
 	}, time.Second, 10*time.Millisecond)
 
+	var queuedMessages []*mmtp.MmtpMessage
 	require.Eventually(t, func() bool {
-		subscribedAgent.MsgMu.RLock()
-		defer subscribedAgent.MsgMu.RUnlock()
-		return len(subscribedAgent.Messages) == 1
+		var fetchErr error
+		queuedMessages, fetchErr = agentConn.store.FetchMessages(agentConn.ctx, subscribedAgent.ID, nil)
+		require.NoError(t, fetchErr)
+		return len(queuedMessages) == 1
 	}, time.Second, 10*time.Millisecond)
 
-	subscribedAgent.MsgMu.RLock()
-	var queuedMessage *mmtp.MmtpMessage
-	for _, message := range subscribedAgent.Messages {
-		queuedMessage = message
-		break
-	}
-	subscribedAgent.MsgMu.RUnlock()
+	queuedMessage := queuedMessages[0]
 	require.NotNil(t, queuedMessage)
 	require.NotEmpty(t, queuedMessage.GetUuid())
 	require.Equal(t, mmtp.MsgType_PROTOCOL_MESSAGE, queuedMessage.GetMsgType())
@@ -450,7 +450,7 @@ func TestRunReturnsErrors(t *testing.T) {
 		{
 			name: "invalid TLS CA path",
 			args: func(t *testing.T) []string {
-				return []string{"-tlsca", filepath.Join(t.TempDir(), "missing-ca.pem")}
+				return []string{"-db", "", "-tlsca", filepath.Join(t.TempDir(), "missing-ca.pem")}
 			},
 			expectedErrorContains: "could not load configured TLS CAs",
 		},
@@ -458,6 +458,7 @@ func TestRunReturnsErrors(t *testing.T) {
 			name: "invalid client CA path",
 			args: func(t *testing.T) []string {
 				return []string{
+					"-db", "",
 					"-raddr", "ws://127.0.0.1:1",
 					"-client-ca", filepath.Join(t.TempDir(), "missing-client-ca.pem"),
 				}
