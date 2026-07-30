@@ -72,3 +72,8 @@ go.work
 
 # Compiled binaries
 bin/
+
+# Local MMS persistence databases
+*.db
+*.db-shm
+*.db-wal

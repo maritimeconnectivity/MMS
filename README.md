@@ -90,6 +90,8 @@ restrictions on the allowed operations.
 * `health-port` The port number for the plaintext health check server, exposing a `/health` endpoint. Defaults to
   `8889`.
 * `skip-revocation-check` Allow client certificates that do not have OCSP or CRL endpoints for revocation checking.
+* `db` Path to the local SQLite persistence database. Defaults to `edgerouter.db`. Set to an empty string to disable
+  persistence.
 
 #### Usage example
 
@@ -126,6 +128,11 @@ restrictions on the allowed operations.
 * `health-port` The port number for the plaintext health check server, exposing a `/health` endpoint. Defaults to
   `8081`.
 * `skip-revocation-check` Allow client certificates that do not have OCSP or CRL endpoints for revocation checking.
+* `db` Path to the local SQLite persistence database. Defaults to `router.db`. Set to an empty string to disable
+  persistence.
+
+Each Router and Edge Router must use its own database file on local storage. When running in a container, mount the
+database path on a persistent volume. SQLite database files must not be shared between multiple Router replicas.
 
 #### Usage example
 
