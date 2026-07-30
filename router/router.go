@@ -885,13 +885,11 @@ func runPrometheusMetricsServer(ctx context.Context, wg *sync.WaitGroup, reg *pr
 
 	http.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		if err := server.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 			log.Errorf("ListenAndServe(): %s", err)
 		}
-	}()
+	})
 
 	// Listen for context cancellation to gracefully shutdown the server
 	<-ctx.Done()
