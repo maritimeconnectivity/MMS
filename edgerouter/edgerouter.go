@@ -267,7 +267,7 @@ func (er *EdgeRouter) StartEdgeRouter(ctx context.Context, wg *sync.WaitGroup, c
 		}
 
 		response, _, err := rw.ReadMessage(context.Background(), er.routerWs)
-		if err != nil || response.GetResponseMessage().Response != mmtp.ResponseEnum_GOOD {
+		if err != nil || response.GetResponseMessage().GetResponse() != mmtp.ResponseEnum_GOOD {
 			log.Warn("Graceful disconnect from Router failed")
 		}
 
