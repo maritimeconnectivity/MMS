@@ -33,104 +33,51 @@ import (
 )
 
 type Consumer struct {
-	ID             string                       // stable identifier used by the persistence layer
-	Store          *persistence.SQLiteStore     // durable state; nil retains the in-memory implementation
-	Mrn            string                       // the MRN of the Consumer
-	Interests      []string                     // the Interests that the Consumer wants to subscribe to
-	Messages       map[string]*mmtp.MmtpMessage // the incoming messages for this Consumer
-	MsgMu          *sync.RWMutex                // RWMutex for locking the Messages map
-	ReconnectToken string                       // token for reconnecting to a previous session
-	Notifications  map[string]*mmtp.MmtpMessage // Map containing pointers to messages, which the Consumer should be notified about
-	NotifyMu       *sync.RWMutex                // a Mutex for Notifications map
+	ID             string            // stable identifier used by the state store
+	Store          persistence.Store // message and session state backend
+	Mrn            string            // the MRN of the Consumer
+	Interests      []string          // the Interests that the Consumer wants to subscribe to
+	MsgMu          *sync.RWMutex     // serializes fetch and receive operations
+	ReconnectToken string            // token for reconnecting to a previous session
+	NotifyMu       *sync.RWMutex     // serializes notification operations
 }
 
 func (c *Consumer) QueueMessage(mmtpMessage *mmtp.MmtpMessage) error {
-	if c != nil {
-		uUid := mmtpMessage.GetUuid()
-		if uUid == "" {
-			return fmt.Errorf("the message does not contain a UUID")
-		}
-		if c.Store != nil {
-			if c.ID == "" {
-				return fmt.Errorf("consumer does not have a persistent session ID")
-			}
-			return c.Store.QueueMessage(context.Background(), []string{c.ID}, mmtpMessage)
-		}
-		c.MsgMu.Lock()
-		c.Messages[uUid] = mmtpMessage
-		c.MsgMu.Unlock()
-		c.NotifyMu.Lock()
-		c.Notifications[uUid] = mmtpMessage
-		c.NotifyMu.Unlock()
-	} else {
+	if c == nil {
 		return fmt.Errorf("consumer resolved to nil while trying to queue message")
 	}
-	return nil
-}
-
-func (c *Consumer) BulkQueueMessages(mmtpMessages []*mmtp.MmtpMessage) {
-	if c != nil {
-		if c.Store != nil {
-			for _, message := range mmtpMessages {
-				if err := c.Store.QueueMessage(context.Background(), []string{c.ID}, message); err != nil {
-					log.Printf("Could not restore persistent message %s: %v", message.GetUuid(), err)
-				}
-			}
-			return
-		}
-		c.MsgMu.Lock()
-		for _, message := range mmtpMessages {
-			c.Messages[message.Uuid] = message
-		}
-		c.MsgMu.Unlock()
+	if mmtpMessage.GetUuid() == "" {
+		return fmt.Errorf("the message does not contain a UUID")
 	}
+	if c.ID == "" {
+		return fmt.Errorf("consumer does not have a session ID")
+	}
+	return c.Store.QueueMessage(context.Background(), []string{c.ID}, mmtpMessage)
 }
 
 func (c *Consumer) notify(ctx context.Context, conn *websocket.Conn) error {
-	if c.Store != nil {
-		messages, err := c.Store.PendingNotifications(ctx, c.ID)
-		if err != nil {
-			return fmt.Errorf("load pending notifications: %w", err)
-		}
-		if len(messages) == 0 {
-			return nil
-		}
-		notifications := make([]*mmtp.MessageMetadata, 0, len(messages))
-		uuids := make([]string, 0, len(messages))
-		for _, message := range messages {
-			notifications = append(notifications, &mmtp.MessageMetadata{
-				Uuid:   message.GetUuid(),
-				Header: message.GetProtocolMessage().GetSendMessage().GetApplicationMessage().GetHeader(),
-			})
-			uuids = append(uuids, message.GetUuid())
-		}
-		notifyMessage := newNotifyMessage(notifications)
-		if err = rw.WriteMessage(ctx, conn, notifyMessage); err != nil {
-			return fmt.Errorf("could not send Notify to Consumer: %w", err)
-		}
-		if err = c.Store.MarkNotified(ctx, c.ID, uuids); err != nil {
-			return fmt.Errorf("mark notifications sent: %w", err)
-		}
+	messages, err := c.Store.PendingNotifications(ctx, c.ID)
+	if err != nil {
+		return fmt.Errorf("load pending notifications: %w", err)
+	}
+	if len(messages) == 0 {
 		return nil
 	}
-
-	notifications := make([]*mmtp.MessageMetadata, 0, len(c.Notifications))
-	for _, mmtpMsg := range c.Notifications {
-		msgMetadata := &mmtp.MessageMetadata{
-			Uuid:   mmtpMsg.GetUuid(),
-			Header: mmtpMsg.GetProtocolMessage().GetSendMessage().GetApplicationMessage().GetHeader(),
-		}
-		notifications = append(notifications, msgMetadata)
+	notifications := make([]*mmtp.MessageMetadata, 0, len(messages))
+	uuids := make([]string, 0, len(messages))
+	for _, message := range messages {
+		notifications = append(notifications, &mmtp.MessageMetadata{
+			Uuid:   message.GetUuid(),
+			Header: message.GetProtocolMessage().GetSendMessage().GetApplicationMessage().GetHeader(),
+		})
+		uuids = append(uuids, message.GetUuid())
 	}
-
-	notifyMsg := newNotifyMessage(notifications)
-	err := rw.WriteMessage(ctx, conn, notifyMsg)
-	if err != nil {
-		log.Println("Could not send notify")
-		return fmt.Errorf("could not send Notify to Producer: %w", err)
+	notifyMessage := newNotifyMessage(notifications)
+	if err = rw.WriteMessage(ctx, conn, notifyMessage); err != nil {
+		return fmt.Errorf("could not send Notify to Consumer: %w", err)
 	}
-	for msgUuid := range c.Notifications {
-		delete(c.Notifications, msgUuid)
+	if err = c.Store.MarkNotified(ctx, c.ID, uuids); err != nil {
+		return fmt.Errorf("mark notifications sent: %w", err)
 	}
 	return nil
 }
@@ -160,19 +107,9 @@ func (c *Consumer) CheckNewMessages(ctx context.Context, conn *websocket.Conn, w
 		case <-ctx.Done():
 			return
 		case <-time.After(5 * time.Second):
-			if c.Store != nil {
-				c.NotifyMu.Lock()
-				if err := c.notify(ctx, conn); err != nil {
-					log.Println("Failed Notifying Agent:", err)
-				}
-				c.NotifyMu.Unlock()
-				continue
-			}
 			c.NotifyMu.Lock()
-			if len(c.Notifications) > 0 {
-				if err := c.notify(ctx, conn); err != nil {
-					log.Println("Failed Notifying Agent:", err)
-				}
+			if err := c.notify(ctx, conn); err != nil {
+				log.Println("Failed Notifying Agent:", err)
 			}
 			c.NotifyMu.Unlock()
 			continue
@@ -183,88 +120,10 @@ func (c *Consumer) CheckNewMessages(ctx context.Context, conn *websocket.Conn, w
 // HandleReceive handles request from consumer to receive messages, i.e. lookups buffered messages for the consumer and
 // sends these messages to that consumer
 func (c *Consumer) HandleReceive(mmtpMessage *mmtp.MmtpMessage, request *http.Request, conn *websocket.Conn) error {
-	if receive := mmtpMessage.GetProtocolMessage().GetReceiveMessage(); receive != nil {
-		if c.Store != nil {
-			return c.handlePersistentReceive(mmtpMessage, receive, request, conn)
-		}
-		if msgUuids := receive.GetFilter().GetMessageUuids(); msgUuids != nil {
-			msgsLen := len(msgUuids)
-			mmtpMessages := make([]*mmtp.MmtpMessage, 0, msgsLen)
-			msgContents := make([]*mmtp.MessageContent, 0, msgsLen)
-			c.MsgMu.Lock()
-			c.NotifyMu.Lock()
-			for _, msgUuid := range msgUuids {
-				mmtpMsg, exists := c.Messages[msgUuid]
-				if exists {
-					msg := mmtpMsg.GetProtocolMessage().GetSendMessage().GetApplicationMessage()
-					mmtpMessages = append(mmtpMessages, mmtpMsg)
-					msgContents = append(msgContents, &mmtp.MessageContent{
-						Uuid: msgUuid,
-						Msg:  msg,
-					})
-					delete(c.Messages, msgUuid)
-					delete(c.Notifications, msgUuid) //Delete upcoming notification
-				}
-			}
-			c.NotifyMu.Unlock()
-			resp := &mmtp.MmtpMessage{
-				MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
-				Uuid:    uuid.NewString(),
-				Body: &mmtp.MmtpMessage_ResponseMessage{ResponseMessage: &mmtp.ResponseMessage{
-					ResponseToUuid: mmtpMessage.GetUuid(),
-					Response:       mmtp.ResponseEnum_GOOD,
-					MessageContent: msgContents,
-				}},
-			}
-			err := rw.WriteMessage(request.Context(), conn, resp)
-			c.MsgMu.Unlock()
-			if err != nil {
-				c.BulkQueueMessages(mmtpMessages)
-				return fmt.Errorf("could not send messages to Consumer: %w", err)
-			}
-		} else { // Receive all messages
-			c.MsgMu.Lock()
-			msgsLen := len(c.Messages)
-			msgContents := make([]*mmtp.MessageContent, 0, msgsLen)
-
-			now := time.Now().Unix()
-			c.NotifyMu.Lock()
-			for msgUuid, mmtpMsg := range c.Messages {
-				msg := mmtpMsg.GetProtocolMessage().GetSendMessage().GetApplicationMessage()
-				if now <= msg.Header.Expires {
-					//Create new msg Content entry
-					msgContents = append(msgContents, &mmtp.MessageContent{
-						Uuid: msgUuid,
-						Msg:  msg,
-					})
-					delete(c.Notifications, msgUuid) //Delete upcoming notification
-				}
-			}
-			c.NotifyMu.Unlock()
-			resp := &mmtp.MmtpMessage{
-				MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
-				Uuid:    uuid.NewString(),
-				Body: &mmtp.MmtpMessage_ResponseMessage{ResponseMessage: &mmtp.ResponseMessage{
-					ResponseToUuid: mmtpMessage.GetUuid(),
-					Response:       mmtp.ResponseEnum_GOOD,
-					MessageContent: msgContents,
-				}},
-			}
-
-			defer c.MsgMu.Unlock()
-
-			err := rw.WriteMessage(request.Context(), conn, resp)
-			if err != nil {
-				return fmt.Errorf("could not send messages to Consumer: %w", err)
-			}
-
-			clear(c.Messages)
-		}
+	receive := mmtpMessage.GetProtocolMessage().GetReceiveMessage()
+	if receive == nil {
+		return nil
 	}
-	return nil
-}
-
-func (c *Consumer) handlePersistentReceive(mmtpMessage *mmtp.MmtpMessage, receive *mmtp.Receive, request *http.Request, conn *websocket.Conn) error {
 	c.MsgMu.Lock()
 	defer c.MsgMu.Unlock()
 	c.NotifyMu.Lock()
@@ -276,7 +135,7 @@ func (c *Consumer) handlePersistentReceive(mmtpMessage *mmtp.MmtpMessage, receiv
 	}
 	messages, err := c.Store.FetchMessages(request.Context(), c.ID, requested)
 	if err != nil {
-		return fmt.Errorf("load persistent messages: %w", err)
+		return fmt.Errorf("load messages: %w", err)
 	}
 	contents := make([]*mmtp.MessageContent, 0, len(messages))
 	delivered := make([]string, 0, len(messages))
@@ -301,7 +160,7 @@ func (c *Consumer) handlePersistentReceive(mmtpMessage *mmtp.MmtpMessage, receiv
 		return fmt.Errorf("could not send messages to Consumer: %w", err)
 	}
 	if err = c.Store.DeleteDeliveries(request.Context(), c.ID, delivered); err != nil {
-		return fmt.Errorf("delete delivered persistent messages: %w", err)
+		return fmt.Errorf("delete delivered messages: %w", err)
 	}
 	return nil
 }
@@ -334,52 +193,19 @@ func (c *Consumer) HandleDisconnect(mmtpMessage *mmtp.MmtpMessage, request *http
 // HandleFetch fetches message metadata for messages addressed to consumer, and informs consumer about these (metadata only)
 func (c *Consumer) HandleFetch(mmtpMessage *mmtp.MmtpMessage, request *http.Request, conn *websocket.Conn) error {
 	if fetch := mmtpMessage.GetProtocolMessage().GetFetchMessage(); fetch != nil {
-		if c.Store != nil {
-			c.MsgMu.Lock()
-			defer c.MsgMu.Unlock()
-			messages, err := c.Store.FetchMessages(request.Context(), c.ID, nil)
-			if err != nil {
-				return fmt.Errorf("load persistent message metadata: %w", err)
-			}
-			metadata := make([]*mmtp.MessageMetadata, 0, len(messages))
-			for _, message := range messages {
-				metadata = append(metadata, &mmtp.MessageMetadata{
-					Uuid: message.GetUuid(),
-					Header: message.GetProtocolMessage().GetSendMessage().
-						GetApplicationMessage().GetHeader(),
-				})
-			}
-			resp := &mmtp.MmtpMessage{
-				MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
-				Uuid:    uuid.NewString(),
-				Body: &mmtp.MmtpMessage_ResponseMessage{
-					ResponseMessage: &mmtp.ResponseMessage{
-						ResponseToUuid:  mmtpMessage.GetUuid(),
-						Response:        mmtp.ResponseEnum_GOOD,
-						MessageMetadata: metadata,
-					}},
-			}
-			if err = rw.WriteMessage(request.Context(), conn, resp); err != nil {
-				return fmt.Errorf("could not send fetch response to Consumer: %w", err)
-			}
-			return nil
-		}
 		c.MsgMu.Lock()
 		defer c.MsgMu.Unlock()
-		metadata := make([]*mmtp.MessageMetadata, 0, len(c.Messages))
-		now := time.Now().Unix()
-		for _, msg := range c.Messages {
-			msgHeader := msg.GetProtocolMessage().GetSendMessage().GetApplicationMessage().GetHeader()
-			// If the message has expired, we might as well just delete it
-			if msgHeader.Expires < now {
-				delete(c.Messages, msg.Uuid)
-			} else {
-				msgMetadata := &mmtp.MessageMetadata{
-					Uuid:   msg.GetUuid(),
-					Header: msgHeader,
-				}
-				metadata = append(metadata, msgMetadata)
-			}
+		messages, err := c.Store.FetchMessages(request.Context(), c.ID, nil)
+		if err != nil {
+			return fmt.Errorf("load message metadata: %w", err)
+		}
+		metadata := make([]*mmtp.MessageMetadata, 0, len(messages))
+		for _, message := range messages {
+			metadata = append(metadata, &mmtp.MessageMetadata{
+				Uuid: message.GetUuid(),
+				Header: message.GetProtocolMessage().GetSendMessage().
+					GetApplicationMessage().GetHeader(),
+			})
 		}
 		resp := &mmtp.MmtpMessage{
 			MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
@@ -391,8 +217,7 @@ func (c *Consumer) HandleFetch(mmtpMessage *mmtp.MmtpMessage, request *http.Requ
 					MessageMetadata: metadata,
 				}},
 		}
-		err := rw.WriteMessage(request.Context(), conn, resp)
-		if err != nil {
+		if err = rw.WriteMessage(request.Context(), conn, resp); err != nil {
 			return fmt.Errorf("could not send fetch response to Consumer: %w", err)
 		}
 	}
