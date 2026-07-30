@@ -991,7 +991,7 @@ func setupLibP2P(ctx context.Context, libp2pPort *int, privKeyFilePath *string, 
 		}
 	}
 
-	kademlia, err := dht.New(ctx, node, dht.Mode(dht.ModeAutoServer), dht.BootstrapPeers(beacons...))
+	kademlia, err := dht.New(node, dht.Mode(dht.ModeAutoServer), dht.BootstrapPeers(beacons...))
 	if err != nil {
 		panic(err)
 	}
