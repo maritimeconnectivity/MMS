@@ -177,7 +177,7 @@ func openTestAgentConnection(t *testing.T) *testAgentConnection {
 	mrnToAgentMu := &sync.RWMutex{}
 	wg := &sync.WaitGroup{}
 
-	server := httptest.NewServer(handleHttpConnection(receiveChannel, subs, subMu, agents, agentsMu, mrnToAgent, mrnToAgentMu, serverCtx, wg))
+	server := httptest.NewServer(handleHttpConnection(receiveChannel, subs, subMu, agents, agentsMu, mrnToAgent, mrnToAgentMu, serverCtx, wg, nil))
 	t.Cleanup(server.Close)
 	t.Cleanup(ioCancel)
 	t.Cleanup(cancel)
