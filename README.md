@@ -18,6 +18,7 @@ incurred from its use.
 ## Prerequisites
 
 * Go version 1.26 or higher
+* GCC to compile SQLite
 
 ## Build
 
