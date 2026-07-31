@@ -27,7 +27,9 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/google/uuid"
 	"github.com/maritimeconnectivity/MMS/mmtp"
+	"github.com/maritimeconnectivity/MMS/persistence"
 	"github.com/maritimeconnectivity/MMS/utils/rw"
 	"github.com/stretchr/testify/require"
 )
@@ -35,13 +37,13 @@ import (
 func TestQueueMessageAddsMessageAndNotification(t *testing.T) {
 	t.Parallel()
 
-	consumer := newTestConsumer()
+	consumer := newTestConsumer(t)
 	message := newStoredMessage("message-1", time.Now().Add(time.Hour).Unix())
 
 	err := consumer.QueueMessage(message)
 	require.NoError(t, err)
-	require.Same(t, message, consumer.Messages[message.GetUuid()])
-	require.Same(t, message, consumer.Notifications[message.GetUuid()])
+	require.Equal(t, []string{message.GetUuid()}, fetchUUIDs(t, consumer))
+	require.Equal(t, []string{message.GetUuid()}, notificationUUIDs(t, consumer))
 }
 
 func TestQueueMessageErrors(t *testing.T) {
@@ -50,7 +52,7 @@ func TestQueueMessageErrors(t *testing.T) {
 	t.Run("missing UUID", func(t *testing.T) {
 		t.Parallel()
 
-		consumer := newTestConsumer()
+		consumer := newTestConsumer(t)
 		err := consumer.QueueMessage(newStoredMessage("", time.Now().Add(time.Hour).Unix()))
 		require.ErrorContains(t, err, "does not contain a UUID")
 	})
@@ -64,33 +66,34 @@ func TestQueueMessageErrors(t *testing.T) {
 	})
 }
 
-func TestBulkQueueMessagesStoresEveryMessage(t *testing.T) {
+func TestQueueMessageStoresEveryMessage(t *testing.T) {
 	t.Parallel()
 
-	consumer := newTestConsumer()
+	consumer := newTestConsumer(t)
 	messages := []*mmtp.MmtpMessage{
 		newStoredMessage("message-1", time.Now().Add(time.Hour).Unix()),
 		newStoredMessage("message-2", time.Now().Add(2*time.Hour).Unix()),
 		newStoredMessage("message-3", time.Now().Add(3*time.Hour).Unix()),
 	}
 
-	consumer.BulkQueueMessages(messages)
-
-	require.Len(t, consumer.Messages, len(messages))
-
 	for _, message := range messages {
-		require.Same(t, message, consumer.Messages[message.GetUuid()])
+		require.NoError(t, consumer.QueueMessage(message))
 	}
+
+	expected := make([]string, 0, len(messages))
+	for _, message := range messages {
+		expected = append(expected, message.GetUuid())
+	}
+	sort.Strings(expected)
+	require.Equal(t, expected, fetchUUIDs(t, consumer))
 }
 
-func TestHandleFetchReturnsUnexpiredMetadataAndDeletesExpiredMessages(t *testing.T) {
+func TestHandleFetchReturnsQueuedMetadata(t *testing.T) {
 	t.Parallel()
 
-	consumer := newTestConsumer()
-	expired := newStoredMessage("expired-message", time.Now().Add(-time.Hour).Unix())
+	consumer := newTestConsumer(t)
 	active := newStoredMessage("active-message", time.Now().Add(time.Hour).Unix())
-	consumer.Messages[expired.GetUuid()] = expired
-	consumer.Messages[active.GetUuid()] = active
+	require.NoError(t, consumer.QueueMessage(active))
 
 	requestMessage := newFetchRequest("fetch-request")
 	response, err := runHandlerOverWebsocket(t, func(request *http.Request, conn *websocket.Conn) error {
@@ -100,21 +103,19 @@ func TestHandleFetchReturnsUnexpiredMetadataAndDeletesExpiredMessages(t *testing
 	require.Equal(t, requestMessage.GetUuid(), response.GetResponseMessage().GetResponseToUuid())
 	require.Equal(t, mmtp.ResponseEnum_GOOD, response.GetResponseMessage().GetResponse())
 	require.Equal(t, []string{active.GetUuid()}, sortedMetadataUUIDs(response.GetResponseMessage().GetMessageMetadata()))
-	require.NotContains(t, consumer.Messages, expired.GetUuid())
-	require.Same(t, active, consumer.Messages[active.GetUuid()])
+	require.Equal(t, []string{active.GetUuid()}, fetchUUIDs(t, consumer))
 }
 
 func TestHandleReceiveReturnsRequestedMessagesAndRemovesThem(t *testing.T) {
 	t.Parallel()
 
-	consumer := newTestConsumer()
+	consumer := newTestConsumer(t)
 	first := newStoredMessage("message-1", time.Now().Add(time.Hour).Unix())
 	second := newStoredMessage("message-2", time.Now().Add(2*time.Hour).Unix())
 	third := newStoredMessage("message-3", time.Now().Add(3*time.Hour).Unix())
 
 	for _, message := range []*mmtp.MmtpMessage{first, second, third} {
-		consumer.Messages[message.GetUuid()] = message
-		consumer.Notifications[message.GetUuid()] = message
+		require.NoError(t, consumer.QueueMessage(message))
 	}
 
 	requestMessage := newReceiveRequest("receive-request", []string{first.GetUuid(), third.GetUuid()})
@@ -124,24 +125,19 @@ func TestHandleReceiveReturnsRequestedMessagesAndRemovesThem(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, requestMessage.GetUuid(), response.GetResponseMessage().GetResponseToUuid())
 	require.ElementsMatch(t, []string{first.GetUuid(), third.GetUuid()}, sortedContentUUIDs(response.GetResponseMessage().GetMessageContent()))
-	require.NotContains(t, consumer.Messages, first.GetUuid())
-	require.NotContains(t, consumer.Messages, third.GetUuid())
-	require.Same(t, second, consumer.Messages[second.GetUuid()])
-	require.NotContains(t, consumer.Notifications, first.GetUuid())
-	require.NotContains(t, consumer.Notifications, third.GetUuid())
-	require.Same(t, second, consumer.Notifications[second.GetUuid()])
+	require.Equal(t, []string{second.GetUuid()}, fetchUUIDs(t, consumer))
+	require.Equal(t, []string{second.GetUuid()}, notificationUUIDs(t, consumer))
 }
 
 func TestHandleReceiveRequeuesMessagesWhenWriteFails(t *testing.T) {
 	t.Parallel()
 
-	consumer := newTestConsumer()
+	consumer := newTestConsumer(t)
 	first := newStoredMessage("message-1", time.Now().Add(time.Hour).Unix())
 	second := newStoredMessage("message-2", time.Now().Add(2*time.Hour).Unix())
 
 	for _, message := range []*mmtp.MmtpMessage{first, second} {
-		consumer.Messages[message.GetUuid()] = message
-		consumer.Notifications[message.GetUuid()] = message
+		require.NoError(t, consumer.QueueMessage(message))
 	}
 
 	request := httptest.NewRequest(http.MethodGet, "http://example.invalid/receive", nil)
@@ -149,8 +145,7 @@ func TestHandleReceiveRequeuesMessagesWhenWriteFails(t *testing.T) {
 
 	err := consumer.HandleReceive(requestMessage, request, nil)
 	require.ErrorContains(t, err, "could not send messages to Consumer")
-	require.Same(t, first, consumer.Messages[first.GetUuid()])
-	require.Same(t, second, consumer.Messages[second.GetUuid()])
+	require.Equal(t, []string{first.GetUuid(), second.GetUuid()}, fetchUUIDs(t, consumer))
 }
 
 func TestHandleDisconnectSendsResponseAndClosesConnection(t *testing.T) {
@@ -158,7 +153,7 @@ func TestHandleDisconnectSendsResponseAndClosesConnection(t *testing.T) {
 
 	requestMessage := newDisconnectRequest("disconnect-request")
 	response, err := runHandlerOverWebsocket(t, func(request *http.Request, conn *websocket.Conn) error {
-		return newTestConsumer().HandleDisconnect(requestMessage, request, conn)
+		return newTestConsumer(t).HandleDisconnect(requestMessage, request, conn)
 	})
 	require.NoError(t, err)
 	require.Equal(t, requestMessage.GetUuid(), response.GetResponseMessage().GetResponseToUuid())
@@ -166,13 +161,53 @@ func TestHandleDisconnectSendsResponseAndClosesConnection(t *testing.T) {
 	require.Equal(t, mmtp.MsgType_RESPONSE_MESSAGE, response.GetMsgType())
 }
 
-func newTestConsumer() *Consumer {
-	return &Consumer{
-		Messages:      make(map[string]*mmtp.MmtpMessage),
-		MsgMu:         &sync.RWMutex{},
-		Notifications: make(map[string]*mmtp.MmtpMessage),
-		NotifyMu:      &sync.RWMutex{},
+func newTestConsumer(t *testing.T) *Consumer {
+	t.Helper()
+
+	store := persistence.NewMemoryStore()
+	id := uuid.NewString()
+	session := persistence.Session{
+		ID:        id,
+		Kind:      persistence.SessionKindAgent,
+		CreatedAt: time.Now(),
+		ExpiresAt: time.Now().Add(time.Hour),
 	}
+	require.NoError(t, store.UpsertSession(context.Background(), session, "test-token"))
+
+	return &Consumer{
+		ID:       id,
+		Store:    store,
+		MsgMu:    &sync.RWMutex{},
+		NotifyMu: &sync.RWMutex{},
+	}
+}
+
+// fetchUUIDs returns the UUIDs of every message currently queued for the consumer, sorted for
+// deterministic comparison.
+func fetchUUIDs(t *testing.T, consumer *Consumer) []string {
+	t.Helper()
+	messages, err := consumer.Store.FetchMessages(context.Background(), consumer.ID, nil)
+	require.NoError(t, err)
+	uuids := make([]string, 0, len(messages))
+	for _, message := range messages {
+		uuids = append(uuids, message.GetUuid())
+	}
+	sort.Strings(uuids)
+	return uuids
+}
+
+// notificationUUIDs returns the UUIDs of every message still pending a NOTIFY for the consumer,
+// sorted for deterministic comparison.
+func notificationUUIDs(t *testing.T, consumer *Consumer) []string {
+	t.Helper()
+	messages, err := consumer.Store.PendingNotifications(context.Background(), consumer.ID)
+	require.NoError(t, err)
+	uuids := make([]string, 0, len(messages))
+	for _, message := range messages {
+		uuids = append(uuids, message.GetUuid())
+	}
+	sort.Strings(uuids)
+	return uuids
 }
 
 func newStoredMessage(uuid string, expires int64) *mmtp.MmtpMessage {
