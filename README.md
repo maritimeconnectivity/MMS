@@ -24,7 +24,7 @@ incurred from its use.
 
 A Makefile has been provided in the root directory.
 
-* Build all targets at once with: `Make all`
+* Build all targets at once with: `make all`
 * All executables will be placed in the `/bin` directory
 * *Alternatively navigate to each directory in turn, and build the executables independently
   using `go build <target.go>`*
