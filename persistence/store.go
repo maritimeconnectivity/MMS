@@ -26,8 +26,8 @@ import (
 	"time"
 
 	"github.com/maritimeconnectivity/MMS/mmtp"
+	_ "github.com/mattn/go-sqlite3"
 	"google.golang.org/protobuf/proto"
-	_ "modernc.org/sqlite"
 )
 
 const (
@@ -125,7 +125,7 @@ func Open(path string) (*SQLiteStore, error) {
 		return nil, fmt.Errorf("database path cannot be empty")
 	}
 
-	db, err := sql.Open("sqlite", path)
+	db, err := sql.Open("sqlite3", path)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite database: %w", err)
 	}
