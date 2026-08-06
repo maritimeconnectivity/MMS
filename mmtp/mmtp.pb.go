@@ -1154,12 +1154,12 @@ func (x *Notify) GetMessageMetadata() []*MessageMetadata {
 
 type ResponseMessage struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
-	ResponseToUuid  string             `protobuf:"bytes,1,opt,name=responseToUuid,proto3" json:"responseToUuid,omitempty"`
-	Response        ResponseEnum       `protobuf:"varint,2,opt,name=response,proto3,enum=ResponseEnum" json:"response,omitempty"`
-	ReasonText      *string            `protobuf:"bytes,3,opt,name=reasonText,proto3,oneof" json:"reasonText,omitempty"`
-	MessageMetadata []*MessageMetadata `protobuf:"bytes,4,rep,name=messageMetadata,proto3" json:"messageMetadata,omitempty"`
-	MessageContent  []*MessageContent  `protobuf:"bytes,5,rep,name=messageContent,proto3" json:"messageContent,omitempty"`
-	ReconnectToken  *string            `protobuf:"bytes,6,opt,name=reconnectToken,proto3,oneof" json:"reconnectToken,omitempty"`
+	ResponseToUuid  string                 `protobuf:"bytes,1,opt,name=responseToUuid,proto3" json:"responseToUuid,omitempty"`
+	Response        ResponseEnum           `protobuf:"varint,2,opt,name=response,proto3,enum=ResponseEnum" json:"response,omitempty"`
+	ReasonText      *string                `protobuf:"bytes,3,opt,name=reasonText,proto3,oneof" json:"reasonText,omitempty"`
+	MessageMetadata []*MessageMetadata     `protobuf:"bytes,4,rep,name=messageMetadata,proto3" json:"messageMetadata,omitempty"`
+	MessageContent  []*MessageContent      `protobuf:"bytes,5,rep,name=messageContent,proto3" json:"messageContent,omitempty"`
+	ReconnectToken  *string                `protobuf:"bytes,6,opt,name=reconnectToken,proto3,oneof" json:"reconnectToken,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -1290,8 +1290,8 @@ func (x *MessageMetadata) GetHeader() *ApplicationMessageHeader {
 
 type MessageContent struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Uuid          string              `protobuf:"bytes,1,opt,name=uuid,proto3" json:"uuid,omitempty"`
-	Msg           *ApplicationMessage `protobuf:"bytes,2,opt,name=msg,proto3" json:"msg,omitempty"`
+	Uuid          string                 `protobuf:"bytes,1,opt,name=uuid,proto3" json:"uuid,omitempty"`
+	Msg           *ApplicationMessage    `protobuf:"bytes,2,opt,name=msg,proto3" json:"msg,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }

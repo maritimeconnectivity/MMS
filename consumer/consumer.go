@@ -98,7 +98,7 @@ func (c *Consumer) notify(ctx context.Context, conn *websocket.Conn) error {
 		log.Println("Could not send notify")
 		return fmt.Errorf("could not send Notify to Producer: %w", err)
 	}
-	for msgUuid, _ := range c.Notifications {
+	for msgUuid := range c.Notifications {
 		delete(c.Notifications, msgUuid)
 	}
 	return nil

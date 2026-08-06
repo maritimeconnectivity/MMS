@@ -28,7 +28,7 @@ import (
 
 func WriteMessage(ctx context.Context, c *websocket.Conn, mmtpMessage *mmtp.MmtpMessage) error {
 	if c == nil {
-		return errors.New("No websocket connection")
+		return errors.New("no websocket connection")
 	}
 	b, err := proto.Marshal(mmtpMessage)
 	if err != nil {

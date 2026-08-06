@@ -28,7 +28,7 @@ import (
 
 func ReadMessage(ctx context.Context, c *websocket.Conn) (*mmtp.MmtpMessage, int, error) {
 	if c == nil {
-		return nil, -1, errors.New("No websocket connection")
+		return nil, -1, errors.New("no websocket connection")
 	}
 
 	_, b, err := c.Read(ctx)

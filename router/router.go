@@ -421,7 +421,7 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 					switch protoMessage.ProtocolMsgType {
 					case mmtp.ProtocolMessageType_SUBSCRIBE_MESSAGE:
 						{
-							err, errorText := handleSubscribe(mmtpMessage, subMu, subs, topicHandles, pubSub, e, wg, ctx, p2p, incomingChannel, request, c)
+							errorText, err := handleSubscribe(mmtpMessage, subMu, subs, topicHandles, pubSub, e, wg, ctx, p2p, incomingChannel, request, c)
 							if err != nil {
 								log.Error("Failed handling Subscribe message:", err)
 								errMsg.SendErrorMessage(mmtpMessage.GetUuid(), errorText, request.Context(), c)
@@ -476,11 +476,11 @@ func handleHttpConnection(p2p *host.Host, pubSub *pubsub.PubSub, incomingChannel
 	}
 }
 
-func handleSubscribe(mmtpMessage *mmtp.MmtpMessage, subMu *sync.RWMutex, subs map[string]*Subscription, topicHandles map[string]*pubsub.Topic, pubSub *pubsub.PubSub, e *EdgeRouter, wg *sync.WaitGroup, ctx context.Context, p2p *host.Host, incomingChannel chan *mmtp.MmtpMessage, request *http.Request, c *websocket.Conn) (error, string) {
+func handleSubscribe(mmtpMessage *mmtp.MmtpMessage, subMu *sync.RWMutex, subs map[string]*Subscription, topicHandles map[string]*pubsub.Topic, pubSub *pubsub.PubSub, e *EdgeRouter, wg *sync.WaitGroup, ctx context.Context, p2p *host.Host, incomingChannel chan *mmtp.MmtpMessage, request *http.Request, c *websocket.Conn) (string, error) {
 	if subscribe := mmtpMessage.GetProtocolMessage().GetSubscribeMessage(); subscribe != nil {
 		subject := subscribe.GetSubject()
 		if subject == "" {
-			return fmt.Errorf("cannot subscribe to empty subject"), "Cannot subscribe to empty subject"
+			return "Cannot subscribe to empty subject", fmt.Errorf("cannot subscribe to empty subject")
 		}
 		subMu.Lock()
 		sub, exists := subs[subject]
@@ -491,7 +491,7 @@ func handleSubscribe(mmtpMessage *mmtp.MmtpMessage, subMu *sync.RWMutex, subs ma
 				t, err := pubSub.Join(subject)
 				if err != nil {
 					subMu.Unlock()
-					return fmt.Errorf("was not able to join topic: %v", err), "Subscription failed"
+					return "Subscription failed", fmt.Errorf("was not able to join topic: %v", err)
 				}
 				topic = t
 				topicHandles[subject] = topic
@@ -501,7 +501,7 @@ func handleSubscribe(mmtpMessage *mmtp.MmtpMessage, subMu *sync.RWMutex, subs ma
 			subscription, err := topic.Subscribe()
 			if err != nil {
 				subMu.Unlock()
-				return fmt.Errorf("was not able to subscribe to topic: %v", err), "Subscription failed"
+				return "Subscription failed", fmt.Errorf("was not able to subscribe to topic: %v", err)
 			}
 			wg.Add(1)
 			go handleSubscription(ctx, subscription, p2p, incomingChannel, wg)
@@ -525,7 +525,7 @@ func handleSubscribe(mmtpMessage *mmtp.MmtpMessage, subMu *sync.RWMutex, subs ma
 			log.Errorf("Could not send subscribe response to Edge Router: %v", err)
 		}
 	}
-	return nil, ""
+	return "", nil
 }
 
 func handleUnsubscribe(mmtpMessage *mmtp.MmtpMessage, subMu *sync.RWMutex, subs map[string]*Subscription, e *EdgeRouter, request *http.Request, c *websocket.Conn) error {
@@ -900,7 +900,7 @@ func runPrometheusMetricsServer(ctx context.Context, wg *sync.WaitGroup, reg *pr
 	}
 }
 
-func setupLibP2P(ctx context.Context, libp2pPort *int, privKeyFilePath *string, beaconsFilePath *string) (host.Host, *drouting.RoutingDiscovery, error) {
+func setupLibP2P(ctx context.Context, libp2pPort *int, privKeyFilePath *string, beaconsFilePath *string) (host.Host, *drouting.RoutingDiscovery, *dht.IpfsDHT, error) {
 	port := *libp2pPort
 	var addrStrings []string
 	if port != 0 {
@@ -940,18 +940,18 @@ func setupLibP2P(ctx context.Context, libp2pPort *int, privKeyFilePath *string, 
 	if *privKeyFilePath != "" {
 		privKeyFile, err := os.ReadFile(*privKeyFilePath)
 		if err != nil {
-			return nil, nil, fmt.Errorf("could not open the provided private key file: %w", err)
+			return nil, nil, nil, fmt.Errorf("could not open the provided private key file: %w", err)
 		}
 		keyData, _ := pem.Decode(privKeyFile)
 		privKey, err := x509.ParseECPrivateKey(keyData.Bytes)
 		if err != nil {
 			privKeyPkcs8, err := x509.ParsePKCS8PrivateKey(keyData.Bytes)
 			if err != nil {
-				return nil, nil, fmt.Errorf("could not parse the provided private key file as an ECDSA key: %w", err)
+				return nil, nil, nil, fmt.Errorf("could not parse the provided private key file as an ECDSA key: %w", err)
 			}
 			v, ok := privKeyPkcs8.(*ecdsa.PrivateKey)
 			if !ok {
-				return nil, nil, fmt.Errorf("Error on type assertion of provided key as ecdsa Privatekey")
+				return nil, nil, nil, fmt.Errorf("error on type assertion of provided key as ecdsa privatekey")
 			}
 			//After dynamic assertion set privKey
 			privKey = v
@@ -959,7 +959,7 @@ func setupLibP2P(ctx context.Context, libp2pPort *int, privKeyFilePath *string, 
 
 		privEc, _, err := crypto.ECDSAKeyPairFromKey(privKey)
 		if err != nil {
-			return nil, nil, fmt.Errorf("could not parse the ECDSA private key from the file: %w", err)
+			return nil, nil, nil, fmt.Errorf("could not parse the ECDSA private key from the file: %w", err)
 		}
 
 		// start a libp2p node with the given private key
@@ -972,7 +972,7 @@ func setupLibP2P(ctx context.Context, libp2pPort *int, privKeyFilePath *string, 
 			libp2p.EnableHolePunching(),
 		)
 		if err != nil {
-			return nil, nil, fmt.Errorf("could not create a libp2p node: %w", err)
+			return nil, nil, nil, fmt.Errorf("could not create a libp2p node: %w", err)
 		}
 	} else {
 		var err error
@@ -985,7 +985,7 @@ func setupLibP2P(ctx context.Context, libp2pPort *int, privKeyFilePath *string, 
 			libp2p.EnableHolePunching(),
 		)
 		if err != nil {
-			return nil, nil, fmt.Errorf("could not create a libp2p node: %w", err)
+			return nil, nil, nil, fmt.Errorf("could not create a libp2p node: %w", err)
 		}
 	}
 
@@ -1008,8 +1008,10 @@ func setupLibP2P(ctx context.Context, libp2pPort *int, privKeyFilePath *string, 
 		Addrs: node.Addrs(),
 	}
 	addrs, err := peerstore.AddrInfoToP2pAddrs(&peerInfo)
-	log.Infof("libp2p node addresses: %v", addrs)
-	return node, rd, nil
+	if err == nil {
+		log.Infof("libp2p node addresses: %v", addrs)
+	}
+	return node, rd, kademlia, nil
 }
 
 func main() {
@@ -1032,7 +1034,7 @@ func main() {
 		return
 	}
 
-	node, rd, err := setupLibP2P(ctx, libp2pPort, privKeyFilePath, beacons)
+	node, rd, kademlia, err := setupLibP2P(ctx, libp2pPort, privKeyFilePath, beacons)
 	if err != nil {
 		log.Errorf("Could not setup the libp2p backend: %v", err)
 		return
@@ -1097,8 +1099,11 @@ func main() {
 
 	cancel()
 	wg.Wait()
-	// shut the libp2p node down
+	// shut the libp2p node down, then close DHT
 	if err = node.Close(); err != nil {
 		log.Fatal("libp2p node could not be shut down correctly")
+	}
+	if err = kademlia.Close(); err != nil {
+		log.Fatal("kademlia DHT could not be shut down correctly")
 	}
 }

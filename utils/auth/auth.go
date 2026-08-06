@@ -54,7 +54,7 @@ func AuthenticateConsumer(request *http.Request, consumerMrn string) (x509.Signa
 		uidOid := []int{0, 9, 2342, 19200300, 100, 1, 1}
 
 		if len(request.TLS.PeerCertificates) < 1 {
-			return x509.UnknownSignatureAlgorithm, false, &CertValErr{AuthenticationErr{Msg: fmt.Sprintf("A valid client certificate must be provided for authenticated connections")}}
+			return x509.UnknownSignatureAlgorithm, false, &CertValErr{AuthenticationErr{Msg: "A valid client certificate must be provided for authenticated connections"}}
 		}
 
 		//Determine signature Algorithm used by client and check if valid
