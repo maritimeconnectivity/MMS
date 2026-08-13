@@ -32,6 +32,12 @@ import (
 	"github.com/maritimeconnectivity/MMS/utils/rw"
 )
 
+// queueMessageTimeout bounds how long a single QueueMessage write may block.
+// It must not be raised without also considering that persistence.Open caps
+// SQLiteStore to a single connection, so a stalled write blocks every other
+// Store call in the process until this deadline is hit.
+const queueMessageTimeout = 10 * time.Second
+
 type Consumer struct {
 	ID             string            // stable identifier used by the state store
 	Store          persistence.Store // message and session state backend
@@ -52,7 +58,9 @@ func (c *Consumer) QueueMessage(mmtpMessage *mmtp.MmtpMessage) error {
 	if c.ID == "" {
 		return fmt.Errorf("consumer does not have a session ID")
 	}
-	return c.Store.QueueMessage(context.Background(), []string{c.ID}, mmtpMessage)
+	ctx, cancel := context.WithTimeout(context.Background(), queueMessageTimeout)
+	defer cancel()
+	return c.Store.QueueMessage(ctx, []string{c.ID}, mmtpMessage)
 }
 
 func (c *Consumer) notify(ctx context.Context, conn *websocket.Conn) error {
