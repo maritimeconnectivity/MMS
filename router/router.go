@@ -942,11 +942,11 @@ func runHealthServer(ctx context.Context, wg *sync.WaitGroup, port int) {
 	}
 	log.Infof("Health server listening on port %d", port)
 
-	go func() {
+	wg.Go(func() {
 		if err := server.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 			log.Errorf("Health server ListenAndServe(): %s", err)
 		}
-	}()
+	})
 
 	<-ctx.Done()
 	log.Warn("Shutting down health server...")
