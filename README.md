@@ -56,6 +56,12 @@ connect to router identities specified in the `beacons.txt`
   router, listening on the QUIC protocol on UDP port 27000. It has the libp2p-identity
   `QmcUKyMuepvXqZhpMSBP59KKBymRNstk41qGMPj38QStfx`, which is derived from the private key.
 
+### Calculating a key id
+
+A small utility is provided to simplify calculating the key id for `beacons.txt`:
+
+* `./bin/genkey -privkey path/to/private/key.pem`
+
 ## How to run
 
 ### Edgerouter
