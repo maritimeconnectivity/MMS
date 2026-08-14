@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/charmbracelet/log"
 	"golang.org/x/crypto/ocsp"
 )
 
@@ -37,6 +38,12 @@ func PerformOCSPCheck(clientCert *x509.Certificate, issuingCert *x509.Certificat
 	if err != nil {
 		return fmt.Errorf("could not send OCSP request: %w", err)
 	}
+	defer func(Body io.ReadCloser) {
+		err := Body.Close()
+		if err != nil {
+			log.Errorf("Could not close OCSP request body: %s", err)
+		}
+	}(resp.Body)
 	respBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return fmt.Errorf("getting OCSP response failed: %w", err)
@@ -71,6 +78,12 @@ func PerformCRLCheck(clientCert *x509.Certificate, httpClient *http.Client, issu
 	if err != nil {
 		return fmt.Errorf("could not send CRL request: %w", err)
 	}
+	defer func(Body io.ReadCloser) {
+		err := Body.Close()
+		if err != nil {
+			log.Errorf("Could not close CRL request body: %s", err)
+		}
+	}(resp.Body)
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return fmt.Errorf("getting CRL response body failed: %w", err)

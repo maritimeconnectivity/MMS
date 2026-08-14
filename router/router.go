@@ -1115,6 +1115,17 @@ func main() {
 		return
 	}
 
+	// Make sure that the libp2p node and the DHT are always closed
+	defer func() {
+		// shut the libp2p node down, then close DHT
+		if err := node.Close(); err != nil {
+			log.Error("libp2p node could not be shut down correctly")
+		}
+		if err := kademlia.Close(); err != nil {
+			log.Error("kademlia DHT could not be shut down correctly")
+		}
+	}()
+
 	pubSub, err := pubsub.NewGossipSub(ctx, node)
 	if err != nil {
 		panic(err)
@@ -1177,11 +1188,4 @@ func main() {
 
 	cancel()
 	wg.Wait()
-	// shut the libp2p node down, then close DHT
-	if err = node.Close(); err != nil {
-		log.Fatal("libp2p node could not be shut down correctly")
-	}
-	if err = kademlia.Close(); err != nil {
-		log.Fatal("kademlia DHT could not be shut down correctly")
-	}
 }
