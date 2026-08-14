@@ -932,7 +932,9 @@ func runHealthServer(ctx context.Context, wg *sync.WaitGroup, port int) {
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"healthy"}`))
+		if _, err := w.Write([]byte(`{"status":"healthy"}`)); err != nil {
+			log.Errorf("Could not write health response: %s", err)
+		}
 	})
 
 	addr := ":" + strconv.Itoa(port)
