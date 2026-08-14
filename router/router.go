@@ -162,11 +162,11 @@ func (r *MMSRouter) StartRouter(ctx context.Context, wg *sync.WaitGroup, certPat
 		log.Infof("Websocket listening on: %v", r.httpServer.Addr)
 		if *certPath != "" && *certKeyPath != "" {
 			r.httpServer.TLSConfig.GetCertificate = func(clientHello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-				cert, err := tls.LoadX509KeyPair(*certPath, *certKeyPath)
+				certificate, err := tls.LoadX509KeyPair(*certPath, *certKeyPath)
 				if err != nil {
 					return nil, err
 				}
-				return &cert, nil
+				return &certificate, nil
 			}
 			if err := r.httpServer.ListenAndServeTLS("", ""); err != nil {
 				log.Error(err)

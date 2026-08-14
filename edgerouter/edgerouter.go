@@ -229,11 +229,11 @@ func (er *EdgeRouter) StartEdgeRouter(ctx context.Context, wg *sync.WaitGroup, c
 		log.Infof("Websocket listening on %s", er.httpServer.Addr)
 		if *certPath != "" && *certKeyPath != "" {
 			er.httpServer.TLSConfig.GetCertificate = func(clientHello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-				cert, err := tls.LoadX509KeyPair(*certPath, *certKeyPath)
+				certificate, err := tls.LoadX509KeyPair(*certPath, *certKeyPath)
 				if err != nil {
 					return nil, err
 				}
-				return &cert, nil
+				return &certificate, nil
 			}
 			if err := er.httpServer.ListenAndServeTLS("", ""); err != nil {
 				log.Warn(err)
@@ -1294,18 +1294,18 @@ func runWithStderr(args []string, stderr io.Writer) error {
 
 	if *clientCertPath != "" && *clientCertKeyPath != "" {
 		clientCertFunc = func(_ *tls.CertificateRequestInfo) (*tls.Certificate, error) {
-			cert, err := tls.LoadX509KeyPair(*clientCertPath, *clientCertKeyPath)
+			certificate, err := tls.LoadX509KeyPair(*clientCertPath, *clientCertKeyPath)
 			if err != nil {
 				log.Error("Could not read the provided client certificate:", err)
 				return nil, err
 			}
-			parsedCert, err := x509.ParseCertificate(cert.Certificate[0])
+			parsedCert, err := x509.ParseCertificate(certificate.Certificate[0])
 			if err != nil {
 				log.Error("Could not parse the provided client certificate:", err)
 			} else {
 				*ownMrn = auth.GetMrnFromCertificate(parsedCert)
 			}
-			return &cert, nil
+			return &certificate, nil
 		}
 	}
 
