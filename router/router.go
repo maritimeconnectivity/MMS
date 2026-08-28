@@ -673,6 +673,7 @@ func handleSend(mmtpMessage *mmtp.MmtpMessage, outgoingChannel chan<- *mmtp.Mmtp
 		outgoingChannel <- mmtpMessage
 		header := send.GetApplicationMessage().GetHeader()
 		if len(header.GetRecipients().GetRecipients()) > 0 {
+			var ids []string
 			erMu.RLock()
 			for _, recipient := range header.GetRecipients().Recipients {
 				subMu.RLock()
@@ -682,32 +683,35 @@ func handleSend(mmtpMessage *mmtp.MmtpMessage, outgoingChannel chan<- *mmtp.Mmtp
 					sub.subsMu.RLock()
 					for _, er := range sub.Subscribers {
 						if er.Mrn != e.Mrn { // Do not send the message back to where it came from
-							if err := er.QueueMessage(mmtpMessage); err != nil {
-								log.Errorf("Could not queue message to Edge Router: %v", err)
-								return
-							}
+							ids = append(ids, er.ID)
 						}
 					}
 					sub.subsMu.RUnlock()
 				}
 			}
 			erMu.RUnlock()
+			if err := consumer.QueueMessages(e.Store, ids, mmtpMessage); err != nil {
+				log.Errorf("Could not queue message to Edge Routers: %v", err)
+				return
+			}
 		} else if header.GetSubject() != "" {
+			var ids []string
 			subMu.RLock()
 			sub, exists := subs[header.GetSubject()]
 			if exists {
 				for _, subscriber := range sub.Subscribers {
 					if subscriber.Mrn != e.Mrn {
-						if err := subscriber.QueueMessage(mmtpMessage); err != nil {
-							log.Errorf("Could not queue message to Edge Router: %v", err)
-							return
-						}
+						ids = append(ids, subscriber.ID)
 					}
 				}
 			} else {
 				log.Debug("Not sending; no subscriber found for subject", header.GetSubject())
 			}
 			subMu.RUnlock()
+			if err := consumer.QueueMessages(e.Store, ids, mmtpMessage); err != nil {
+				log.Errorf("Could not queue message to Edge Routers: %v", err)
+				return
+			}
 		}
 		resp := &mmtp.MmtpMessage{
 			MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
@@ -828,26 +832,34 @@ func handleIncomingMessages(ctx context.Context, router *MMSRouter, wg *sync.Wai
 						case *mmtp.ApplicationMessageHeader_Subject:
 							{
 								router.subMu.RLock()
-								for _, subscriber := range router.subscriptions[subjectOrRecipient.Subject].Subscribers {
-									if err := subscriber.QueueMessage(incomingMessage); err != nil {
-										log.Errorf("Could not queue message: %v", err)
-										continue
-									}
+								sub := router.subscriptions[subjectOrRecipient.Subject]
+								var ids []string
+								var store persistence.Store
+								for _, subscriber := range sub.Subscribers {
+									ids = append(ids, subscriber.ID)
+									store = subscriber.Store
 								}
 								router.subMu.RUnlock()
+								if err := consumer.QueueMessages(store, ids, incomingMessage); err != nil {
+									log.Errorf("Could not queue message: %v", err)
+									continue
+								}
 							}
 						case *mmtp.ApplicationMessageHeader_Recipients:
 							{
+								var ids []string
+								var store persistence.Store
 								for _, recipient := range subjectOrRecipient.Recipients.GetRecipients() {
 									router.subMu.RLock()
 									sub := router.subscriptions[recipient]
 									for _, er := range sub.Subscribers {
-										err := er.QueueMessage(incomingMessage)
-										if err != nil {
-											log.Errorf("Could not queue message for Edge Router: %v", err)
-										}
+										ids = append(ids, er.ID)
+										store = er.Store
 									}
 									router.subMu.RUnlock()
+								}
+								if err := consumer.QueueMessages(store, ids, incomingMessage); err != nil {
+									log.Errorf("Could not queue message for Edge Router: %v", err)
 								}
 							}
 						}
