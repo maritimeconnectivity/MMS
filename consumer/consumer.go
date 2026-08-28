@@ -52,15 +52,29 @@ func (c *Consumer) QueueMessage(mmtpMessage *mmtp.MmtpMessage) error {
 	if c == nil {
 		return fmt.Errorf("consumer resolved to nil while trying to queue message")
 	}
-	if mmtpMessage.GetUuid() == "" {
-		return fmt.Errorf("the message does not contain a UUID")
-	}
 	if c.ID == "" {
 		return fmt.Errorf("consumer does not have a session ID")
 	}
+	return QueueMessages(c.Store, []string{c.ID}, mmtpMessage)
+}
+
+// QueueMessages atomically queues mmtpMessage for delivery to every session in
+// ids in a single store write. Callers that fan a message out to many
+// recipients must collect the recipient IDs and call this once rather than
+// calling Consumer.QueueMessage per recipient: the store caps SQLite to a
+// single connection, so N separate writes serialize behind N fsync'd
+// transactions and hold subscription locks for that whole duration, whereas
+// one batched write is a single transaction.
+func QueueMessages(store persistence.Store, ids []string, mmtpMessage *mmtp.MmtpMessage) error {
+	if mmtpMessage.GetUuid() == "" {
+		return fmt.Errorf("the message does not contain a UUID")
+	}
+	if len(ids) == 0 {
+		return nil
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), queueMessageTimeout)
 	defer cancel()
-	return c.Store.QueueMessage(ctx, []string{c.ID}, mmtpMessage)
+	return store.QueueMessage(ctx, ids, mmtpMessage)
 }
 
 func (c *Consumer) notify(ctx context.Context, conn *websocket.Conn) error {

@@ -1058,29 +1058,33 @@ func handleSend(mmtpMessage *mmtp.MmtpMessage, outgoingChannel chan<- *mmtp.Mmtp
 		outgoingChannel <- mmtpMessage
 		header := send.GetApplicationMessage().GetHeader()
 		if len(header.GetRecipients().GetRecipients()) > 0 {
+			var ids []string
 			mrnToAgentMu.RLock()
 			for _, recipient := range header.GetRecipients().Recipients {
 				a, exists := mrnToAgent[recipient]
 				if exists && a.directMessages {
-					if err = a.QueueMessage(mmtpMessage); err != nil {
-						log.Error("Could not queue message to agent:", err)
-					}
+					ids = append(ids, a.ID)
 				}
 			}
 			mrnToAgentMu.RUnlock()
+			if err = consumer.QueueMessages(agent.Store, ids, mmtpMessage); err != nil {
+				log.Error("Could not queue message to agents:", err)
+			}
 		} else if header.GetSubject() != "" {
+			var ids []string
 			subMu.RLock()
 			sub, exists := subs[header.GetSubject()]
 			if exists {
 				for _, subscriber := range sub.SnapshotSubscribers() {
 					if subscriber.Mrn != agent.Mrn {
-						if err = subscriber.QueueMessage(mmtpMessage); err != nil {
-							log.Error("Could not queue message to agent:", err)
-						}
+						ids = append(ids, subscriber.ID)
 					}
 				}
 			}
 			subMu.RUnlock()
+			if err = consumer.QueueMessages(agent.Store, ids, mmtpMessage); err != nil {
+				log.Error("Could not queue message to agents:", err)
+			}
 		}
 		resp := &mmtp.MmtpMessage{
 			MsgType: mmtp.MsgType_RESPONSE_MESSAGE,
@@ -1209,27 +1213,34 @@ func handleIncomingMessages(ctx context.Context, edgeRouter *EdgeRouter, wg *syn
 									subscribers = subscription.SnapshotSubscribers()
 								}
 								edgeRouter.subMu.RUnlock()
+								ids := make([]string, 0, len(subscribers))
+								var store persistence.Store
 								for _, subscriber := range subscribers {
-									if err = subscriber.QueueMessage(incomingMessage); err != nil {
-										log.Error("Could not queue message:", err)
-									}
+									ids = append(ids, subscriber.ID)
+									store = subscriber.Store
+								}
+								if err = consumer.QueueMessages(store, ids, incomingMessage); err != nil {
+									log.Error("Could not queue message:", err)
 								}
 							}
 						case *mmtp.ApplicationMessageHeader_Recipients:
 							{
+								var ids []string
+								var store persistence.Store
 								edgeRouter.mrnToAgentMu.RLock()
 								for _, recipient := range subjectOrRecipient.Recipients.GetRecipients() {
 									log.Debugf("recipient %s, hex: %x", recipient, recipient)
 									agent, ok := edgeRouter.mrnToAgent[recipient]
 									log.Debugf("agent: %v, ok: %t", agent, ok)
 									if ok && agent.directMessages {
-										err = agent.QueueMessage(incomingMessage)
-										if err != nil {
-											log.Error("Could not queue message for Agent:", err)
-										}
+										ids = append(ids, agent.ID)
+										store = agent.Store
 									}
 								}
 								edgeRouter.mrnToAgentMu.RUnlock()
+								if err = consumer.QueueMessages(store, ids, incomingMessage); err != nil {
+									log.Error("Could not queue message for Agent:", err)
+								}
 							}
 						}
 					}
