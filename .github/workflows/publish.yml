@@ -22,7 +22,12 @@ jobs:
 
       - name: Build edgerouter
         working-directory: ./edgerouter/
-        run: go build -o edgerouter && cp edgerouter ../images/edgerouter/
+        run: |
+          for arch in amd64 arm64; do
+            GOARCH=$arch go build -o ../images/edgerouter/edgerouter-$arch
+          done
+      - name: Setup QEMU
+        uses: docker/setup-qemu-action@v4
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v4
       - name: Login to GHCR
@@ -36,6 +41,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: images/edgerouter
+          platforms: linux/amd64,linux/arm64
           tags: ghcr.io/maritimeconnectivity/edgerouter
           push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
 
@@ -52,7 +58,12 @@ jobs:
 
       - name: Build router
         working-directory: ./router/
-        run: go build -o router && cp router ../images/router/
+        run: |
+          for arch in amd64 arm64; do
+            GOARCH=$arch go build -o ../images/router/router-$arch
+          done
+      - name: Setup QEMU
+        uses: docker/setup-qemu-action@v4
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v4
       - name: Login to GHCR
@@ -66,6 +77,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: images/router
+          platforms: linux/amd64,linux/arm64
           tags: ghcr.io/maritimeconnectivity/router
           push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
 
